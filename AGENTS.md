@@ -84,14 +84,16 @@ public Long createUser(UserCreateReqVO reqVO) {
 
 ## 分支创建规范
 
-- 所有功能开发和缺陷修复都必须从目标分支（通常是 `main`）新开分支进行，禁止直接在 `main` 上修改后提交。
+- `dev` 是测试环境，始终保持最新代码；`main` 是正式环境，只存放经过测试、可以发布的代码。
+- 所有功能开发和缺陷修复都必须从 `dev` 新开分支进行，完成并自测后合并回 `dev`，禁止直接在 `dev` 或 `main` 上修改后提交。
+- 发布时由 `dev` 合并到 `main`，合并前确认 `dev` 已通过测试。
 - 分支命名格式为 `<原分支>-{feature|bugfix}/<年月日>-<分支功能名>`，其中 `年月日` 为创建分支当天的 8 位日期，功能名必须使用简短的 kebab-case 英文，禁止出现中文。
 - `feature` 用于新功能，`bugfix` 用于缺陷修复。
 - 示例：
 
 ```
-main-feature/20260927-user-register
-main-bugfix/20260927-fix-login-token
+dev-feature/20260927-user-register
+dev-bugfix/20260927-fix-login-token
 ```
 
 - 分支合并后及时删除，避免残留过期分支。
@@ -111,7 +113,7 @@ main-bugfix/20260927-fix-login-token
 - 说明改动范围、实现思路和影响面，并关联相关 issue。
 - 列出验证命令与结果；涉及数据库或配置变更时明确说明。
 - 前端页面改动附截图，接口改动附请求与响应示例。
-- 至少一名 reviewer 通过后再合并，禁止直接向主分支提交未经评审的代码。
+- 功能分支至少一名 reviewer 通过后合并回 `dev`；`main` 只接受来自 `dev` 的发布合并。
 
 ## 安全与配置
 
