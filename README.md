@@ -11,7 +11,6 @@ career-assistant/
 ├─ backend/           后端服务：启动类 + application.yml
 ├─ frontend/          Vue 3 + Vite + TS + Element Plus 脚手架
 ├─ sql/               建库脚本
-├─ docker-compose.yml 本地 MySQL + Redis
 └─ mvnw / .mvn        Maven Wrapper（3.9.11）
 ```
 
@@ -31,10 +30,9 @@ career-assistant/
 
 ## 启动
 
-中间件（本地已有 MySQL/Redis 可跳过）：
+中间件（需先在本地启动 MySQL 8 和 Redis 7.4）：
 
 ```bash
-docker compose up -d
 mysql -uroot -p < sql/career_assistant.sql
 ```
 

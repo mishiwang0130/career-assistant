@@ -71,7 +71,6 @@ public Long createUser(UserCreateReqVO reqVO) {
 - `.\mvnw.cmd clean install`：从根目录构建全部模块。
 - `.\mvnw.cmd -pl backend -am spring-boot:run`：启动后端，地址 `http://localhost:8084`。
 - `.\mvnw.cmd test`：运行 Maven 测试（当前尚无测试代码）。
-- `docker compose up -d`：启动本地 MySQL 与 Redis。
 - `mysql -uroot -p < sql/career_assistant.sql`：初始化数据库。
 - `cd frontend; npm install; npm run dev`：启动前端，地址 `http://localhost:5173`。
 - `npm run build`：执行 `vue-tsc` 类型检查并打包。
