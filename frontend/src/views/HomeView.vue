@@ -31,6 +31,7 @@ const router = useRouter()
 const userStore = useUserStore()
 const user = computed(() => userStore.user)
 
+// 刷新页面后业务 store 可能没有用户信息，需要向后端补齐。
 onMounted(async () => {
   if (!userStore.user) {
     try {
@@ -42,6 +43,9 @@ onMounted(async () => {
   }
 })
 
+/**
+ * 退出登录并返回登录页。
+ */
 async function handleLogout(): Promise<void> {
   await userStore.logout()
   ElMessage.success('已退出登录')

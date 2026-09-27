@@ -6,6 +6,9 @@ import org.apache.ibatis.annotations.Mapper;
 
 /**
  * Refresh Token Mapper。
+ *
+ * @author wxy
+ * @date 2026-09-27
  */
 @Mapper
 public interface SysRefreshTokenMapper extends BaseMapper<SysRefreshToken> {

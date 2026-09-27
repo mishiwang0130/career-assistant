@@ -8,10 +8,18 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * MyBatis-Plus 配置。
+ *
+ * @author wxy
+ * @date 2026-09-27
  */
 @Configuration
 public class MyBatisPlusConfiguration {
 
+    /**
+     * 注册 MyBatis-Plus 分页插件。
+     *
+     * @return MyBatis-Plus 拦截器
+     */
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();

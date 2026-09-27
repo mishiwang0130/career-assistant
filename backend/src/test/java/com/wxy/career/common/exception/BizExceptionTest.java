@@ -8,8 +8,17 @@ import org.springframework.http.ResponseEntity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * 业务异常与统一响应测试。
+ *
+ * @author wxy
+ * @date 2026-09-27
+ */
 class BizExceptionTest {
 
+    /**
+     * 验证默认 HTTP 状态。
+     */
     @Test
     void shouldUseBadRequestAsDefaultStatus() {
         BizException exception = new BizException(ErrorConstant.USERNAME_ALREADY_EXISTS);
@@ -19,6 +28,9 @@ class BizExceptionTest {
         assertThat(exception.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    /**
+     * 验证可指定特殊 HTTP 状态。
+     */
     @Test
     void shouldAllowExplicitHttpStatus() {
         BizException exception = new BizException(

@@ -8,13 +8,24 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
  * WebMvc 配置。
+ *
+ * @author wxy
+ * @date 2026-09-27
  */
 @Configuration
 public class WebMvcConfiguration implements WebMvcConfigurer {
 
+    /**
+     * 登录态拦截器。
+     */
     @Resource
     private AuthenticationInterceptor authenticationInterceptor;
 
+    /**
+     * 注册登录态拦截器并配置放行路径。
+     *
+     * @param registry 拦截器注册表
+     */
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authenticationInterceptor)

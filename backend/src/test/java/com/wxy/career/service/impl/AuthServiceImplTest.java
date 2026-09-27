@@ -24,21 +24,42 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * 账号服务测试。
+ *
+ * @author wxy
+ * @date 2026-09-27
+ */
 @ExtendWith(MockitoExtension.class)
 class AuthServiceImplTest {
 
+    /**
+     * 用户 Mapper。
+     */
     @Mock
     private SysUserMapper sysUserMapper;
 
+    /**
+     * 密码编码器。
+     */
     @Mock
     private PasswordEncoder passwordEncoder;
 
+    /**
+     * 令牌服务。
+     */
     @Mock
     private TokenService tokenService;
 
+    /**
+     * 被测账号服务。
+     */
     @InjectMocks
     private AuthServiceImpl authService;
 
+    /**
+     * 验证重复用户名返回 1001。
+     */
     @Test
     void shouldRejectDuplicateUsername() {
         when(sysUserMapper.selectOne(any())).thenReturn(existingUser());
@@ -54,6 +75,9 @@ class AuthServiceImplTest {
         verify(sysUserMapper, never()).insert(any(SysUser.class));
     }
 
+    /**
+     * 验证密码错误返回 1002。
+     */
     @Test
     void shouldRejectWrongPassword() {
         SysUser user = existingUser();
@@ -70,6 +94,9 @@ class AuthServiceImplTest {
                 });
     }
 
+    /**
+     * 验证禁用账号返回 1003。
+     */
     @Test
     void shouldRejectDisabledAccount() {
         SysUser user = existingUser();
@@ -86,6 +113,9 @@ class AuthServiceImplTest {
                 });
     }
 
+    /**
+     * 验证注册成功后签发 token。
+     */
     @Test
     void shouldRegisterAndIssueTokens() {
         when(sysUserMapper.selectOne(any())).thenReturn(null);
@@ -107,6 +137,9 @@ class AuthServiceImplTest {
         assertThat(response.getUser().getNickname()).isEqualTo("Alice");
     }
 
+    /**
+     * 验证登录成功后签发 token。
+     */
     @Test
     void shouldLoginAndIssueTokens() {
         SysUser user = existingUser();
@@ -120,6 +153,11 @@ class AuthServiceImplTest {
         assertThat(response.getUser().getId()).isEqualTo(1L);
     }
 
+    /**
+     * 构建注册请求。
+     *
+     * @return 注册请求
+     */
     private UserRegisterReqVO registerReq() {
         UserRegisterReqVO reqVO = new UserRegisterReqVO();
         reqVO.setUsername("alice");
@@ -128,6 +166,12 @@ class AuthServiceImplTest {
         return reqVO;
     }
 
+    /**
+     * 构建登录请求。
+     *
+     * @param password 登录密码
+     * @return 登录请求
+     */
     private UserLoginReqVO loginReq(String password) {
         UserLoginReqVO reqVO = new UserLoginReqVO();
         reqVO.setUsername("alice");
@@ -135,6 +179,11 @@ class AuthServiceImplTest {
         return reqVO;
     }
 
+    /**
+     * 构建已有用户。
+     *
+     * @return 用户实体
+     */
     private SysUser existingUser() {
         SysUser user = new SysUser();
         user.setId(1L);

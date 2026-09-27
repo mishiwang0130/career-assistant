@@ -59,6 +59,7 @@ const userStore = useUserStore()
 const mode = ref<AuthMode>('login')
 const loading = ref(false)
 const formRef = ref<FormInstance>()
+// 登录和注册共用一个表单对象，切换模式时只调整展示字段和校验规则。
 const form = reactive({
   username: '',
   password: '',
@@ -91,10 +92,16 @@ const registerRules: FormRules = {
 
 const currentRules = computed(() => (mode.value === 'login' ? loginRules : registerRules))
 
+/**
+ * 切换登录/注册时清理旧的字段校验状态。
+ */
 function handleModeChange(): void {
   formRef.value?.clearValidate()
 }
 
+/**
+ * 提交登录或注册表单。
+ */
 async function handleSubmit(): Promise<void> {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) {

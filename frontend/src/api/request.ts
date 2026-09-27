@@ -16,9 +16,11 @@ import {
 } from '@/utils/storage'
 
 interface RetryableRequestConfig extends InternalAxiosRequestConfig {
+  /** 标记请求是否已因 401 重试过一次，避免无限刷新。 */
   _retry?: boolean
 }
 
+// baseURL 优先读取环境变量，本地开发默认走 Vite 的 /api 代理。
 const baseURL = import.meta.env.VITE_API_BASE || '/api'
 
 const request = axios.create({
@@ -33,10 +35,16 @@ const refreshClient = axios.create({
 
 let refreshPromise: Promise<string> | null = null
 
+/**
+ * 登录和刷新接口不能触发自动刷新，否则会在失效令牌上形成循环。
+ */
 function isAuthEntry(url: string | undefined): boolean {
   return Boolean(url?.includes('/auth/login') || url?.includes('/auth/refresh'))
 }
 
+/**
+ * 清理登录态并跳转登录页。
+ */
 function redirectToLogin(): void {
   clearAuthStorage()
   if (window.location.pathname !== '/login') {
@@ -44,6 +52,10 @@ function redirectToLogin(): void {
   }
 }
 
+/**
+ * 使用 Refresh Token 换取新 Access Token。
+ * 并发 401 会复用同一个刷新 Promise，避免同时发起多次轮换。
+ */
 async function refreshAccessToken(): Promise<string> {
   const refreshToken = getRefreshToken()
   if (!refreshToken) {
@@ -72,6 +84,7 @@ async function refreshAccessToken(): Promise<string> {
   return refreshPromise
 }
 
+// 每个业务请求都从统一的存储工具读取最新 Access Token。
 request.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const accessToken = getAccessToken()
   if (accessToken) {
@@ -83,6 +96,7 @@ request.interceptors.request.use((config: InternalAxiosRequestConfig) => {
 request.interceptors.response.use(
   (response) => {
     const result = response.data as Result<unknown>
+    // 后端 HTTP 200 但业务码非 200 时，统一按失败响应处理。
     if (result.code !== 200) {
       ElMessage.error(result.msg)
       return Promise.reject(new Error(result.msg))
@@ -100,6 +114,7 @@ request.interceptors.response.use(
     if (shouldRefresh) {
       config._retry = true
       try {
+        // 刷新成功后重放原请求，业务层无需感知 token 轮换。
         const accessToken = await refreshAccessToken()
         config.headers.set('Authorization', `Bearer ${accessToken}`)
         return request(config)
@@ -119,6 +134,9 @@ request.interceptors.response.use(
   },
 )
 
+/**
+ * 解包统一响应，向 API 层返回业务数据。
+ */
 function unwrap<T>(result: Result<T>): T {
   if (result.code !== 200) {
     throw new Error(result.msg)
@@ -126,11 +144,17 @@ function unwrap<T>(result: Result<T>): T {
   return result.data
 }
 
+/**
+ * 发送 GET 请求并返回业务数据。
+ */
 export async function get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
   const response = await request.get<Result<T>>(url, config)
   return unwrap(response.data)
 }
 
+/**
+ * 发送 POST 请求并返回业务数据。
+ */
 export async function post<T>(
   url: string,
   data?: unknown,

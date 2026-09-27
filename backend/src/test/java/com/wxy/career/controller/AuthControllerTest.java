@@ -20,14 +20,32 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+/**
+ * 账号接口鉴权测试。
+ *
+ * @author wxy
+ * @date 2026-09-27
+ */
 class AuthControllerTest {
 
+    /**
+     * MockMvc 测试入口。
+     */
     private MockMvc mockMvc;
 
+    /**
+     * 账号服务 mock。
+     */
     private AuthService authService;
 
+    /**
+     * JWT 服务。
+     */
     private JwtService jwtService;
 
+    /**
+     * 初始化 MockMvc 与拦截器。
+     */
     @BeforeEach
     void setUp() {
         authService = mock(AuthService.class);
@@ -54,6 +72,11 @@ class AuthControllerTest {
                 .build();
     }
 
+    /**
+     * 验证无 Token 访问返回 401。
+     *
+     * @throws Exception 请求执行异常
+     */
     @Test
     void shouldReturnUnauthorizedWithoutToken() throws Exception {
         mockMvc.perform(get("/api/auth/info"))
@@ -62,6 +85,11 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.msg").value("未登录或登录已过期"));
     }
 
+    /**
+     * 验证有效 Token 返回当前用户。
+     *
+     * @throws Exception 请求执行异常
+     */
     @Test
     void shouldReturnCurrentUserWithValidToken() throws Exception {
         when(authService.getCurrentUser()).thenReturn(new UserInfoRespVO(1L, "alice", "Alice"));

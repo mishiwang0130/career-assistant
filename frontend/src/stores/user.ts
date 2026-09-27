@@ -24,6 +24,9 @@ export const useUserStore = defineStore('user', () => {
 
   const isLoggedIn = computed(() => Boolean(accessToken.value))
 
+  /**
+   * 同时更新内存状态和 localStorage。
+   */
   function persistAuth(data: AuthRespVO): void {
     accessToken.value = data.accessToken
     refreshToken.value = data.refreshToken
@@ -32,14 +35,23 @@ export const useUserStore = defineStore('user', () => {
     setStoredUser(data.user)
   }
 
+  /**
+   * 登录并持久化登录态。
+   */
   async function login(reqVO: UserLoginReqVO): Promise<void> {
     persistAuth(await authApi.login(reqVO))
   }
 
+  /**
+   * 注册并持久化登录态。
+   */
   async function register(reqVO: UserRegisterReqVO): Promise<void> {
     persistAuth(await authApi.register(reqVO))
   }
 
+  /**
+   * 拉取当前用户，并同步请求层可能刷新过的新 token。
+   */
   async function fetchCurrentUser(): Promise<void> {
     const currentUser = await authApi.getCurrentUser()
     user.value = currentUser
@@ -48,6 +60,9 @@ export const useUserStore = defineStore('user', () => {
     refreshToken.value = getRefreshToken()
   }
 
+  /**
+   * 手动刷新当前会话，主要供显式业务调用。
+   */
   async function refreshSession(): Promise<void> {
     if (!refreshToken.value) {
       clearAuth()
@@ -56,6 +71,9 @@ export const useUserStore = defineStore('user', () => {
     persistAuth(await authApi.refreshToken({ refreshToken: refreshToken.value }))
   }
 
+  /**
+   * 退出登录；即使后端撤销失败，也必须清理本地状态。
+   */
   async function logout(): Promise<void> {
     try {
       await authApi.logout()
@@ -66,6 +84,9 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  /**
+   * 清理内存和本地存储中的登录态。
+   */
   function clearAuth(): void {
     accessToken.value = null
     refreshToken.value = null

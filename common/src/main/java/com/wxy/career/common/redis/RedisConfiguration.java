@@ -14,10 +14,19 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 /**
  * Redis 序列化配置。
+ *
+ * @author wxy
+ * @date 2026-09-27
  */
 @Configuration
 public class RedisConfiguration {
 
+    /**
+     * 配置统一 RedisTemplate 序列化策略。
+     *
+     * @param connectionFactory Redis 连接工厂
+     * @return RedisTemplate
+     */
     @Bean
     public RedisTemplate<String, Object> redisTemplate(RedisConnectionFactory connectionFactory) {
         ObjectMapper objectMapper = new ObjectMapper();

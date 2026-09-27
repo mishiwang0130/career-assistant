@@ -26,6 +26,7 @@ const router = createRouter({
   routes,
 })
 
+// 路由守卫负责页面级登录态判断，接口级 401 由 request.ts 自动刷新处理。
 router.beforeEach(async (to) => {
   const userStore = useUserStore()
   const requiresAuth = to.meta.requiresAuth !== false
