@@ -29,6 +29,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <agentscope.version>2.0.3</agentscope.version>
+        <jjwt.version>0.12.6</jjwt.version>
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <knife4j.version>4.5.0</knife4j.version>
         <lombok.version>1.18.46</lombok.version>
@@ -52,6 +53,23 @@
                 <groupId>com.wxy</groupId>
                 <artifactId>common</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <!-- JWT -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
             </dependency>
 
             <!-- AgentScope Java 2 -->
