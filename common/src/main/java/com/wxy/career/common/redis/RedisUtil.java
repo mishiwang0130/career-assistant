@@ -178,6 +178,9 @@ public class RedisUtil {
      * @return 删除数量
      */
     public Long deleteHash(String key, String... hashKeys) {
+        if (hashKeys == null || hashKeys.length == 0) {
+            return 0L;
+        }
         return stringRedisTemplate.opsForHash().delete(key, (Object[]) hashKeys);
     }
 
@@ -253,6 +256,9 @@ public class RedisUtil {
      * @return 新增元素数量
      */
     public Long addSet(String key, Collection<?> values) {
+        if (values == null || values.isEmpty()) {
+            return 0L;
+        }
         String[] jsonValues = toJsonCollection(values).toArray(String[]::new);
         return stringRedisTemplate.opsForSet().add(key, jsonValues);
     }
@@ -294,6 +300,9 @@ public class RedisUtil {
      * @return 删除数量
      */
     public Long removeSet(String key, Collection<?> values) {
+        if (values == null || values.isEmpty()) {
+            return 0L;
+        }
         return stringRedisTemplate.opsForSet().remove(key, toJsonCollection(values).toArray());
     }
 
@@ -358,6 +367,9 @@ public class RedisUtil {
      * @return 删除数量
      */
     public Long removeZSet(String key, Collection<?> values) {
+        if (values == null || values.isEmpty()) {
+            return 0L;
+        }
         return stringRedisTemplate.opsForZSet().remove(key, toJsonCollection(values).toArray());
     }
 
