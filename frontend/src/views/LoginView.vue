@@ -4,7 +4,6 @@
       <template #header>
         <div class="header">
           <h1>求职智能助手</h1>
-          <p>账号与技术底座演示</p>
         </div>
       </template>
 

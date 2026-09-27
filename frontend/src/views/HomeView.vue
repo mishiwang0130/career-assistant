@@ -5,7 +5,6 @@
         <div class="home-header">
           <div>
             <h1>首页</h1>
-            <p>M1 账号与技术底座已就绪</p>
           </div>
           <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
         </div>

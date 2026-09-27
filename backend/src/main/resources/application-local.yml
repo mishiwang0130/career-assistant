@@ -6,10 +6,10 @@ spring:
     password: root
   data:
     redis:
-      host: localhost
+      host: 192.168.205.128
       port: 6379
       database: 0
-      password:
+      password: 123456
 
 app:
   jwt:
