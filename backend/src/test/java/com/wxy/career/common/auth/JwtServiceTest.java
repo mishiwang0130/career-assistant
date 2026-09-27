@@ -61,8 +61,10 @@ class JwtServiceTest {
     @Test
     void shouldRejectTamperedToken() {
         String token = jwtService.generateToken(1L, "alice", "jti-1");
-        String tamperedToken = token.substring(0, token.length() - 1)
-                + (token.endsWith("a") ? "b" : "a");
+        String[] parts = token.split("\\.");
+        char[] payload = parts[1].toCharArray();
+        payload[0] = payload[0] == 'a' ? 'b' : 'a';
+        String tamperedToken = parts[0] + "." + new String(payload) + "." + parts[2];
 
         assertThatThrownBy(() -> jwtService.parseToken(tamperedToken))
                 .isInstanceOf(BizException.class)
