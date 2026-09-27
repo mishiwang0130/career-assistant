@@ -26,6 +26,7 @@ com.wxy.career
 ```
 
 - Mapper XML 放在 `backend/src/main/resources/mapper/`，该路径已在 `application.yml` 中配置。
+- 只有 Mapper 接口允许继承 MyBatis-Plus（统一继承 `BaseMapper<T>`）；Service 接口和 Service 实现禁止继承 MyBatis-Plus 的 `IService`、`ServiceImpl` 等基类，业务逻辑手写在 Service 实现中并通过 Mapper 操作数据库。
 - 数据库实体统一放 `po` 包，类名与表名对应，如 `sys_user` → `SysUser`。
 - 只有被接口使用的参数或返回值才建 VO：请求参数用 `xxxReqVO`，返回值用 `xxxRespVO`，例如 `UserLoginReqVO`、`UserInfoRespVO`。
 - Controller 只做参数校验和调用 Service，不写业务逻辑；事务放在 Service 层。
