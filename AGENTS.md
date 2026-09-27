@@ -85,12 +85,11 @@ public Long createUser(UserCreateReqVO reqVO) {
 ## 分支创建规范
 
 - 所有功能开发和缺陷修复都必须从目标分支（通常是 `main`）新开分支进行，禁止直接在 `main` 上修改后提交。
-- 分支命名格式为 `<原分支>-{feature|bugfix}/<年月日>-<分支功能名>`，其中 `年月日` 为创建分支当天的 8 位日期，功能名使用简短中文或 kebab-case 英文。
+- 分支命名格式为 `<原分支>-{feature|bugfix}/<年月日>-<分支功能名>`，其中 `年月日` 为创建分支当天的 8 位日期，功能名必须使用简短的 kebab-case 英文，禁止出现中文。
 - `feature` 用于新功能，`bugfix` 用于缺陷修复。
 - 示例：
 
 ```
-main-feature/20260927-用户注册
 main-feature/20260927-user-register
 main-bugfix/20260927-fix-login-token
 ```
