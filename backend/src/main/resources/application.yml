@@ -39,6 +39,12 @@ management:
       exposure:
         include: health,info
 
+app:
+  jwt:
+    secret: ${JWT_SECRET:career-assistant-dev-secret-change-me}
+    access-token-expire-minutes: ${JWT_ACCESS_EXPIRE_MINUTES:120}
+    refresh-token-expire-days: ${JWT_REFRESH_EXPIRE_DAYS:7}
+
 # ==================== 业务配置自行补充 ====================
 # app:
 #   agent:
