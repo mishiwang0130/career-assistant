@@ -82,6 +82,21 @@ public Long createUser(UserCreateReqVO reqVO) {
 - 前端测试使用 Vitest，文件名以 `.spec.ts` 结尾，与源码同目录或放入 `__tests__`。
 - 提交前至少执行 `.\mvnw.cmd test` 和 `cd frontend; npm run build`，并保证 `/actuator/health` 正常。
 
+## 分支创建规范
+
+- 所有功能开发和缺陷修复都必须从目标分支（通常是 `main`）新开分支进行，禁止直接在 `main` 上修改后提交。
+- 分支命名格式为 `<原分支>-{feature|bugfix}/<年月日>-<分支功能名>`，其中 `年月日` 为创建分支当天的 8 位日期，功能名使用简短中文或 kebab-case 英文。
+- `feature` 用于新功能，`bugfix` 用于缺陷修复。
+- 示例：
+
+```
+main-feature/20260927-用户注册
+main-feature/20260927-user-register
+main-bugfix/20260927-fix-login-token
+```
+
+- 分支合并后及时删除，避免残留过期分支。
+
 ## Git 提交规范
 
 采用 Conventional Commits，格式为 `<type>(<scope>): <描述>`：
