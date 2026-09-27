@@ -4,16 +4,12 @@ server:
 spring:
   application:
     name: career-assistant
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:career_assistant}?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT%2b8
-    username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:root}
     driver-class-name: com.mysql.cj.jdbc.Driver
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-      database: ${REDIS_DATABASE:0}
       timeout: 5s
 
 mybatis-plus:
@@ -41,20 +37,10 @@ management:
 
 app:
   jwt:
-    secret: ${JWT_SECRET:career-assistant-dev-secret-change-me}
     access-token-expire-minutes: ${JWT_ACCESS_EXPIRE_MINUTES:120}
     refresh-token-expire-days: ${JWT_REFRESH_EXPIRE_DAYS:7}
-
-# ==================== 业务配置自行补充 ====================
-# app:
-#   agent:
-#     provider: dashscope          # dashscope / mock
-#     api-key: ${DASHSCOPE_API_KEY:}
-#     model: qwen-plus
-#     long-context-model: qwen-max
-#     session-store: mysql         # mysql / redis / memory
-#     workspace: .agentscope/workspace
-#     max-iters: 12
+  agent:
+    api-key: ${DASHSCOPE_API_KEY:}
 
 logging:
   level:

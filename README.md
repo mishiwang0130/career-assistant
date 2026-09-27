@@ -54,9 +54,18 @@ npm run dev                                    # http://localhost:5173
 
 ## 数据库与 Redis 配置
 
-`backend/src/main/resources/application.yml` 里默认是 `localhost:3306` / `root/root` 和 `localhost:6379`，
-都支持环境变量覆盖：`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、
-`REDIS_HOST`、`REDIS_PORT`、`REDIS_DATABASE`。
+后端配置按环境拆分：
+
+- `application.yml`：公共配置，默认激活 `local`
+- `application-local.yml`：本地开发配置
+- `application-dev.yml`：开发测试配置
+- `application-prod.yml`：生产配置，数据库、Redis、JWT 和模型密钥全部从环境变量读取
+
+通过 `SPRING_PROFILES_ACTIVE` 切换环境。生产环境变量包括：
+
+`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、
+`REDIS_HOST`、`REDIS_PORT`、`REDIS_DATABASE`、`REDIS_PASSWORD`、`JWT_SECRET`、
+`DASHSCOPE_API_KEY`。
 
 ## 下一步
 
