@@ -1,6 +1,5 @@
 package com.wxy.career.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.wxy.career.common.auth.LoginUser;
 import com.wxy.career.common.auth.LoginUserHolder;
 import com.wxy.career.common.exception.BizException;
@@ -150,7 +149,7 @@ public class AuthServiceImpl implements AuthService {
      * @return 用户实体，不存在时返回 null
      */
     private SysUser findByUsername(String username) {
-        return sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>().eq(SysUser::getUsername, username));
+        return sysUserMapper.selectByUsername(username);
     }
 
     /**

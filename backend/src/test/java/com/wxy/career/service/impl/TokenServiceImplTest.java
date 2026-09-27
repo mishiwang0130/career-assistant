@@ -7,7 +7,9 @@ import com.wxy.career.common.exception.BizException;
 import com.wxy.career.mapper.SysRefreshTokenMapper;
 import com.wxy.career.mapper.SysTokenMapper;
 import com.wxy.career.mapper.SysUserMapper;
+import com.wxy.career.po.SysRefreshToken;
 import com.wxy.career.po.SysToken;
+import com.wxy.career.po.SysUser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -76,7 +78,7 @@ class TokenServiceImplTest {
         token.setJti("jti-1");
         token.setRevoked(SysToken.STATUS_ACTIVE);
         token.setExpiresAt(LocalDateTime.now().plusMinutes(10));
-        when(sysTokenMapper.selectOne(any())).thenReturn(token);
+        when(sysTokenMapper.selectByJti(any())).thenReturn(token);
 
         boolean valid = tokenService.isValid(new LoginUser(1L, "alice", "jti-1"));
 
@@ -93,7 +95,7 @@ class TokenServiceImplTest {
         token.setJti("jti-1");
         token.setRevoked(SysToken.STATUS_REVOKED);
         token.setExpiresAt(LocalDateTime.now().plusMinutes(10));
-        when(sysTokenMapper.selectOne(any())).thenReturn(token);
+        when(sysTokenMapper.selectByJti(any())).thenReturn(token);
 
         boolean valid = tokenService.isValid(new LoginUser(1L, "alice", "jti-1"));
 
@@ -105,9 +107,36 @@ class TokenServiceImplTest {
      */
     @Test
     void shouldRejectUnknownRefreshToken() {
-        when(sysRefreshTokenMapper.selectOne(any())).thenReturn(null);
+        when(sysRefreshTokenMapper.selectByTokenHash(any())).thenReturn(null);
 
         assertThatThrownBy(() -> tokenService.refresh("unknown-refresh-token"))
+                .isInstanceOf(BizException.class)
+                .satisfies(exception -> {
+                    BizException bizException = (BizException) exception;
+                    assertThat(bizException.getErrorCode().getCode()).isEqualTo(1004);
+                    assertThat(bizException.getHttpStatus().value()).isEqualTo(401);
+                });
+    }
+
+    /**
+     * 验证并发重复使用 Refresh Token 时只允许一个请求完成轮换。
+     */
+    @Test
+    void shouldRejectConcurrentRefreshReuse() {
+        SysRefreshToken refreshToken = new SysRefreshToken();
+        refreshToken.setId(1L);
+        refreshToken.setUserId(1L);
+        refreshToken.setAccessJti("jti-1");
+        refreshToken.setRevoked(SysRefreshToken.STATUS_ACTIVE);
+        refreshToken.setExpiresAt(LocalDateTime.now().plusDays(1));
+        when(sysRefreshTokenMapper.selectByTokenHash(any())).thenReturn(refreshToken);
+        SysUser user = new SysUser();
+        user.setId(1L);
+        user.setUsername("alice");
+        when(sysUserMapper.selectById(1L)).thenReturn(user);
+        when(sysRefreshTokenMapper.revokeIfActive(1L, 1L)).thenReturn(0);
+
+        assertThatThrownBy(() -> tokenService.refresh("refresh-token"))
                 .isInstanceOf(BizException.class)
                 .satisfies(exception -> {
                     BizException bizException = (BizException) exception;

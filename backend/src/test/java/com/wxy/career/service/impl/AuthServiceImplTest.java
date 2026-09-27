@@ -62,7 +62,7 @@ class AuthServiceImplTest {
      */
     @Test
     void shouldRejectDuplicateUsername() {
-        when(sysUserMapper.selectOne(any())).thenReturn(existingUser());
+        when(sysUserMapper.selectByUsername(any())).thenReturn(existingUser());
         UserRegisterReqVO reqVO = registerReq();
 
         assertThatThrownBy(() -> authService.register(reqVO))
@@ -81,7 +81,7 @@ class AuthServiceImplTest {
     @Test
     void shouldRejectWrongPassword() {
         SysUser user = existingUser();
-        when(sysUserMapper.selectOne(any())).thenReturn(user);
+        when(sysUserMapper.selectByUsername(any())).thenReturn(user);
         when(passwordEncoder.matches("wrong-password", user.getPassword())).thenReturn(false);
         UserLoginReqVO reqVO = loginReq("wrong-password");
 
@@ -101,7 +101,7 @@ class AuthServiceImplTest {
     void shouldRejectDisabledAccount() {
         SysUser user = existingUser();
         user.setStatus(SysUser.STATUS_DISABLED);
-        when(sysUserMapper.selectOne(any())).thenReturn(user);
+        when(sysUserMapper.selectByUsername(any())).thenReturn(user);
         when(passwordEncoder.matches("password123", user.getPassword())).thenReturn(true);
 
         assertThatThrownBy(() -> authService.login(loginReq("password123")))
@@ -118,7 +118,7 @@ class AuthServiceImplTest {
      */
     @Test
     void shouldRegisterAndIssueTokens() {
-        when(sysUserMapper.selectOne(any())).thenReturn(null);
+        when(sysUserMapper.selectByUsername(any())).thenReturn(null);
         when(passwordEncoder.encode("password123")).thenReturn("encoded-password");
         doAnswer(invocation -> {
             SysUser user = invocation.getArgument(0);
@@ -143,7 +143,7 @@ class AuthServiceImplTest {
     @Test
     void shouldLoginAndIssueTokens() {
         SysUser user = existingUser();
-        when(sysUserMapper.selectOne(any())).thenReturn(user);
+        when(sysUserMapper.selectByUsername(any())).thenReturn(user);
         when(passwordEncoder.matches("password123", user.getPassword())).thenReturn(true);
         when(tokenService.issueTokens(user)).thenReturn(new TokenPairVO("access-token", "refresh-token", 7200L));
 

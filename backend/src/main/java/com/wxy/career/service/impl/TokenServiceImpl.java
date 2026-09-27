@@ -1,6 +1,5 @@
 package com.wxy.career.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.wxy.career.common.auth.JwtService;
 import com.wxy.career.common.auth.LoginUser;
 import com.wxy.career.common.config.JwtProperties;
@@ -92,8 +91,7 @@ public class TokenServiceImpl implements TokenService {
     public AuthRespVO refresh(String refreshToken) {
         // Refresh Token 只以摘要形式落库，避免数据库泄露后可直接使用原始令牌。
         String tokenHash = RefreshTokenUtil.sha256(refreshToken);
-        SysRefreshToken storedToken = sysRefreshTokenMapper.selectOne(
-                new LambdaQueryWrapper<SysRefreshToken>().eq(SysRefreshToken::getTokenHash, tokenHash));
+        SysRefreshToken storedToken = sysRefreshTokenMapper.selectByTokenHash(tokenHash);
         // 过期、撤销或逻辑删除的刷新令牌都视为不可继续使用。
         if (storedToken == null || isInvalid(storedToken.getRevoked(), storedToken.getExpiresAt())) {
             throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID, HttpStatus.UNAUTHORIZED);
@@ -102,12 +100,13 @@ public class TokenServiceImpl implements TokenService {
         if (user == null) {
             throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID, HttpStatus.UNAUTHORIZED);
         }
+        // 通过条件更新抢占旧 Refresh Token，防止并发请求重复轮换同一令牌。
+        int updated = sysRefreshTokenMapper.revokeIfActive(storedToken.getId(), storedToken.getUserId());
+        if (updated == 0) {
+            throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID, HttpStatus.UNAUTHORIZED);
+        }
         // 刷新采用轮换策略，旧 Access Token 和 Refresh Token 必须同时失效。
         revokeAccessToken(storedToken.getAccessJti(), storedToken.getUserId());
-        storedToken.setRevoked(SysRefreshToken.STATUS_REVOKED);
-        storedToken.setRevokedAt(LocalDateTime.now());
-        storedToken.setUpdateBy(storedToken.getUserId());
-        sysRefreshTokenMapper.updateById(storedToken);
         return buildAuthResp(user, createTokenPair(user));
     }
 
@@ -123,10 +122,7 @@ public class TokenServiceImpl implements TokenService {
         // 退出登录既要撤销当前 Access Token，也要撤销与它关联的 Refresh Token。
         revokeAccessToken(jti, userId);
         LocalDateTime now = LocalDateTime.now();
-        SysRefreshToken refreshToken = sysRefreshTokenMapper.selectOne(
-                new LambdaQueryWrapper<SysRefreshToken>()
-                        .eq(SysRefreshToken::getAccessJti, jti)
-                        .eq(SysRefreshToken::getRevoked, SysRefreshToken.STATUS_ACTIVE));
+        SysRefreshToken refreshToken = sysRefreshTokenMapper.selectActiveByAccessJti(jti);
         if (refreshToken != null) {
             refreshToken.setRevoked(SysRefreshToken.STATUS_REVOKED);
             refreshToken.setRevokedAt(now);
@@ -143,8 +139,7 @@ public class TokenServiceImpl implements TokenService {
      */
     @Override
     public boolean isValid(LoginUser loginUser) {
-        SysToken storedToken = sysTokenMapper.selectOne(
-                new LambdaQueryWrapper<SysToken>().eq(SysToken::getJti, loginUser.getJti()));
+        SysToken storedToken = sysTokenMapper.selectByJti(loginUser.getJti());
         return storedToken != null
                 && storedToken.getUserId().equals(loginUser.getUserId())
                 && !isInvalid(storedToken.getRevoked(), storedToken.getExpiresAt());
@@ -209,8 +204,7 @@ public class TokenServiceImpl implements TokenService {
      * @param userId 用户 ID
      */
     private void revokeAccessToken(String jti, Long userId) {
-        SysToken token = sysTokenMapper.selectOne(
-                new LambdaQueryWrapper<SysToken>().eq(SysToken::getJti, jti));
+        SysToken token = sysTokenMapper.selectByJti(jti);
         if (token == null) {
             return;
         }
