@@ -1,6 +1,6 @@
 package com.wxy.career.service;
 
-import io.agentscope.core.ReActAgent;
+import io.agentscope.harness.agent.HarnessAgent;
 
 /**
  * Agent 构建工厂。
@@ -24,7 +24,7 @@ public interface AgentFactory {
      * @param agentName Agent 名
      * @return Agent 实例
      */
-    ReActAgent getAgent(String agentName);
+    HarnessAgent getAgent(String agentName);
 
     /**
      * 清空指定用户指定会话的 Agent 上下文与持久化会话状态。

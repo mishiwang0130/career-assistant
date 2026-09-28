@@ -17,13 +17,13 @@ import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.PageRespVO;
-import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.harness.agent.HarnessAgent;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -135,7 +135,7 @@ public class AssistantServiceImpl implements AssistantService {
                     SCENE_ASSISTANT, sessionId, agentProperties.getProvider(), UUID.randomUUID().toString());
 
             StreamState state = new StreamState(support, userId, sessionId, lockKey, lockToken);
-            ReActAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
             RuntimeContext runtimeContext = RuntimeContext.builder()
                     .userId(String.valueOf(userId))
                     .sessionId(sessionId)

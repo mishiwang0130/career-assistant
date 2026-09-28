@@ -8,10 +8,11 @@ import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.util.GetCurrentUserTool;
-import io.agentscope.core.ReActAgent;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.tools.ToolsConfig;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -37,9 +38,18 @@ public class AgentFactoryImpl implements AgentFactory {
     private static final String MAIN_AGENT_DESCRIPTION = "求职智能助手主 Agent";
 
     /**
+     * 需要显式 deny 的框架平台工具：异步结果等待工具。
+     *
+     * <p>ToolsConfig 的 allow 白名单对框架「平台工具」不生效（ToolFilter 只会通过 deny 移除它们），
+     * 而 HarnessAgent 默认会注册 {@code wait_async_results}。本模块没有任何异步工具，
+     * 等待异步结果没有意义，因此显式禁用；后续如引入平台工具，需要同步维护该列表。
+     */
+    private static final List<String> DENIED_PLATFORM_TOOL_NAMES = List.of("wait_async_results");
+
+    /**
      * Agent 实例缓存，按 Agent 名缓存，会话隔离由运行时上下文与共享会话存储负责。
      */
-    private final Map<String, ReActAgent> agentCache = new ConcurrentHashMap<>();
+    private final Map<String, HarnessAgent> agentCache = new ConcurrentHashMap<>();
 
     /**
      * 对话模型。
@@ -90,7 +100,7 @@ public class AgentFactoryImpl implements AgentFactory {
      * @return Agent 实例
      */
     @Override
-    public ReActAgent getAgent(String agentName) {
+    public HarnessAgent getAgent(String agentName) {
         if (!StringUtils.hasText(agentName)) {
             // 业务异常统一返回 HTTP 200，失败语义由 code 表达。
             throw new BizException(ErrorConstant.PARAM_ERROR);
@@ -114,7 +124,7 @@ public class AgentFactoryImpl implements AgentFactory {
         }
         String userKey = String.valueOf(userId);
         try {
-            ReActAgent agent = agentCache.get(MAIN_AGENT_NAME);
+            HarnessAgent agent = agentCache.get(MAIN_AGENT_NAME);
             if (agent != null) {
                 agent.clearContext(userKey, sessionId);
             }
@@ -129,14 +139,19 @@ public class AgentFactoryImpl implements AgentFactory {
     /**
      * 构建 Agent。
      *
+     * <p>迁移到 HarnessAgent 的目的不是一次性打开全部框架能力，而是站上框架扩展点：
+     * 文件读写、Shell、工作区上下文、Skill、子智能体、会话转录、记忆工具与记忆钩子本模块一律关闭，
+     * 向模型暴露本机文件系统属于纯风险；Skill、Memory、Plan Mode、SubAgent 分别由
+     * M14、M11、M10、M8 认领后再打开并补测试。
+     *
      * @param agentName Agent 名
      * @return Agent 实例
      */
-    private ReActAgent buildAgent(String agentName) {
+    private HarnessAgent buildAgent(String agentName) {
         Toolkit toolkit = new Toolkit();
         // 每个 Agent 注册自己的工具白名单，不做全局共享。
         toolkit.registerAgentTool(getCurrentUserTool);
-        return ReActAgent.builder()
+        HarnessAgent agent = HarnessAgent.builder()
                 .name(agentName)
                 .description(MAIN_AGENT_DESCRIPTION)
                 .sysPrompt(systemPromptProvider.currentPrompt())
@@ -145,6 +160,34 @@ public class AgentFactoryImpl implements AgentFactory {
                 .maxIters(agentProperties.getMaxIters())
                 .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
                 .stateStore(agentStateStore)
+                // 白名单取自当前 Toolkit，避免工具列表在两处维护；平台工具不受 allow 约束，需要 deny。
+                .toolsConfig(buildToolsConfig(toolkit))
+                .disableFilesystemTools()
+                .disableShellTool()
+                .disableWorkspaceContext()
+                .disableAtPathExpansion()
+                .disableDynamicSkills()
+                .disableDefaultWorkspaceSkills()
+                .disableSubagents()
+                .disableTranscript()
+                .disableMemoryTools()
+                .disableMemoryHooks()
                 .build();
+        // 构建后打印实际工具集，便于确认没有框架默认工具混入白名单。
+        log.info("构建 Agent 完成，agentName={}，tools={}", agentName, agent.getToolkit().getToolNames());
+        return agent;
+    }
+
+    /**
+     * 构建工具白名单配置。
+     *
+     * @param toolkit 当前 Agent 的 Toolkit
+     * @return 工具白名单配置
+     */
+    private ToolsConfig buildToolsConfig(Toolkit toolkit) {
+        ToolsConfig toolsConfig = new ToolsConfig();
+        toolsConfig.setAllow(List.copyOf(toolkit.getToolNames()));
+        toolsConfig.setDeny(DENIED_PLATFORM_TOOL_NAMES);
+        return toolsConfig;
     }
 }
