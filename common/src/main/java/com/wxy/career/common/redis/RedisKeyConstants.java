@@ -26,6 +26,11 @@ public final class RedisKeyConstants {
     public static final String SYSTEM = PREFIX + "system:";
 
     /**
+     * Agent 模块 Redis key 前缀，用于 AgentScope 会话状态等键。
+     */
+    public static final String AGENT = PREFIX + "agent:";
+
+    /**
      * 工具类禁止实例化。
      */
     private RedisKeyConstants() {
