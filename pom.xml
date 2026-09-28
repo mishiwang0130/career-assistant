@@ -29,6 +29,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <agentscope.version>2.0.3</agentscope.version>
+        <redisson.version>4.2.0</redisson.version>
         <jjwt.version>0.12.6</jjwt.version>
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <knife4j.version>4.5.0</knife4j.version>
@@ -97,6 +98,13 @@
                 <groupId>io.agentscope</groupId>
                 <artifactId>agentscope-extensions-redis</artifactId>
                 <version>${agentscope.version}</version>
+            </dependency>
+
+            <!-- Redisson：AgentScope Redis 会话状态存储使用，版本与 AgentScope 对齐 -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson</artifactId>
+                <version>${redisson.version}</version>
             </dependency>
 
             <!-- MyBatis-Plus：3.5.17 起 SQL 解析功能独立成模块 -->
