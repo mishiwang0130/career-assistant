@@ -6,7 +6,7 @@ import com.wxy.career.mapper.SysUserMapper;
 import com.wxy.career.util.AgentScopeExpiringStateStore;
 import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.util.AgentSettingsValidator;
-import com.wxy.career.util.GetCurrentUserTool;
+import com.wxy.career.tool.GetCurrentUserTool;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.extensions.model.dashscope.DashScopeChatModel;

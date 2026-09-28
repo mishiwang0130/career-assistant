@@ -9,7 +9,7 @@ import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
-import com.wxy.career.util.GetCurrentUserTool;
+import com.wxy.career.tool.GetCurrentUserTool;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;

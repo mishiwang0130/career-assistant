@@ -1,4 +1,4 @@
-package com.wxy.career.util;
+package com.wxy.career.tool;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.mapper.SysUserMapper;

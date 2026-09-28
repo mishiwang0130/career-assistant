@@ -17,7 +17,7 @@ import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.impl.AgentFactoryImpl;
 import com.wxy.career.service.impl.AssistantServiceImpl;
-import com.wxy.career.util.GetCurrentUserTool;
+import com.wxy.career.tool.GetCurrentUserTool;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolUseBlock;
