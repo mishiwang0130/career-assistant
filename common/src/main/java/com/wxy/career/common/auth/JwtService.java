@@ -8,7 +8,6 @@ import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.Resource;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.SecretKey;
@@ -80,15 +79,15 @@ public class JwtService {
                     .getPayload();
             Object userIdValue = claims.get(CLAIM_USER_ID);
             if (!(userIdValue instanceof Number userId)) {
-                throw new BizException(ErrorConstant.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
+                throw new BizException(ErrorConstant.UNAUTHORIZED);
             }
             String username = claims.get(CLAIM_USERNAME, String.class);
             if (username == null || claims.getId() == null) {
-                throw new BizException(ErrorConstant.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
+                throw new BizException(ErrorConstant.UNAUTHORIZED);
             }
             return new LoginUser(userId.longValue(), username, claims.getId());
         } catch (JwtException | IllegalArgumentException exception) {
-            throw new BizException(ErrorConstant.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.UNAUTHORIZED);
         }
     }
 

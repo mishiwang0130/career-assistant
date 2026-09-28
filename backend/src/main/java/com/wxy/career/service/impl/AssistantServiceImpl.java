@@ -26,7 +26,6 @@ import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -336,7 +335,7 @@ public class AssistantServiceImpl implements AssistantService {
     private Long currentUserId() {
         Long userId = LoginUserHolder.getUserId();
         if (userId == null) {
-            throw new BizException(ErrorConstant.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.UNAUTHORIZED);
         }
         return userId;
     }

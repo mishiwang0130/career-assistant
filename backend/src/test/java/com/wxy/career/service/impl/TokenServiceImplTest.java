@@ -114,7 +114,8 @@ class TokenServiceImplTest {
                 .satisfies(exception -> {
                     BizException bizException = (BizException) exception;
                     assertThat(bizException.getErrorCode().getCode()).isEqualTo(1004);
-                    assertThat(bizException.getHttpStatus().value()).isEqualTo(401);
+                    // 业务异常统一返回 HTTP 200，失败语义由 code 表达。
+                    assertThat(bizException.getHttpStatus().value()).isEqualTo(200);
                 });
     }
 
@@ -141,7 +142,7 @@ class TokenServiceImplTest {
                 .satisfies(exception -> {
                     BizException bizException = (BizException) exception;
                     assertThat(bizException.getErrorCode().getCode()).isEqualTo(1004);
-                    assertThat(bizException.getHttpStatus().value()).isEqualTo(401);
+                    assertThat(bizException.getHttpStatus().value()).isEqualTo(200);
                 });
     }
 }
