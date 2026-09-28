@@ -25,7 +25,7 @@
           v-for="session in sessionStore.sessions"
           :key="session.sessionId"
           class="session"
-          :class="{ 'session--active': session.sessionId === sessionStore.currentSessionId }"
+          :class="{ 'session--active': isSessionActive(session.sessionId) }"
           @click="handleOpenSession(session.sessionId)"
         >
           <div class="session__body">
@@ -97,6 +97,20 @@ const infiniteScrollDisabled = computed(() => sessionStore.loadingMore || !sessi
 const isResumeRoute = computed(
   () => route.name === 'ResumeListView' || route.name === 'ResumeEditView',
 )
+
+/** 是否处于会话路由：切到资料库时会话项不再保持选中态。 */
+const isChatRoute = computed(
+  () => route.name === 'ChatView' || route.name === 'ChatSessionView',
+)
+
+/**
+ * 判断会话项是否为当前选中项。
+ *
+ * @param sessionId 会话 ID
+ */
+function isSessionActive(sessionId: string): boolean {
+  return isChatRoute.value && sessionId === sessionStore.currentSessionId
+}
 
 // 进入应用壳时加载第 1 页会话，第 1 页永远是最新会话。
 onMounted(async () => {
