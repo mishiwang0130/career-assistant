@@ -1,5 +1,12 @@
 # 仓库开发规范
 
+## 需求与架构依据
+
+- 功能模块、优先级、依赖关系、开发排期、完成定义以 `docs/功能模块清单.md` 为准；动手前先在该文档确认这件事属于哪个模块、以什么形态落地（独立入口还是助手内的一次任务）。
+- 接口清单、表结构、SSE 事件、错误码、配置项与环境隔离以 `docs/技术约定.md` 为准；两者冲突时先改文档再改代码。
+- 模块之间怎么对接（表结构、接口、错误码号段、共享文件）由上述两份文档定死；模块内部的拆分、类设计、提交节奏由开发窗口自己决定。
+- AgentScope 框架能力优先用框架实现，不自己造轮子；确实要自建时在 `docs/技术约定.md` 登记理由。
+
 ## 项目结构
 
 - 根 `pom.xml`：Maven 聚合工程，统一管理 JDK 17、Spring Boot 3.5.16 等版本；子模块引用依赖不写 `version`，版本统一放在父 POM 的 `dependencyManagement`。
@@ -28,8 +35,11 @@ com.wxy.career
 ```
 
 - Mapper XML 放在 `backend/src/main/resources/mapper/`，该路径已在 `application.yml` 中配置。
-- `middleware/` 于 M2 引入：AgentScope 的中间件属于横切技术组件，既不是配置类也不是普通工具类，单独成包便于后续模块按同一约定扩展（详见 `docs/技术约定.md`）。
+- `middleware/`：AgentScope 的中间件属于横切技术组件，既不是配置类也不是普通工具类，单独成包便于后续模块按同一约定扩展（详见 `docs/技术约定.md`）。
 - `tool/` 存放 AgentScope 工具（`ToolBase` 子类、`@Tool` 方法等模型可调用的工具），必须单独成包，不得混入 `util`；`util/` 只放不暴露给模型的通用工具类。
+- 系统提示词正文放 `backend/src/main/resources/prompts/{agent}.md`，一个 Agent 一份，配置项 `app.agent.prompt-location` 只记录位置；禁止把长篇提示词写回 `application.yml`。
+- Skill（分析规范、出题规则、评价标准等业务规则）存 MySQL，走 `agentscope-extensions-skill-mysql-repository`；不做提示词管理后台。
+- 子 Agent 用代码声明（`HarnessAgent.Builder.subagent(SubagentDeclaration)`），装配集中在 `service/impl/AgentFactoryImpl`；禁止使用工作区里的 `subagents/*.md`，本项目是多用户网页应用，不启用工作区文件。
 - 只有 Mapper 接口允许继承 MyBatis-Plus（统一继承 `BaseMapper<T>`）；Service 接口和 Service 实现禁止继承 MyBatis-Plus 的 `IService`、`ServiceImpl` 等基类，业务逻辑手写在 Service 实现中并通过 Mapper 操作数据库。
 - 数据库实体统一放 `po` 包，类名与表名对应，如 `sys_user` → `SysUser`。
 - 只有被接口使用的参数或返回值才建 VO：请求参数用 `xxxReqVO`，返回值用 `xxxRespVO`，例如 `UserLoginReqVO`、`UserInfoRespVO`。
@@ -91,20 +101,22 @@ public Long createUser(UserCreateReqVO reqVO) {
 - 统一通过 `src/api/request.ts` 封装的 axios 实例发请求，接口地址以 `/api` 开头，由 Vite 代理到 `8084`。
 - 使用 `@/` 别名指向 `src/`；通用组件不得反向依赖具体页面。
 - UI 统一使用 Element Plus；跨页面共享状态放 Pinia，组件内部状态留在组件内。
+- 新增页面或会话场景前，先在 `docs/功能模块清单.md` 确认它属于独立入口还是助手内的一次任务；本期会话场景只有 `ASSISTANT` 与 `INTERVIEW`，不新增其它场景。
 
 ## 构建与运行命令
 
 - `.\mvnw.cmd clean install`：从根目录构建全部模块。
 - `.\mvnw.cmd -pl backend -am spring-boot:run`：启动后端，地址 `http://localhost:8084`。
-- `.\mvnw.cmd test`：运行 Maven 测试（当前尚无测试代码）。
+- `.\mvnw.cmd test`：运行 Maven 测试，需在无 MySQL、无 Redis、无 API Key 的环境下全部通过。
 - `mysql -uroot -p < sql/career_assistant.sql`：初始化数据库。
 - `cd frontend; npm install; npm run dev`：启动前端，地址 `http://localhost:5173`。
 - `npm run build`：执行 `vue-tsc` 类型检查并打包。
 
 ## 测试规范
 
-- 当前仓库尚未提交测试代码，也没有覆盖率门槛。
-- 后端测试放在 `backend/src/test/java`，包结构与主代码一致，类名以 `Test` 结尾；引入首个测试时补充 `spring-boot-starter-test` 依赖。
+- 暂无覆盖率门槛，但新增功能必须补充对应测试：业务逻辑与服务层用单元测试，Agent 装配、工具白名单、提示词契约这类约定用断言固化下来。
+- 后端测试放在 `backend/src/test/java`，包结构与主代码一致，类名以 `Test` 结尾。
+- 测试不得依赖真实网络、MySQL、Redis 或模型密钥：模型用桩注入，外部依赖用 mock。
 - 前端测试使用 Vitest，文件名以 `.spec.ts` 结尾，与源码同目录或放入 `__tests__`。
 - 提交前至少执行 `.\mvnw.cmd test` 和 `cd frontend; npm run build`，并保证 `/actuator/health` 正常。
 
@@ -157,5 +169,5 @@ dev-bugfix/20260927-fix-login-token
 ## 安全与配置
 
 - 不要提交密钥。`application.yml` 中的默认值仅用于本地开发。
-- 通过环境变量覆盖配置：`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`REDIS_HOST`、`REDIS_PORT`、`REDIS_DATABASE`。
+- 通过环境变量覆盖配置：`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`REDIS_HOST`、`REDIS_PORT`、`REDIS_DATABASE`、`REDIS_PASSWORD`、`JWT_SECRET`。
 - 本地私有配置放已忽略的 `application-*.local.yml`；`DASHSCOPE_API_KEY` 等密钥只放环境变量。
