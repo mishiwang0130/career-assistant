@@ -175,9 +175,11 @@ onMounted(loadResume)
 
 <style scoped>
 .resume-edit-page {
-  min-height: 100vh;
-  padding: 32px 24px;
-  background: #f5f7fa;
+  /* 与简历列表页保持一致：在应用壳主内容区内滚动，不再独占整屏 */
+  height: 100%;
+  padding: 20px 24px;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .resume-edit-card {

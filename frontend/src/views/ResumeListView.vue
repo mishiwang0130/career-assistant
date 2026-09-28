@@ -306,9 +306,11 @@ onMounted(loadResumes)
 
 <style scoped>
 .resume-page {
-  min-height: 100vh;
-  padding: 32px 24px;
-  background: #f5f7fa;
+  /* 页面挂在应用壳主内容区里：自己撑满高度并内部滚动，避免出现第二层整页滚动 */
+  height: 100%;
+  padding: 20px 24px;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .resume-card {
