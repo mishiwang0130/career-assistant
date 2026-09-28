@@ -2,7 +2,6 @@
   <div class="chat-view">
     <header class="chat-view__header">
       <h1 class="chat-view__title">{{ title }}</h1>
-      <el-button plain @click="handleLogout">退出登录</el-button>
     </header>
     <div class="chat-view__body">
       <component :is="panelComponent" />
@@ -19,7 +18,6 @@ import { BizError } from '@/api/request'
 import AssistantPanel from '@/components/chat/AssistantPanel.vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { useSessionStore } from '@/stores/session'
-import { useUserStore } from '@/stores/user'
 import type { ChatScene } from '@/types/session'
 
 /** 会话不存在的业务错误码，与后端 ErrorConstant.CHAT_SESSION_NOT_FOUND 保持一致。 */
@@ -39,7 +37,6 @@ const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
 const assistantStore = useAssistantStore()
-const userStore = useUserStore()
 
 /** 当前会话场景，草稿态按通用助手渲染。 */
 const currentScene = computed<ChatScene>(() => sessionStore.currentSession?.scene ?? 'ASSISTANT')
@@ -96,16 +93,6 @@ async function openSession(target: string | null): Promise<void> {
   }
 }
 
-/**
- * 退出登录：清空会话与消息状态后回到登录页。
- */
-async function handleLogout(): Promise<void> {
-  assistantStore.reset()
-  sessionStore.reset()
-  await userStore.logout()
-  ElMessage.success('已退出登录')
-  await router.replace('/login')
-}
 </script>
 
 <style scoped>
@@ -119,8 +106,6 @@ async function handleLogout(): Promise<void> {
 .chat-view__header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
   padding: 12px 20px;
   border-bottom: 1px solid #ebeef5;
 }
