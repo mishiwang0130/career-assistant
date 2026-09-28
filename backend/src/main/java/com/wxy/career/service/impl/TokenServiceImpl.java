@@ -17,7 +17,6 @@ import com.wxy.career.vo.AuthRespVO;
 import com.wxy.career.vo.TokenPairVO;
 import com.wxy.career.vo.UserInfoRespVO;
 import jakarta.annotation.Resource;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -94,16 +93,16 @@ public class TokenServiceImpl implements TokenService {
         SysRefreshToken storedToken = sysRefreshTokenMapper.selectByTokenHash(tokenHash);
         // 过期、撤销或逻辑删除的刷新令牌都视为不可继续使用。
         if (storedToken == null || isInvalid(storedToken.getRevoked(), storedToken.getExpiresAt())) {
-            throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID);
         }
         SysUser user = sysUserMapper.selectById(storedToken.getUserId());
         if (user == null) {
-            throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID);
         }
         // 通过条件更新抢占旧 Refresh Token，防止并发请求重复轮换同一令牌。
         int updated = sysRefreshTokenMapper.revokeIfActive(storedToken.getId(), storedToken.getUserId());
         if (updated == 0) {
-            throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.REFRESH_TOKEN_INVALID);
         }
         // 刷新采用轮换策略，旧 Access Token 和 Refresh Token 必须同时失效。
         revokeAccessToken(storedToken.getAccessJti(), storedToken.getUserId());

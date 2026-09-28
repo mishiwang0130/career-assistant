@@ -16,7 +16,6 @@ import com.wxy.career.vo.UserLoginReqVO;
 import com.wxy.career.vo.UserRegisterReqVO;
 import jakarta.annotation.Resource;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -121,11 +120,11 @@ public class AuthServiceImpl implements AuthService {
     public UserInfoRespVO getCurrentUser() {
         LoginUser loginUser = LoginUserHolder.get();
         if (loginUser == null) {
-            throw new BizException(ErrorConstant.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.UNAUTHORIZED);
         }
         SysUser user = sysUserMapper.selectById(loginUser.getUserId());
         if (user == null) {
-            throw new BizException(ErrorConstant.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.UNAUTHORIZED);
         }
         return UserInfoRespVO.from(user);
     }
@@ -137,7 +136,7 @@ public class AuthServiceImpl implements AuthService {
     public void logout() {
         LoginUser loginUser = LoginUserHolder.get();
         if (loginUser == null) {
-            throw new BizException(ErrorConstant.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.UNAUTHORIZED);
         }
         tokenService.revoke(loginUser.getJti(), loginUser.getUserId());
     }
