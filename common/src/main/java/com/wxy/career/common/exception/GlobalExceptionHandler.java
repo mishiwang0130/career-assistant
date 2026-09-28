@@ -14,6 +14,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -106,6 +107,22 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
     public ResponseEntity<Result<Void>> handleNotFoundException(Exception exception) {
         return buildError(ErrorConstant.NOT_FOUND, ErrorConstant.NOT_FOUND.getMsg(), HttpStatus.NOT_FOUND);
+    }
+
+    /**
+     * 处理上传文件超过 Multipart 配置上限的异常。
+     *
+     * <p>文件过大属于业务错误，统一返回 HTTP 200 和文件过大错误码，
+     * 避免前端只能看到框架层的系统异常。
+     *
+     * @param exception 文件过大异常
+     * @return 文件过大响应
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<Result<Void>> handleMaxUploadSizeExceededException(
+            MaxUploadSizeExceededException exception) {
+        log.warn("上传文件超过大小限制: {}", exception.getMessage());
+        return ResponseEntity.ok(Result.error(ErrorConstant.FILE_TOO_LARGE));
     }
 
     /**

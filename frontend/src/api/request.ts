@@ -172,4 +172,24 @@ export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<
   return unwrap(response.data)
 }
 
+/**
+ * 发送 PUT 请求并返回业务数据。
+ */
+export async function put<T>(
+  url: string,
+  data?: unknown,
+  config?: AxiosRequestConfig,
+): Promise<T> {
+  const response = await request.put<Result<T>>(url, data, config)
+  return unwrap(response.data)
+}
+
+/**
+ * 发送 DELETE 请求并返回业务数据。
+ */
+export async function remove<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+  const response = await request.delete<Result<T>>(url, config)
+  return unwrap(response.data)
+}
+
 export default request

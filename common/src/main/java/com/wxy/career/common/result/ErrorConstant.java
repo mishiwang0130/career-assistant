@@ -64,6 +64,36 @@ public final class ErrorConstant {
     public static final ErrorCode SESSION_BUSY = new ErrorCode(1050, "会话正在处理中，请稍后再试");
 
     /**
+     * 简历不存在。
+     */
+    public static final ErrorCode RESUME_NOT_FOUND = new ErrorCode(1201, "简历不存在");
+
+    /**
+     * 文件类型不支持。
+     */
+    public static final ErrorCode FILE_TYPE_UNSUPPORTED = new ErrorCode(1202, "文件类型不支持");
+
+    /**
+     * 文件过大。
+     */
+    public static final ErrorCode FILE_TOO_LARGE = new ErrorCode(1203, "文件过大");
+
+    /**
+     * 文件内容为空。
+     */
+    public static final ErrorCode FILE_EMPTY = new ErrorCode(1204, "文件内容为空");
+
+    /**
+     * 文件内容与扩展名不匹配。
+     */
+    public static final ErrorCode FILE_CONTENT_INVALID = new ErrorCode(1205, "文件内容与扩展名不匹配");
+
+    /**
+     * 文件存储失败。
+     */
+    public static final ErrorCode FILE_STORAGE_ERROR = new ErrorCode(1206, "文件存储失败");
+
+    /**
      * 工具类禁止实例化。
      */
     private ErrorConstant() {

@@ -16,3 +16,10 @@ app:
     secret: ${JWT_SECRET}
   agent:
     api-key: ${DASHSCOPE_API_KEY}
+  storage:
+    minio:
+      endpoint: ${MINIO_ENDPOINT}
+      access-key: ${MINIO_ACCESS_KEY}
+      secret-key: ${MINIO_SECRET_KEY}
+      bucket: ${MINIO_BUCKET}
+      secure: ${MINIO_SECURE}

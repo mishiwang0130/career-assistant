@@ -85,3 +85,29 @@ CREATE TABLE IF NOT EXISTS `assistant_message` (
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci
   COMMENT = '通用助手消息表';
+
+-- 简历表：保存简历元数据、MinIO 对象 key 与解析后的原文
+CREATE TABLE IF NOT EXISTS `resume` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`      BIGINT       NOT NULL COMMENT '用户ID',
+    `title`        VARCHAR(100) NOT NULL COMMENT '简历标题',
+    `source_type`  VARCHAR(16)  NOT NULL COMMENT '来源类型：UPLOAD/MANUAL',
+    `file_name`    VARCHAR(255) DEFAULT NULL COMMENT '安全化后的原始文件名，仅用于展示',
+    `object_key`   VARCHAR(512) DEFAULT NULL COMMENT 'MinIO对象key，不存物理地址',
+    `file_size`    BIGINT       DEFAULT NULL COMMENT '文件字节数',
+    `file_ext`     VARCHAR(16)  DEFAULT NULL COMMENT '小写扩展名，不含点号',
+    `raw_text`     MEDIUMTEXT   DEFAULT NULL COMMENT '解析或填写后的简历正文',
+    `parse_status` VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT '解析状态：PENDING/SUCCESS/FAILED',
+    `parse_error`  VARCHAR(500) DEFAULT NULL COMMENT '解析失败原因，已截断',
+    `is_default`   TINYINT      NOT NULL DEFAULT 0 COMMENT '是否默认：0-否，1-是',
+    `create_time`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`    BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`    BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`    TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    KEY `idx_resume_user_id` (`user_id`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '简历表';
