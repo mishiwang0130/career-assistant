@@ -4,6 +4,7 @@ import type { UserInfoRespVO } from '@/types/auth'
 const ACCESS_TOKEN_KEY = 'career_token'
 const REFRESH_TOKEN_KEY = 'career_refresh_token'
 const USER_KEY = 'career_user'
+const ASSISTANT_SESSION_KEY = 'career_assistant_session'
 
 /**
  * 获取 Access Token。
@@ -57,4 +58,18 @@ export function clearAuthStorage(): void {
   window.localStorage.removeItem(ACCESS_TOKEN_KEY)
   window.localStorage.removeItem(REFRESH_TOKEN_KEY)
   window.localStorage.removeItem(USER_KEY)
+}
+
+/**
+ * 获取通用助手当前会话 ID。
+ */
+export function getAssistantSessionId(): string | null {
+  return window.localStorage.getItem(ASSISTANT_SESSION_KEY)
+}
+
+/**
+ * 保存通用助手当前会话 ID。
+ */
+export function setAssistantSessionId(sessionId: string): void {
+  window.localStorage.setItem(ASSISTANT_SESSION_KEY, sessionId)
 }

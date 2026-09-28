@@ -5,8 +5,12 @@
         <div class="home-header">
           <div>
             <h1>首页</h1>
+            <p>求职智能助手控制台</p>
           </div>
-          <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
+          <div class="home-actions">
+            <el-button type="primary" @click="handleEnterAssistant">进入通用助手</el-button>
+            <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
+          </div>
         </div>
       </template>
 
@@ -50,6 +54,13 @@ async function handleLogout(): Promise<void> {
   ElMessage.success('已退出登录')
   await router.replace('/login')
 }
+
+/**
+ * 进入通用助手对话页。
+ */
+async function handleEnterAssistant(): Promise<void> {
+  await router.push('/assistant')
+}
 </script>
 
 <style scoped>
@@ -82,5 +93,10 @@ async function handleLogout(): Promise<void> {
   margin: 6px 0 0;
   color: #909399;
   font-size: 13px;
+}
+
+.home-actions {
+  display: flex;
+  gap: 8px;
 }
 </style>
