@@ -36,6 +36,12 @@ const routes: RouteRecordRaw[] = [
         name: 'ResumeEditView',
         component: () => import('@/views/ResumeEditView.vue'),
       },
+      {
+        // 求职目标属于设置型页面，并入应用壳，不新增顶层独立页面。
+        path: 'profile',
+        name: 'ProfileView',
+        component: () => import('@/views/ProfileView.vue'),
+      },
     ],
   },
   {

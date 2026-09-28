@@ -74,6 +74,11 @@ public final class ErrorConstant {
     public static final ErrorCode CHAT_SCENE_UNSUPPORTED = new ErrorCode(1052, "会话场景不支持");
 
     /**
+     * 求职目标未填写。
+     */
+    public static final ErrorCode USER_PROFILE_REQUIRED = new ErrorCode(1101, "求职目标未填写");
+
+    /**
      * 简历不存在。
      */
     public static final ErrorCode RESUME_NOT_FOUND = new ErrorCode(1201, "简历不存在");

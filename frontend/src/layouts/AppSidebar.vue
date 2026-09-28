@@ -60,6 +60,19 @@
       </div>
     </div>
 
+    <div class="sidebar__section">求职目标</div>
+    <div class="sidebar__nav">
+      <div
+        class="nav-item"
+        :class="{ 'nav-item--active': isProfileRoute }"
+        @click="handleOpenProfile"
+      >
+        <span>求职目标</span>
+        <!-- 未填写时带红点提醒，是否填写统一读 profile store，不再各写一套判断 -->
+        <span v-if="!profileStore.filled" class="nav-item__dot" title="未填写" />
+      </div>
+    </div>
+
     <div class="sidebar__user">
       <div class="sidebar__user-text">
         <div class="sidebar__user-name">{{ userStore.user?.nickname ?? '未登录' }}</div>
@@ -77,6 +90,7 @@ import { Delete, EditPen } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { useAssistantStore } from '@/stores/assistant'
+import { useProfileStore } from '@/stores/profile'
 import { useSessionStore } from '@/stores/session'
 import { useUserStore } from '@/stores/user'
 import type { ChatSessionRespVO } from '@/types/session'
@@ -89,6 +103,7 @@ const router = useRouter()
 const sessionStore = useSessionStore()
 const assistantStore = useAssistantStore()
 const userStore = useUserStore()
+const profileStore = useProfileStore()
 
 /** 滚动分页关闭条件：正在加载或已经没有更多会话。 */
 const infiniteScrollDisabled = computed(() => sessionStore.loadingMore || !sessionStore.hasMore)
@@ -97,6 +112,9 @@ const infiniteScrollDisabled = computed(() => sessionStore.loadingMore || !sessi
 const isResumeRoute = computed(
   () => route.name === 'ResumeListView' || route.name === 'ResumeEditView',
 )
+
+/** 求职目标页是否处于选中态。 */
+const isProfileRoute = computed(() => route.name === 'ProfileView')
 
 /** 是否处于会话路由：切到资料库时会话项不再保持选中态。 */
 const isChatRoute = computed(
@@ -114,6 +132,8 @@ function isSessionActive(sessionId: string): boolean {
 
 // 进入应用壳时加载第 1 页会话，第 1 页永远是最新会话。
 onMounted(async () => {
+  // 侧栏红点需要知道求职目标是否填写；store 内部只取一次，登录提醒窗与引导卡片共用这份状态。
+  void profileStore.ensureLoaded()
   try {
     await sessionStore.loadSessions()
   } catch {
@@ -239,11 +259,23 @@ async function handleOpenResumes(): Promise<void> {
 }
 
 /**
+ * 打开求职目标设置页。
+ */
+async function handleOpenProfile(): Promise<void> {
+  emit('navigate')
+  if (isProfileRoute.value) {
+    return
+  }
+  await router.push({ name: 'ProfileView' })
+}
+
+/**
  * 退出登录：先清空会话与消息状态，避免同标签页切换账号后看到上一个账号的数据。
  */
 async function handleLogout(): Promise<void> {
   assistantStore.reset()
   sessionStore.reset()
+  profileStore.reset()
   await userStore.logout()
   ElMessage.success('已退出登录')
   await router.replace('/login')
@@ -373,11 +405,23 @@ function pad(value: number): string {
 }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 8px;
   border-radius: 8px;
   color: #1f2d3d;
   font-size: 13px;
   cursor: pointer;
+}
+
+.nav-item__dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f56c6c;
 }
 
 .nav-item:hover,

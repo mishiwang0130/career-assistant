@@ -24,6 +24,9 @@
         <router-view />
       </el-main>
     </el-container>
+
+    <!-- 登录进入应用壳后检查一次求职目标是否填写；不填也不阻塞其它操作 -->
+    <ProfilePromptDialog />
   </el-container>
 </template>
 
@@ -31,7 +34,9 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { Menu } from '@element-plus/icons-vue'
 
+import ProfilePromptDialog from '@/components/profile/ProfilePromptDialog.vue'
 import AppSidebar from '@/layouts/AppSidebar.vue'
+import { useProfileStore } from '@/stores/profile'
 
 /** 窄屏断点，与样式中的 768px 保持一致。 */
 const NARROW_BREAKPOINT = '(max-width: 768px)'
@@ -41,6 +46,8 @@ const isNarrow = ref(false)
 
 /** 窄屏抽屉是否展开。 */
 const drawerVisible = ref(false)
+
+const profileStore = useProfileStore()
 
 /** 断点监听句柄，组件卸载时释放。 */
 let mediaQuery: MediaQueryList | null = null
@@ -59,6 +66,8 @@ onMounted(() => {
   mediaQuery = window.matchMedia(NARROW_BREAKPOINT)
   handleBreakpointChange(mediaQuery)
   mediaQuery.addEventListener('change', handleBreakpointChange)
+  // 登录提醒窗在进入应用壳后触发一次；同一个登录会话内由 sessionStorage 标记保证不重复弹。
+  void profileStore.checkLoginPrompt()
 })
 
 onBeforeUnmount(() => {

@@ -7,7 +7,8 @@ import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
-import com.wxy.career.tool.GetCurrentUserTool;
+import com.wxy.career.tool.GetUserProfileTool;
+import com.wxy.career.tool.UpdateUserProfileTool;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.tool.Toolkit;
@@ -45,6 +46,15 @@ public class AgentFactoryImpl implements AgentFactory {
      * 等待异步结果没有意义，因此显式禁用；后续如引入平台工具，需要同步维护该列表。
      */
     private static final List<String> DENIED_PLATFORM_TOOL_NAMES = List.of("wait_async_results");
+
+    /**
+     * 本 Agent 的工具白名单：只放求职目标的两个工具。
+     *
+     * <p>白名单显式声明而不是从 Toolkit 推导，保证「注册进 Toolkit 的工具」与「暴露给模型的工具」
+     * 不会因为后续误注册而自动放开；框架平台工具不受 allow 约束，仍需 deny。
+     */
+    private static final List<String> ALLOWED_TOOL_NAMES =
+            List.of(GetUserProfileTool.TOOL_NAME, UpdateUserProfileTool.TOOL_NAME);
 
     /**
      * Agent 实例缓存，按 Agent 名缓存，会话隔离由运行时上下文与共享会话存储负责。
@@ -88,10 +98,16 @@ public class AgentFactoryImpl implements AgentFactory {
     private MetricsMiddleware metricsMiddleware;
 
     /**
-     * 当前用户查询工具。
+     * 求职目标查询工具。
      */
     @Resource
-    private GetCurrentUserTool getCurrentUserTool;
+    private GetUserProfileTool getUserProfileTool;
+
+    /**
+     * 求职目标保存工具。
+     */
+    @Resource
+    private UpdateUserProfileTool updateUserProfileTool;
 
     /**
      * 按名字获取 Agent。
@@ -150,7 +166,8 @@ public class AgentFactoryImpl implements AgentFactory {
     private HarnessAgent buildAgent(String agentName) {
         Toolkit toolkit = new Toolkit();
         // 每个 Agent 注册自己的工具白名单，不做全局共享。
-        toolkit.registerAgentTool(getCurrentUserTool);
+        toolkit.registerAgentTool(getUserProfileTool);
+        toolkit.registerAgentTool(updateUserProfileTool);
         HarnessAgent agent = HarnessAgent.builder()
                 .name(agentName)
                 .description(MAIN_AGENT_DESCRIPTION)
@@ -160,8 +177,8 @@ public class AgentFactoryImpl implements AgentFactory {
                 .maxIters(agentProperties.getMaxIters())
                 .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
                 .stateStore(agentStateStore)
-                // 白名单取自当前 Toolkit，避免工具列表在两处维护；平台工具不受 allow 约束，需要 deny。
-                .toolsConfig(buildToolsConfig(toolkit))
+                // allow 显式声明本 Agent 暴露的工具；平台工具不受 allow 约束，需要 deny。
+                .toolsConfig(buildToolsConfig())
                 .disableFilesystemTools()
                 .disableShellTool()
                 .disableWorkspaceContext()
@@ -181,12 +198,13 @@ public class AgentFactoryImpl implements AgentFactory {
     /**
      * 构建工具白名单配置。
      *
-     * @param toolkit 当前 Agent 的 Toolkit
+     * <p>allow 是暴露给模型的工具清单，deny 用于剔除框架自动注册且对白名单不敏感的平台工具。
+     *
      * @return 工具白名单配置
      */
-    private ToolsConfig buildToolsConfig(Toolkit toolkit) {
+    private ToolsConfig buildToolsConfig() {
         ToolsConfig toolsConfig = new ToolsConfig();
-        toolsConfig.setAllow(List.copyOf(toolkit.getToolNames()));
+        toolsConfig.setAllow(ALLOWED_TOOL_NAMES);
         toolsConfig.setDeny(DENIED_PLATFORM_TOOL_NAMES);
         return toolsConfig;
     }
