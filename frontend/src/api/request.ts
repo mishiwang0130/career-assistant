@@ -20,6 +20,22 @@ interface RetryableRequestConfig extends InternalAxiosRequestConfig {
   _retry?: boolean
 }
 
+/**
+ * 业务异常：HTTP 200 但 code 非 200 时抛出，携带业务错误码供页面分流处理。
+ *
+ * 统一的错误提示仍由拦截器负责，页面只在需要按错误码分支（例如会话不存在）时读取 code。
+ */
+export class BizError extends Error {
+  /** 业务错误码。 */
+  readonly code: number
+
+  constructor(message: string, code: number) {
+    super(message)
+    this.name = 'BizError'
+    this.code = code
+  }
+}
+
 // baseURL 优先读取环境变量，本地开发默认走 Vite 的 /api 代理。
 const baseURL = import.meta.env.VITE_API_BASE || '/api'
 
@@ -99,7 +115,7 @@ request.interceptors.response.use(
     // 后端 HTTP 200 但业务码非 200 时，统一按失败响应处理。
     if (result.code !== 200) {
       ElMessage.error(result.msg)
-      return Promise.reject(new Error(result.msg))
+      return Promise.reject(new BizError(result.msg, result.code))
     }
     return response
   },
@@ -139,7 +155,7 @@ request.interceptors.response.use(
  */
 function unwrap<T>(result: Result<T>): T {
   if (result.code !== 200) {
-    throw new Error(result.msg)
+    throw new BizError(result.msg, result.code)
   }
   return result.data
 }
@@ -181,6 +197,18 @@ export async function put<T>(
   config?: AxiosRequestConfig,
 ): Promise<T> {
   const response = await request.put<Result<T>>(url, data, config)
+  return unwrap(response.data)
+}
+
+/**
+ * 发送 PATCH 请求并返回业务数据。
+ */
+export async function patch<T>(
+  url: string,
+  data?: unknown,
+  config?: AxiosRequestConfig,
+): Promise<T> {
+  const response = await request.patch<Result<T>>(url, data, config)
   return unwrap(response.data)
 }
 

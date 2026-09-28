@@ -11,31 +11,36 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/',
-    name: 'HomeView',
-    component: () => import('@/views/HomeView.vue'),
+    component: () => import('@/layouts/DefaultLayout.vue'),
     meta: { requiresAuth: true },
-  },
-  {
-    path: '/assistant',
-    name: 'AssistantView',
-    component: () => import('@/views/AssistantView.vue'),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/resumes',
-    name: 'ResumeListView',
-    component: () => import('@/views/ResumeListView.vue'),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/resumes/:id/edit',
-    name: 'ResumeEditView',
-    component: () => import('@/views/ResumeEditView.vue'),
-    meta: { requiresAuth: true },
+    // 应用入口固定落到新建会话草稿态，历史会话只能从左侧栏打开。
+    redirect: '/chat',
+    children: [
+      {
+        path: 'chat',
+        name: 'ChatView',
+        component: () => import('@/views/ChatView.vue'),
+      },
+      {
+        path: 'chat/:sessionId',
+        name: 'ChatSessionView',
+        component: () => import('@/views/ChatView.vue'),
+      },
+      {
+        path: 'resumes',
+        name: 'ResumeListView',
+        component: () => import('@/views/ResumeListView.vue'),
+      },
+      {
+        path: 'resumes/:id/edit',
+        name: 'ResumeEditView',
+        component: () => import('@/views/ResumeEditView.vue'),
+      },
+    ],
   },
   {
     path: '/:pathMatch(.*)*',
-    redirect: '/',
+    redirect: '/chat',
   },
 ]
 
@@ -51,8 +56,8 @@ router.beforeEach(async (to) => {
 
   if (!requiresAuth) {
     if (to.path === '/login' && userStore.isLoggedIn) {
-      // 已登录用户访问登录页时直接进入通用助手。
-      return '/assistant'
+      // 已登录用户访问登录页时直接进入新建会话。
+      return '/chat'
     }
     return true
   }

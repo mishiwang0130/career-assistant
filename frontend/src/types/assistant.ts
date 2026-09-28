@@ -12,7 +12,7 @@ export type ToolCallStatus = 'START' | 'END'
 
 /** 对话请求。 */
 export interface AssistantChatReqVO {
-  /** 会话 ID，由前端生成的 UUID。 */
+  /** 会话 ID，由后端生成（chat_session.id 的十进制字符串）。 */
   sessionId: string
   /** 用户消息内容。 */
   content: string
