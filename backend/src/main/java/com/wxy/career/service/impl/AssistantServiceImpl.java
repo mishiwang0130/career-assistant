@@ -349,7 +349,8 @@ public class AssistantServiceImpl implements AssistantService {
      */
     private String requireSessionId(String sessionId) {
         if (!StringUtils.hasText(sessionId)) {
-            throw new BizException(ErrorConstant.PARAM_ERROR, HttpStatus.BAD_REQUEST);
+            // 业务异常统一返回 HTTP 200，失败语义由 code 表达。
+            throw new BizException(ErrorConstant.PARAM_ERROR);
         }
         return sessionId.trim();
     }
@@ -368,7 +369,8 @@ public class AssistantServiceImpl implements AssistantService {
         long leaseSeconds = agentProperties.getStreamTimeoutSeconds() + SESSION_LOCK_LEASE_EXTRA_SECONDS;
         Boolean acquired = redisUtil.setIfAbsent(lockKey, lockToken, leaseSeconds, TimeUnit.SECONDS);
         if (!Boolean.TRUE.equals(acquired)) {
-            throw new BizException(ErrorConstant.SESSION_BUSY, HttpStatus.TOO_MANY_REQUESTS);
+            // 会话占用属于业务异常，按统一约定返回 HTTP 200，由 code 1050 表达失败语义。
+            throw new BizException(ErrorConstant.SESSION_BUSY);
         }
         return lockToken;
     }

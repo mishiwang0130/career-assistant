@@ -254,7 +254,7 @@ class AssistantControllerSseTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"sessionId\":\"session-1\",\"content\":\"你好\"}"))
-                .andExpect(status().is(429))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1050));
     }
 
