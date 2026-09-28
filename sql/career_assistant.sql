@@ -66,3 +66,22 @@ CREATE TABLE IF NOT EXISTS `sys_refresh_token` (
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci
   COMMENT = 'Refresh Token 记录表';
+
+-- 通用助手消息表：会话消息落库用于历史分页，Agent 会话状态本身保存在 Redis
+CREATE TABLE IF NOT EXISTS `assistant_message` (
+    `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`     BIGINT       NOT NULL COMMENT '用户ID',
+    `session_id`  VARCHAR(64)  NOT NULL COMMENT '会话ID',
+    `role`        VARCHAR(16)  NOT NULL COMMENT '角色：USER/ASSISTANT/SYSTEM',
+    `content`     TEXT         NOT NULL COMMENT '消息内容',
+    `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`   BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`   BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`   TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    KEY `idx_assistant_message_user_session_id` (`user_id`, `session_id`, `id`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '通用助手消息表';

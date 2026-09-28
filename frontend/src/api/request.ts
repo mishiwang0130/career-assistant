@@ -164,4 +164,12 @@ export async function post<T>(
   return unwrap(response.data)
 }
 
+/**
+ * 发送 DELETE 请求并返回业务数据。
+ */
+export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+  const response = await request.delete<Result<T>>(url, config)
+  return unwrap(response.data)
+}
+
 export default request

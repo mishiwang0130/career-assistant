@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.Resource;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -26,6 +28,11 @@ import java.util.stream.Collectors;
  */
 @Component
 public class RedisUtil {
+
+    /**
+     * SCAN 单次迭代建议元素数量，仅作为服务端遍历提示，不保证单次返回数量。
+     */
+    private static final long SCAN_COUNT = 200L;
 
     /**
      * 字符串 Redis 客户端。
@@ -116,6 +123,24 @@ public class RedisUtil {
      */
     public Boolean hasKey(String key) {
         return stringRedisTemplate.hasKey(key);
+    }
+
+    /**
+     * 按通配模式扫描 key。
+     *
+     * <p>使用 SCAN 而非 KEYS，避免在大键空间上阻塞 Redis。仅建议在键空间可控的场景使用，
+     * 例如按会话前缀刷新会话状态过期时间。
+     *
+     * @param pattern 通配模式，例如 {@code career:agent:1/abc:*}
+     * @return 命中的 key 集合
+     */
+    public Set<String> scanKeys(String pattern) {
+        Set<String> keys = new LinkedHashSet<>();
+        ScanOptions options = ScanOptions.scanOptions().match(pattern).count(SCAN_COUNT).build();
+        try (Cursor<String> cursor = stringRedisTemplate.scan(options)) {
+            cursor.forEachRemaining(keys::add);
+        }
+        return keys;
     }
 
     /**

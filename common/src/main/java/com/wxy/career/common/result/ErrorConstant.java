@@ -59,6 +59,11 @@ public final class ErrorConstant {
     public static final ErrorCode REFRESH_TOKEN_INVALID = new ErrorCode(1004, "刷新令牌无效或已过期");
 
     /**
+     * 目标会话已有请求在处理中。
+     */
+    public static final ErrorCode SESSION_BUSY = new ErrorCode(1050, "会话正在处理中，请稍后再试");
+
+    /**
      * 工具类禁止实例化。
      */
     private ErrorConstant() {

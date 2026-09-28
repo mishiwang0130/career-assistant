@@ -1,0 +1,126 @@
+package com.wxy.career.util;
+
+import com.wxy.career.common.sse.SseEvent;
+import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.AgentEventType;
+import io.agentscope.core.event.AgentResultEvent;
+import io.agentscope.core.event.ExceedMaxItersEvent;
+import io.agentscope.core.event.SubagentExposedEvent;
+import io.agentscope.core.event.TextBlockDeltaEvent;
+import io.agentscope.core.event.ThinkingBlockDeltaEvent;
+import io.agentscope.core.event.ToolCallEndEvent;
+import io.agentscope.core.event.ToolCallStartEvent;
+import io.agentscope.core.message.Msg;
+import org.springframework.util.StringUtils;
+
+/**
+ * AgentScope 事件到 SSE 事件的映射。
+ *
+ * <p>只映射协议中约定的八类事件，其余过程事件（模型调用、文本块起止等）直接忽略。
+ * done 事件由流正常结束时统一发送，因此这里不处理 {@code AGENT_END}，避免重复结束事件。
+ *
+ * @author wxy
+ * @date 2026-09-28
+ */
+public final class AgentEventMapper {
+
+    /**
+     * 工具类禁止实例化。
+     */
+    private AgentEventMapper() {
+    }
+
+    /**
+     * 将 AgentScope 事件映射为 SSE 事件。
+     *
+     * @param event AgentScope 事件
+     * @return SSE 事件，无需推送时返回 null
+     */
+    public static SseEvent map(AgentEvent event) {
+        if (event == null || event.getType() == null) {
+            return null;
+        }
+        AgentEventType type = event.getType();
+        switch (type) {
+            case TEXT_BLOCK_DELTA:
+                return SseEvent.delta(((TextBlockDeltaEvent) event).getDelta());
+            case THINKING_BLOCK_DELTA:
+                return SseEvent.thinking(((ThinkingBlockDeltaEvent) event).getDelta());
+            case TOOL_CALL_START:
+                return mapToolStart((ToolCallStartEvent) event);
+            case TOOL_CALL_END:
+                return mapToolEnd((ToolCallEndEvent) event);
+            case SUBAGENT_EXPOSED:
+                return mapSubagent((SubagentExposedEvent) event);
+            case AGENT_RESULT:
+                return mapResult((AgentResultEvent) event);
+            case EXCEED_MAX_ITERS:
+                return mapExceedMaxIters((ExceedMaxItersEvent) event);
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * 判断事件是否为异常结束事件。
+     *
+     * @param event SSE 事件
+     * @return true 表示异常结束事件
+     */
+    public static boolean isError(SseEvent event) {
+        return event != null && SseEvent.NAME_ERROR.equals(event.getName());
+    }
+
+    /**
+     * 映射工具调用开始事件。
+     *
+     * @param event 工具调用开始事件
+     * @return SSE 事件
+     */
+    private static SseEvent mapToolStart(ToolCallStartEvent event) {
+        return SseEvent.tool(event.getToolCallName(), SseEvent.TOOL_STATUS_START, event.getToolCallId());
+    }
+
+    /**
+     * 映射工具调用结束事件。
+     *
+     * @param event 工具调用结束事件
+     * @return SSE 事件
+     */
+    private static SseEvent mapToolEnd(ToolCallEndEvent event) {
+        return SseEvent.tool(event.getToolCallName(), SseEvent.TOOL_STATUS_END, event.getToolCallId());
+    }
+
+    /**
+     * 映射子智能体触发事件。
+     *
+     * @param event 子智能体触发事件
+     * @return SSE 事件
+     */
+    private static SseEvent mapSubagent(SubagentExposedEvent event) {
+        String label = StringUtils.hasText(event.getLabel()) ? event.getLabel() : event.getAgentId();
+        return SseEvent.node(label);
+    }
+
+    /**
+     * 映射最终结果事件。
+     *
+     * @param event 最终结果事件
+     * @return SSE 事件
+     */
+    private static SseEvent mapResult(AgentResultEvent event) {
+        Msg result = event.getResult();
+        return SseEvent.result(result == null ? null : result.getTextContent());
+    }
+
+    /**
+     * 映射超出最大步数事件，按异常结束处理。
+     *
+     * @param event 超出最大步数事件
+     * @return SSE 事件
+     */
+    private static SseEvent mapExceedMaxIters(ExceedMaxItersEvent event) {
+        return SseEvent.error("本次回复超过最大步数限制（maxIters="
+                + event.getMaxIters() + "，当前步数=" + event.getCurrentIter() + "）");
+    }
+}
