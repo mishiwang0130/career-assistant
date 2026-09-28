@@ -33,6 +33,9 @@
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <knife4j.version>4.5.0</knife4j.version>
         <lombok.version>1.18.46</lombok.version>
+        <pdfbox.version>3.0.5</pdfbox.version>
+        <poi.version>5.4.1</poi.version>
+        <minio.version>8.5.17</minio.version>
 
         <maven.minimum.version>3.9.11</maven.minimum.version>
         <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
@@ -116,6 +119,35 @@
                 <groupId>com.github.xiaoymin</groupId>
                 <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
                 <version>${knife4j.version}</version>
+            </dependency>
+
+            <!-- 简历文件解析 -->
+            <dependency>
+                <groupId>org.apache.pdfbox</groupId>
+                <artifactId>pdfbox</artifactId>
+                <version>${pdfbox.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.poi</groupId>
+                <artifactId>poi</artifactId>
+                <version>${poi.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.poi</groupId>
+                <artifactId>poi-ooxml</artifactId>
+                <version>${poi.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.poi</groupId>
+                <artifactId>poi-scratchpad</artifactId>
+                <version>${poi.version}</version>
+            </dependency>
+
+            <!-- 文件存储 -->
+            <dependency>
+                <groupId>io.minio</groupId>
+                <artifactId>minio</artifactId>
+                <version>${minio.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
