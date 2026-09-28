@@ -2,11 +2,12 @@ package com.wxy.career.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.common.redis.RedisUtil;
-import com.wxy.career.mapper.SysUserMapper;
+import com.wxy.career.service.UserProfileService;
+import com.wxy.career.tool.GetUserProfileTool;
+import com.wxy.career.tool.UpdateUserProfileTool;
 import com.wxy.career.util.AgentScopeExpiringStateStore;
 import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.util.AgentSettingsValidator;
-import com.wxy.career.tool.GetCurrentUserTool;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
@@ -124,15 +125,29 @@ public class AgentScopeConfiguration {
     }
 
     /**
-     * 装配只读的当前用户查询工具。
+     * 装配只读的求职目标查询工具。
      *
-     * @param sysUserMapper 用户 Mapper
+     * @param userProfileService 求职目标服务
      * @param objectMapper JSON 序列化组件
-     * @return 当前用户查询工具
+     * @return 求职目标查询工具
      */
     @Bean
-    public GetCurrentUserTool getCurrentUserTool(SysUserMapper sysUserMapper, ObjectMapper objectMapper) {
-        return new GetCurrentUserTool(sysUserMapper, objectMapper);
+    public GetUserProfileTool getUserProfileTool(
+            UserProfileService userProfileService, ObjectMapper objectMapper) {
+        return new GetUserProfileTool(userProfileService, objectMapper);
+    }
+
+    /**
+     * 装配求职目标保存工具。
+     *
+     * @param userProfileService 求职目标服务
+     * @param objectMapper JSON 序列化组件
+     * @return 求职目标保存工具
+     */
+    @Bean
+    public UpdateUserProfileTool updateUserProfileTool(
+            UserProfileService userProfileService, ObjectMapper objectMapper) {
+        return new UpdateUserProfileTool(userProfileService, objectMapper);
     }
 
     /**

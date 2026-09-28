@@ -16,9 +16,11 @@ import com.wxy.career.po.SysUser;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.ChatSessionService;
 import com.wxy.career.service.SystemPromptProvider;
+import com.wxy.career.service.UserProfileService;
 import com.wxy.career.service.impl.AgentFactoryImpl;
 import com.wxy.career.service.impl.AssistantServiceImpl;
-import com.wxy.career.tool.GetCurrentUserTool;
+import com.wxy.career.tool.GetUserProfileTool;
+import com.wxy.career.tool.UpdateUserProfileTool;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolUseBlock;
@@ -121,6 +123,7 @@ class AssistantControllerSseTest {
         SystemPromptProvider systemPromptProvider = () -> "测试系统提示词";
         SystemPromptMiddleware systemPromptMiddleware = new SystemPromptMiddleware();
         ReflectionTestUtils.setField(systemPromptMiddleware, "systemPromptProvider", systemPromptProvider);
+        ReflectionTestUtils.setField(systemPromptMiddleware, "sysUserMapper", sysUserMapper);
 
         redisUtil = mock(RedisUtil.class);
         when(redisUtil.getHash(anyString(), anyString(), eq(Long.class))).thenReturn(null);
@@ -137,8 +140,11 @@ class AssistantControllerSseTest {
         ReflectionTestUtils.setField(agentFactory, "systemPromptProvider", systemPromptProvider);
         ReflectionTestUtils.setField(agentFactory, "systemPromptMiddleware", systemPromptMiddleware);
         ReflectionTestUtils.setField(agentFactory, "metricsMiddleware", metricsMiddleware);
-        ReflectionTestUtils.setField(agentFactory, "getCurrentUserTool",
-                new GetCurrentUserTool(sysUserMapper, objectMapper));
+        UserProfileService userProfileService = mock(UserProfileService.class);
+        ReflectionTestUtils.setField(agentFactory, "getUserProfileTool",
+                new GetUserProfileTool(userProfileService, objectMapper));
+        ReflectionTestUtils.setField(agentFactory, "updateUserProfileTool",
+                new UpdateUserProfileTool(userProfileService, objectMapper));
 
         assistantMessageService = mock(AssistantMessageService.class);
         chatSessionService = mock(ChatSessionService.class);
@@ -188,7 +194,7 @@ class AssistantControllerSseTest {
         assertThat(body).contains("\"sessionId\":\"1\"");
         assertThat(body).contains("\"provider\":\"dashscope\"");
         // 工具调用事件必须成对出现，且 START 早于 END。
-        assertThat(body).contains("\"name\":\"get_current_user\"");
+        assertThat(body).contains("\"name\":\"get_user_profile\"");
         assertThat(body.indexOf("\"status\":\"START\"")).isGreaterThan(-1);
         assertThat(body.indexOf("\"status\":\"START\"")).isLessThan(body.indexOf("\"status\":\"END\""));
         assertThat(body).contains("event:delta");
@@ -395,7 +401,7 @@ class AssistantControllerSseTest {
             if (callCount.getAndIncrement() == 0) {
                 ToolUseBlock toolUse = ToolUseBlock.builder()
                         .id("call-1")
-                        .name(GetCurrentUserTool.TOOL_NAME)
+                        .name(GetUserProfileTool.TOOL_NAME)
                         .input(Map.of())
                         .build();
                 return Flux.just(ChatResponse.builder().id("stub-tool").content(List.of(toolUse)).build());
