@@ -11,6 +11,10 @@ spring:
   data:
     redis:
       timeout: 5s
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
