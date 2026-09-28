@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS `resume` (
 CREATE TABLE IF NOT EXISTS `chat_session` (
     `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID，即会话标识',
     `user_id`         BIGINT       NOT NULL COMMENT '用户ID',
-    `scene`           VARCHAR(32)  NOT NULL COMMENT '会话场景：ASSISTANT/INTERVIEW/DIAGNOSIS/MATCH/TUTOR',
+    `scene`           VARCHAR(32)  NOT NULL COMMENT '会话场景：ASSISTANT-通用助手，INTERVIEW-模拟面试',
     `title`           VARCHAR(100) NOT NULL COMMENT '会话标题',
     `last_message_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '最近一条用户消息时间',
     `status`          VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE' COMMENT '会话状态：ACTIVE-正常，预留归档',

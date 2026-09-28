@@ -26,8 +26,8 @@ const SESSION_NOT_FOUND_CODE = 1051
 /**
  * 场景 → 面板组件映射。
  *
- * 新增场景（M7 的 DIAGNOSIS/MATCH、M8 的 INTERVIEW、M14 的 TUTOR）时只需在 ChatScene
- * 联合类型与这里各补一项，ChatView 的顶部栏、路由与消息切换逻辑都不需要改动。
+ * 新增场景（如 F5 的 INTERVIEW）时只需在 ChatScene 联合类型与这里各补一项，
+ * ChatView 的顶部栏、路由与消息切换逻辑都不需要改动。
  */
 const SCENE_PANELS: Record<ChatScene, Component> = {
   ASSISTANT: AssistantPanel,

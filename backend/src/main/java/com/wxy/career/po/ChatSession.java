@@ -45,7 +45,7 @@ public class ChatSession extends BasePO {
     private Long userId;
 
     /**
-     * 会话场景，对应 chat_session.scene，取值 ASSISTANT/INTERVIEW/DIAGNOSIS/MATCH/TUTOR。
+     * 会话场景，对应 chat_session.scene，取值见 ChatSceneEnum，当前为 ASSISTANT/INTERVIEW。
      */
     private String scene;
 

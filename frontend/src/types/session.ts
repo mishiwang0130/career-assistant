@@ -7,8 +7,9 @@
 /**
  * 会话场景。
  *
- * 本期只开放通用助手；M7/M8/M14 追加 INTERVIEW、DIAGNOSIS、MATCH、TUTOR 时，
- * 在这里扩展联合类型，ChatView 的面板映射会因为类型不完整而编译报错，提醒补齐面板。
+ * 只有「有状态的长流程」型功能才算会话场景，一次性任务（简历诊断、岗位匹配、专项辅导）
+ * 由助手 Agent 在对话内派发子 Agent 或加载 Skill 完成。本期只开放通用助手，
+ * F5 落地时在这里加上 'INTERVIEW'，ChatView 的面板映射会因为类型不完整而编译报错，提醒补齐面板。
  */
 export type ChatScene = 'ASSISTANT'
 

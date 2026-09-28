@@ -3,9 +3,12 @@ package com.wxy.career.common.enums;
 /**
  * 会话场景。
  *
- * <p>本枚举由 M16 建立，登记所有会话型功能的场景取值；枚举值与数据库字段 {@code chat_session.scene}
- * 以及前端的面板映射保持一致。新增场景时在此追加枚举项并把 {@code available} 置为 {@code true}，
- * 未开放的场景不允许建会话，避免前端拿到还没有渲染面板的场景。
+ * <p>只登记「有状态的长流程」型功能：枚举值与数据库字段 {@code chat_session.scene}、前端的面板映射
+ * 保持一致。按《功能模块清单》的规则，一次性任务（简历诊断、岗位匹配、专项辅导）由助手 Agent 派发
+ * 子 Agent 或加载 Skill 完成，不单独占用会话场景。
+ *
+ * <p>新增场景时在此追加枚举项并把 {@code available} 置为 {@code true}；未开放的场景不允许建会话，
+ * 避免前端拿到还没有渲染面板的场景。
  *
  * @author wxy
  * @date 2026-09-28
@@ -13,29 +16,14 @@ package com.wxy.career.common.enums;
 public enum ChatSceneEnum {
 
     /**
-     * 通用助手咨询，M16 开放。
+     * 通用助手咨询，已开放，也是应用默认入口。
      */
     ASSISTANT("ASSISTANT", true),
 
     /**
-     * 模拟面试，由 M8 开放。
+     * 模拟面试，F5 落地时开放。
      */
-    INTERVIEW("INTERVIEW", false),
-
-    /**
-     * 简历诊断，由 M7 开放。
-     */
-    DIAGNOSIS("DIAGNOSIS", false),
-
-    /**
-     * 岗位匹配，由 M7 开放。
-     */
-    MATCH("MATCH", false),
-
-    /**
-     * Tutor 答疑，由 M14 开放。
-     */
-    TUTOR("TUTOR", false);
+    INTERVIEW("INTERVIEW", false);
 
     /**
      * 场景字符串值，落库与接口传输均使用该值。
