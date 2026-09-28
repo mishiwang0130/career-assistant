@@ -16,6 +16,18 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/resumes',
+    name: 'ResumeListView',
+    component: () => import('@/views/ResumeListView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/resumes/:id/edit',
+    name: 'ResumeEditView',
+    component: () => import('@/views/ResumeEditView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     redirect: '/',
   },
