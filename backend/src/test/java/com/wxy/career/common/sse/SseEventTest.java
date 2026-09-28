@@ -38,11 +38,11 @@ class SseEventTest {
      */
     @Test
     void shouldSerializeToolEvent() {
-        String message = SseEvent.tool("get_current_user", SseEvent.TOOL_STATUS_START, "call-1")
+        String message = SseEvent.tool("get_user_profile", SseEvent.TOOL_STATUS_START, "call-1")
                 .toSseMessage(objectMapper);
 
         assertThat(message).isEqualTo(
-                "event:tool\ndata:{\"name\":\"get_current_user\",\"status\":\"START\",\"detail\":\"call-1\"}\n\n");
+                "event:tool\ndata:{\"name\":\"get_user_profile\",\"status\":\"START\",\"detail\":\"call-1\"}\n\n");
     }
 
     /**
