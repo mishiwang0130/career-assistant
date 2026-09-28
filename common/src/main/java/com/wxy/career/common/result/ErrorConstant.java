@@ -64,6 +64,16 @@ public final class ErrorConstant {
     public static final ErrorCode SESSION_BUSY = new ErrorCode(1050, "会话正在处理中，请稍后再试");
 
     /**
+     * 会话不存在，同时覆盖跨账号访问与已删除会话。
+     */
+    public static final ErrorCode CHAT_SESSION_NOT_FOUND = new ErrorCode(1051, "会话不存在");
+
+    /**
+     * 会话场景未登记或尚未开放。
+     */
+    public static final ErrorCode CHAT_SCENE_UNSUPPORTED = new ErrorCode(1052, "会话场景不支持");
+
+    /**
      * 简历不存在。
      */
     public static final ErrorCode RESUME_NOT_FOUND = new ErrorCode(1201, "简历不存在");

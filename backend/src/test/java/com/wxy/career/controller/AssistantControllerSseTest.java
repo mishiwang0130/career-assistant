@@ -14,6 +14,7 @@ import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.po.SysUser;
 import com.wxy.career.service.AssistantMessageService;
+import com.wxy.career.service.ChatSessionService;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.impl.AgentFactoryImpl;
 import com.wxy.career.service.impl.AssistantServiceImpl;
@@ -50,6 +51,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
@@ -85,6 +87,11 @@ class AssistantControllerSseTest {
      * 消息服务 mock。
      */
     private AssistantMessageService assistantMessageService;
+
+    /**
+     * 会话中心服务 mock，用于校验自动标题与活跃时间回调。
+     */
+    private ChatSessionService chatSessionService;
 
     /**
      * JWT 服务。
@@ -134,6 +141,7 @@ class AssistantControllerSseTest {
                 new GetCurrentUserTool(sysUserMapper, objectMapper));
 
         assistantMessageService = mock(AssistantMessageService.class);
+        chatSessionService = mock(ChatSessionService.class);
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);
         scheduler.setRemoveOnCancelPolicy(true);
@@ -143,6 +151,7 @@ class AssistantControllerSseTest {
         ReflectionTestUtils.setField(assistantService, "agentFactory", agentFactory);
         ReflectionTestUtils.setField(assistantService, "agentProperties", agentProperties);
         ReflectionTestUtils.setField(assistantService, "assistantMessageService", assistantMessageService);
+        ReflectionTestUtils.setField(assistantService, "chatSessionService", chatSessionService);
         ReflectionTestUtils.setField(assistantService, "objectMapper", objectMapper);
         ReflectionTestUtils.setField(assistantService, "sseTaskScheduler", scheduler);
         ReflectionTestUtils.setField(assistantService, "redisUtil", redisUtil);
@@ -168,7 +177,7 @@ class AssistantControllerSseTest {
         MvcResult result = mockMvc.perform(post("/api/assistant/chat")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sessionId\":\"session-1\",\"content\":\"你好\"}"))
+                        .content("{\"sessionId\":\"1\",\"content\":\"你好\"}"))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
@@ -176,7 +185,7 @@ class AssistantControllerSseTest {
 
         assertThat(body).startsWith("event:meta");
         assertThat(body).contains("\"scene\":\"assistant\"");
-        assertThat(body).contains("\"sessionId\":\"session-1\"");
+        assertThat(body).contains("\"sessionId\":\"1\"");
         assertThat(body).contains("\"provider\":\"dashscope\"");
         // 工具调用事件必须成对出现，且 START 早于 END。
         assertThat(body).contains("\"name\":\"get_current_user\"");
@@ -187,9 +196,11 @@ class AssistantControllerSseTest {
         assertThat(body).doesNotContain("event:error");
 
         // 用户消息与助手回复都必须落库，助手回复内容为全部文本增量拼接。
-        verify(assistantMessageService).saveMessage(1L, "session-1", MessageRoleEnum.USER, "你好");
+        verify(assistantMessageService).saveMessage(1L, 1L, MessageRoleEnum.USER, "你好");
         verify(assistantMessageService).saveMessage(
-                eq(1L), eq("session-1"), eq(MessageRoleEnum.ASSISTANT), ArgumentMatchers.contains("桩模型回复"));
+                eq(1L), eq(1L), eq(MessageRoleEnum.ASSISTANT), ArgumentMatchers.contains("桩模型回复"));
+        // 保存用户消息后必须回写会话标题与活跃时间，左侧列表才能显示首条消息标题。
+        verify(chatSessionService).recordUserMessage(1L, "1", "你好");
     }
 
     /**
@@ -201,7 +212,7 @@ class AssistantControllerSseTest {
     void shouldReturnUnauthorizedResultBeforeStreamStarts() throws Exception {
         mockMvc.perform(post("/api/assistant/chat")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sessionId\":\"session-1\",\"content\":\"你好\"}"))
+                        .content("{\"sessionId\":\"1\",\"content\":\"你好\"}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401))
                 .andExpect(jsonPath("$.msg").value("未登录或登录已过期"));
@@ -217,7 +228,7 @@ class AssistantControllerSseTest {
         mockMvc.perform(post("/api/assistant/chat")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sessionId\":\"session-1\",\"content\":\"\"}"))
+                        .content("{\"sessionId\":\"1\",\"content\":\"\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
     }
@@ -240,6 +251,19 @@ class AssistantControllerSseTest {
     }
 
     /**
+     * 验证旧的清空会话接口已经下线，清空语义并入删除会话。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldRejectRemovedClearSessionEndpoint() throws Exception {
+        mockMvc.perform(delete("/api/assistant/session")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
+                        .param("sessionId", "1"))
+                .andExpect(status().isNotFound());
+    }
+
+    /**
      * 验证同一会话并发请求被拒绝，避免两份上下文交错写入。
      *
      * @throws Exception 请求执行异常
@@ -253,7 +277,7 @@ class AssistantControllerSseTest {
         mockMvc.perform(post("/api/assistant/chat")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sessionId\":\"session-1\",\"content\":\"你好\"}"))
+                        .content("{\"sessionId\":\"1\",\"content\":\"你好\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1050));
     }

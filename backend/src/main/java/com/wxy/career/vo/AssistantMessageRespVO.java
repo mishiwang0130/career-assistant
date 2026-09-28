@@ -24,7 +24,7 @@ public class AssistantMessageRespVO {
     private Long id;
 
     /**
-     * 会话 ID。
+     * 会话 ID，会话实体的主键值，以十进制字符串返回与请求参数保持一致。
      */
     private String sessionId;
 
@@ -52,7 +52,7 @@ public class AssistantMessageRespVO {
     public static AssistantMessageRespVO from(AssistantMessage message) {
         return new AssistantMessageRespVO(
                 message.getId(),
-                message.getSessionId(),
+                message.getSessionId() == null ? null : String.valueOf(message.getSessionId()),
                 message.getRole(),
                 message.getContent(),
                 message.getCreateTime());

@@ -68,10 +68,11 @@ CREATE TABLE IF NOT EXISTS `sys_refresh_token` (
   COMMENT = 'Refresh Token 记录表';
 
 -- 通用助手消息表：会话消息落库用于历史分页，Agent 会话状态本身保存在 Redis
+-- 会话ID 直接引用 chat_session.id（M16 起），不再由前端生成字符串 ID
 CREATE TABLE IF NOT EXISTS `assistant_message` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `user_id`     BIGINT       NOT NULL COMMENT '用户ID',
-    `session_id`  VARCHAR(64)  NOT NULL COMMENT '会话ID',
+    `session_id`  BIGINT       NOT NULL COMMENT '会话ID，关联 chat_session.id',
     `role`        VARCHAR(16)  NOT NULL COMMENT '角色：USER/ASSISTANT/SYSTEM',
     `content`     TEXT         NOT NULL COMMENT '消息内容',
     `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -111,3 +112,29 @@ CREATE TABLE IF NOT EXISTS `resume` (
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci
   COMMENT = '简历表';
+
+-- ===== M16 前端壳与会话中心 =====
+
+-- 会话元数据表：保存会话标题、场景与活跃时间，支撑左侧会话列表；Agent 会话状态仍保存在 Redis
+CREATE TABLE IF NOT EXISTS `chat_session` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID，即会话标识',
+    `user_id`         BIGINT       NOT NULL COMMENT '用户ID',
+    `scene`           VARCHAR(32)  NOT NULL COMMENT '会话场景：ASSISTANT/INTERVIEW/DIAGNOSIS/MATCH/TUTOR',
+    `title`           VARCHAR(100) NOT NULL COMMENT '会话标题',
+    `last_message_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '最近一条用户消息时间',
+    `status`          VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE' COMMENT '会话状态：ACTIVE-正常，预留归档',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`       BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`       BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`       TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    KEY `idx_chat_session_user_last` (`user_id`, `last_message_at`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '会话元数据表';
+
+-- M16 存量环境同步：会话 ID 由字符串改为 chat_session.id（历史消息数据已清空，不做数据迁移）
+-- 新建库无需执行：上面的建表语句已经使用 BIGINT，本语句重复执行结果一致
+ALTER TABLE `assistant_message` MODIFY COLUMN `session_id` BIGINT NOT NULL COMMENT '会话ID，关联 chat_session.id';

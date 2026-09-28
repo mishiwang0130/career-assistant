@@ -1,4 +1,4 @@
-import { del, get } from '@/api/request'
+import { get } from '@/api/request'
 import { postSse, type SseEventHandler } from '@/utils/sse'
 import type { AssistantChatReqVO, AssistantMessageRespVO, PageRespVO } from '@/types/assistant'
 
@@ -20,8 +20,10 @@ export function chat(
 /**
  * 分页查询历史消息。
  *
+ * 接口按消息 ID 倒序返回：第 1 页就是最新的若干条，前端反转后在消息区按「旧在上、新在下」展示。
+ *
  * @param sessionId 会话 ID
- * @param pageNum 页码
+ * @param pageNum 页码，从 1 开始
  * @param pageSize 每页条数
  */
 export function listMessages(
@@ -32,13 +34,4 @@ export function listMessages(
   return get<PageRespVO<AssistantMessageRespVO>>('/assistant/messages', {
     params: { sessionId, pageNum, pageSize },
   })
-}
-
-/**
- * 清空指定会话的历史消息与 Agent 上下文。
- *
- * @param sessionId 会话 ID
- */
-export function clearSession(sessionId: string): Promise<void> {
-  return del<void>('/assistant/session', { params: { sessionId } })
 }
