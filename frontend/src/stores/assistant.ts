@@ -86,18 +86,30 @@ export const useAssistantStore = defineStore('assistant', () => {
       failed: false,
     }
     messages.value.push(reply)
+    // 必须取回数组中的响应式代理再写入：直接改 push 进去的原始对象不会触发 Vue 更新，
+    // 会导致流式增量不渲染、界面上看不到任何结果。
+    const replyRef = messages.value[messages.value.length - 1]
     streaming.value = true
+    let terminated = false
     try {
-      await assistantApi.chat({ sessionId: sessionId.value, content: text }, (event, data) =>
-        applyEvent(reply, event, data),
-      )
+      await assistantApi.chat({ sessionId: sessionId.value, content: text }, (event, data) => {
+        if (event === 'done' || event === 'error') {
+          terminated = true
+        }
+        applyEvent(replyRef, event, data)
+      })
     } catch (error) {
-      reply.failed = true
+      replyRef.failed = true
       errorMessage.value = error instanceof Error ? error.message : '对话失败'
       throw error
     } finally {
-      reply.streaming = false
+      replyRef.streaming = false
       streaming.value = false
+      if (!terminated && !replyRef.failed) {
+        // 服务端没有给出 done / error 事件就断开，明确提示而不是让界面看起来"没有结果"。
+        replyRef.failed = true
+        errorMessage.value = '连接意外中断，请重试'
+      }
     }
   }
 

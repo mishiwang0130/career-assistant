@@ -23,7 +23,7 @@
       <p class="message-content">
         <span>{{ message.content }}</span>
         <span v-if="message.streaming" class="message-cursor">▍</span>
-        <span v-else-if="!message.content && message.failed" class="message-empty">（未生成内容）</span>
+        <span v-else-if="!message.content" class="message-empty">（未生成内容）</span>
       </p>
     </div>
   </div>
