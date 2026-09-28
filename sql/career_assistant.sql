@@ -138,3 +138,23 @@ CREATE TABLE IF NOT EXISTS `chat_session` (
 -- M16 存量环境同步：会话 ID 由字符串改为 chat_session.id（历史消息数据已清空，不做数据迁移）
 -- 新建库无需执行：上面的建表语句已经使用 BIGINT，本语句重复执行结果一致
 ALTER TABLE `assistant_message` MODIFY COLUMN `session_id` BIGINT NOT NULL COMMENT '会话ID，关联 chat_session.id';
+
+-- ===== F4 求职目标 =====
+
+-- 求职目标表：一人一份，user_id 唯一；供 F5 模拟面试出题与 F7 训练计划读取
+CREATE TABLE IF NOT EXISTS `user_profile` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`         BIGINT       NOT NULL COMMENT '用户ID，一人一份',
+    `target_position` VARCHAR(100) NOT NULL COMMENT '目标岗位',
+    `work_years`      INT          NOT NULL DEFAULT 0 COMMENT '当前工作年限（年），0表示应届或不足一年',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`       BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`       BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`       TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_profile_user_id` (`user_id`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '求职目标表';
