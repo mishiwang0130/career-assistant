@@ -122,7 +122,8 @@ async function handleSubmit(): Promise<void> {
       })
     }
     ElMessage.success(mode.value === 'login' ? '登录成功' : '注册成功')
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    // 登录/注册成功后默认直接进入通用助手对话页。
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/assistant'
     await router.replace(redirect)
   } catch {
     // 请求层已经展示错误信息。

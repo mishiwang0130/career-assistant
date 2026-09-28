@@ -5,7 +5,7 @@
         <div class="assistant-header">
           <div>
             <h1>通用助手</h1>
-            <p>会话 ID：{{ assistantStore.sessionId }}</p>
+            <p>流式对话 · Enter 发送，Shift + Enter 换行</p>
           </div>
           <div class="assistant-actions">
             <el-button :disabled="assistantStore.streaming" @click="handleNewSession">新会话</el-button>

@@ -46,9 +46,13 @@ export async function postSse(
     signal,
   })
 
-  // 只有真正的 SSE 响应才按流解析：其余情况（含 HTTP 200 的 Result 业务异常）都按进流前失败处理。
+  // 统一 Result 业务失败：HTTP 200 但响应体是 JSON 错误体（业务异常统一返回 HTTP 200）。
   const contentType = response.headers.get('content-type') ?? ''
-  if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
+  if (contentType.includes('application/json')) {
+    throw new SseRequestError(await readErrorMessage(response), response.status)
+  }
+  // 其余非 2xx 都是进流前失败；2xx 一律按 SSE 流解析，避免因响应头差异误判成失败。
+  if (!response.ok || !response.body) {
     throw new SseRequestError(await readErrorMessage(response), response.status)
   }
 
@@ -77,17 +81,37 @@ export async function postSse(
  */
 function dispatchFrames(buffer: string, onEvent: SseEventHandler): string {
   let rest = buffer
-  let boundary = rest.indexOf('\n\n')
-  while (boundary >= 0) {
-    const frame = rest.slice(0, boundary)
-    rest = rest.slice(boundary + 2)
+  let boundary = findFrameBoundary(rest)
+  while (boundary) {
+    const frame = rest.slice(0, boundary.index)
+    rest = rest.slice(boundary.index + boundary.length)
     const message = parseFrame(frame)
     if (message) {
       onEvent(message.event, message.data)
     }
-    boundary = rest.indexOf('\n\n')
+    boundary = findFrameBoundary(rest)
   }
   return rest
+}
+
+/**
+ * 查找下一个帧边界。
+ *
+ * SSE 规范允许 \n、\r\n、\r 三种换行，这里同时兼容 \n\n 与 \r\n\r\n。
+ *
+ * @param buffer 已接收内容
+ * @returns 边界位置与长度，未找到时返回 null
+ */
+function findFrameBoundary(buffer: string): { index: number; length: number } | null {
+  const lineFeed = buffer.indexOf('\n\n')
+  const carriageReturnLineFeed = buffer.indexOf('\r\n\r\n')
+  if (lineFeed < 0 && carriageReturnLineFeed < 0) {
+    return null
+  }
+  if (carriageReturnLineFeed >= 0 && (lineFeed < 0 || carriageReturnLineFeed < lineFeed)) {
+    return { index: carriageReturnLineFeed, length: 4 }
+  }
+  return { index: lineFeed, length: 2 }
 }
 
 /**

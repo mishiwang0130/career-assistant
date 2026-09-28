@@ -39,7 +39,8 @@ router.beforeEach(async (to) => {
 
   if (!requiresAuth) {
     if (to.path === '/login' && userStore.isLoggedIn) {
-      return '/'
+      // 已登录用户访问登录页时直接进入通用助手。
+      return '/assistant'
     }
     return true
   }
