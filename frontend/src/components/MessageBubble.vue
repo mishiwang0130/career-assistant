@@ -1,25 +1,7 @@
 <template>
   <div class="message-row" :class="isUser ? 'message-row--user' : 'message-row--assistant'">
     <div class="message-bubble">
-      <!-- 思考增量：模型支持思考时展示，采用弱化样式避免干扰正文 -->
-      <div v-if="message.thinking" class="message-thinking">
-        <span class="message-thinking__label">思考</span>
-        <span class="message-thinking__text">{{ message.thinking }}</span>
-      </div>
-
-      <!-- 工具调用提示：START 为进行中，END 为已完成 -->
-      <div v-if="message.tools.length" class="message-tools">
-        <el-tag
-          v-for="(tool, index) in message.tools"
-          :key="`${tool.name}-${index}`"
-          size="small"
-          effect="plain"
-          :type="tool.status === 'END' ? 'success' : 'warning'"
-        >
-          {{ tool.status === 'END' ? `工具 ${tool.name} 已完成` : `正在调用工具 ${tool.name}` }}
-        </el-tag>
-      </div>
-
+      <!-- 只展示正文：工具调用与思考过程属于内部实现细节，不向终端用户暴露 -->
       <p class="message-content">
         <span>{{ message.content }}</span>
         <span v-if="message.streaming" class="message-cursor">▍</span>
@@ -68,27 +50,6 @@ const isUser = computed(() => props.message.role === 'USER')
 
 .message-row--user .message-bubble {
   background: #ecf5ff;
-}
-
-.message-thinking {
-  margin-bottom: 8px;
-  padding: 8px 10px;
-  border-left: 3px solid #dcdfe6;
-  color: #909399;
-  font-size: 13px;
-  white-space: pre-wrap;
-}
-
-.message-thinking__label {
-  margin-right: 6px;
-  font-weight: 600;
-}
-
-.message-tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
 }
 
 .message-content {
