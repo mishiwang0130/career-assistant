@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.common.auth.LoginUserHolder;
 import com.wxy.career.common.enums.MessageRoleEnum;
 import com.wxy.career.common.exception.BizException;
+import com.wxy.career.common.redis.RedisUtil;
 import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.common.sse.SseEmitterSupport;
 import com.wxy.career.common.sse.SseEvent;
@@ -12,6 +13,7 @@ import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.AssistantService;
 import com.wxy.career.util.AgentEventMapper;
+import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.PageRespVO;
@@ -33,6 +35,7 @@ import reactor.core.Disposable;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -65,6 +68,13 @@ public class AssistantServiceImpl implements AssistantService {
     private static final String STREAM_ERROR_MESSAGE = "对话服务暂时不可用，请稍后重试";
 
     /**
+     * 会话锁租约在流超时时间之上的冗余，单位为秒。
+     *
+     * <p>流在异常路径下可能走不到释放逻辑，留出冗余保证锁最终一定自动过期。
+     */
+    private static final long SESSION_LOCK_LEASE_EXTRA_SECONDS = 60L;
+
+    /**
      * Agent 工厂。
      */
     @Resource
@@ -95,6 +105,12 @@ public class AssistantServiceImpl implements AssistantService {
     private ThreadPoolTaskScheduler sseTaskScheduler;
 
     /**
+     * Redis 操作工具，用于会话并发锁。
+     */
+    @Resource
+    private RedisUtil redisUtil;
+
+    /**
      * 发送一条消息并流式返回 Agent 回复。
      *
      * @param reqVO 对话请求
@@ -106,35 +122,45 @@ public class AssistantServiceImpl implements AssistantService {
         Long userId = currentUserId();
         String sessionId = reqVO.getSessionId().trim();
         String content = reqVO.getContent().trim();
-        // 用户消息先落库，保证即使流式中断历史记录也完整。
-        assistantMessageService.saveMessage(userId, sessionId, MessageRoleEnum.USER, content);
 
-        SseEmitterSupport support = new SseEmitterSupport(
-                objectMapper, sseTaskScheduler, agentProperties.getStreamTimeoutSeconds());
-        support.sendMeta(
-                SCENE_ASSISTANT, sessionId, agentProperties.getProvider(), UUID.randomUUID().toString());
+        // 同一会话必须串行：并发请求会交错读写同一份 Agent 状态，抢不到锁直接拒绝而不是排队等待。
+        String lockKey = AgentScopeStateKeyUtil.sessionLockKey(String.valueOf(userId), sessionId);
+        String lockToken = acquireSessionLock(lockKey);
+        try {
+            // 用户消息先落库，保证即使流式中断历史记录也完整。
+            assistantMessageService.saveMessage(userId, sessionId, MessageRoleEnum.USER, content);
 
-        StreamState state = new StreamState(support, userId, sessionId);
-        ReActAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
-        RuntimeContext runtimeContext = RuntimeContext.builder()
-                .userId(String.valueOf(userId))
-                .sessionId(sessionId)
-                .build();
-        Msg userMessage = Msg.builder()
-                .name(USER_MESSAGE_NAME)
-                .role(MsgRole.USER)
-                .textContent(content)
-                .build();
+            SseEmitterSupport support = new SseEmitterSupport(
+                    objectMapper, sseTaskScheduler, agentProperties.getStreamTimeoutSeconds());
+            support.sendMeta(
+                    SCENE_ASSISTANT, sessionId, agentProperties.getProvider(), UUID.randomUUID().toString());
 
-        // 流式推理是阻塞型 IO，放到弹性线程池执行，避免占用 MVC 请求线程。
-        Disposable subscription = agent.streamEvents(userMessage, runtimeContext)
-                .subscribeOn(Schedulers.boundedElastic())
-                .subscribe(
-                        event -> onNext(state, event),
-                        error -> onError(state, error),
-                        () -> onComplete(state));
-        state.subscription.set(subscription);
-        return support.getEmitter();
+            StreamState state = new StreamState(support, userId, sessionId, lockKey, lockToken);
+            ReActAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
+            RuntimeContext runtimeContext = RuntimeContext.builder()
+                    .userId(String.valueOf(userId))
+                    .sessionId(sessionId)
+                    .build();
+            Msg userMessage = Msg.builder()
+                    .name(USER_MESSAGE_NAME)
+                    .role(MsgRole.USER)
+                    .textContent(content)
+                    .build();
+
+            // 流式推理是阻塞型 IO，放到弹性线程池执行，避免占用 MVC 请求线程。
+            Disposable subscription = agent.streamEvents(userMessage, runtimeContext)
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .subscribe(
+                            event -> onNext(state, event),
+                            error -> onError(state, error),
+                            () -> onComplete(state));
+            state.subscription.set(subscription);
+            return support.getEmitter();
+        } catch (RuntimeException exception) {
+            // 启动阶段失败时必须立刻释放，否则该会话会被锁到租约结束。
+            releaseSessionLock(lockKey, lockToken);
+            throw exception;
+        }
     }
 
     /**
@@ -224,6 +250,7 @@ public class AssistantServiceImpl implements AssistantService {
         }
         saveAssistantMessage(state);
         dispose(state);
+        releaseSessionLock(state.lockKey, state.lockToken);
         if (!sendTerminalEvent) {
             return;
         }
@@ -328,6 +355,47 @@ public class AssistantServiceImpl implements AssistantService {
     }
 
     /**
+     * 获取会话并发锁。
+     *
+     * <p>锁在请求线程获取、在流式线程释放，线程绑定的分布式锁无法跨线程解锁，
+     * 因此用「setIfAbsent + 持有者令牌」实现与线程无关的互斥锁，租约到期后自动释放。
+     *
+     * @param lockKey 锁键
+     * @return 本次持有的随机令牌
+     */
+    private String acquireSessionLock(String lockKey) {
+        String lockToken = UUID.randomUUID().toString();
+        long leaseSeconds = agentProperties.getStreamTimeoutSeconds() + SESSION_LOCK_LEASE_EXTRA_SECONDS;
+        Boolean acquired = redisUtil.setIfAbsent(lockKey, lockToken, leaseSeconds, TimeUnit.SECONDS);
+        if (!Boolean.TRUE.equals(acquired)) {
+            throw new BizException(ErrorConstant.SESSION_BUSY, HttpStatus.TOO_MANY_REQUESTS);
+        }
+        return lockToken;
+    }
+
+    /**
+     * 释放会话并发锁。
+     *
+     * <p>只有令牌仍然匹配才删除，避免租约到期后误删其它请求刚拿到的锁；
+     * 释放失败由租约到期兜底，不影响主流程。
+     *
+     * @param lockKey 锁键
+     * @param lockToken 本次持有的随机令牌
+     */
+    private void releaseSessionLock(String lockKey, String lockToken) {
+        if (lockKey == null || lockToken == null) {
+            return;
+        }
+        try {
+            if (lockToken.equals(redisUtil.get(lockKey, String.class))) {
+                redisUtil.delete(lockKey);
+            }
+        } catch (Exception exception) {
+            log.warn("释放会话并发锁失败，将由租约到期后自动释放，lockKey={}", lockKey, exception);
+        }
+    }
+
+    /**
      * 单次流式对话的状态。
      *
      * @author wxy
@@ -351,6 +419,16 @@ public class AssistantServiceImpl implements AssistantService {
         private final String sessionId;
 
         /**
+         * 会话并发锁键。
+         */
+        private final String lockKey;
+
+        /**
+         * 会话并发锁持有者令牌。
+         */
+        private final String lockToken;
+
+        /**
          * 已生成的回复文本。
          */
         private final StringBuilder reply = new StringBuilder();
@@ -371,11 +449,16 @@ public class AssistantServiceImpl implements AssistantService {
          * @param support SSE 推送封装
          * @param userId 用户 ID
          * @param sessionId 会话 ID
+         * @param lockKey 会话并发锁键
+         * @param lockToken 会话并发锁持有者令牌
          */
-        private StreamState(SseEmitterSupport support, Long userId, String sessionId) {
+        private StreamState(
+                SseEmitterSupport support, Long userId, String sessionId, String lockKey, String lockToken) {
             this.support = support;
             this.userId = userId;
             this.sessionId = sessionId;
+            this.lockKey = lockKey;
+            this.lockToken = lockToken;
         }
     }
 }

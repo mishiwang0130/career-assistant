@@ -36,6 +36,19 @@ public final class AgentScopeStateKeyUtil {
     private static final String KEYS_SUFFIX = ":_keys";
 
     /**
+     * TTL 续期节流键前缀。
+     *
+     * <p>该前缀刻意不以「用户 ID + 斜杠」开头，保证不会被槽位扫描模式命中，
+     * 否则节流键本身会被续期成会话 TTL，节流随之失效。
+     */
+    private static final String TTL_RENEW_PREFIX = "ttl-renew:";
+
+    /**
+     * 会话并发锁键前缀。
+     */
+    private static final String SESSION_LOCK_PREFIX = "lock:";
+
+    /**
      * 工具类禁止实例化。
      */
     private AgentScopeStateKeyUtil() {
@@ -60,5 +73,27 @@ public final class AgentScopeStateKeyUtil {
      */
     public static String userKeysKey(String userId) {
         return KEY_PREFIX + userId + KEYS_SUFFIX;
+    }
+
+    /**
+     * 构建某个用户某个会话的 TTL 续期节流键。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @return 节流键
+     */
+    public static String ttlRenewKey(String userId, String sessionId) {
+        return KEY_PREFIX + TTL_RENEW_PREFIX + userId + SLOT_SEPARATOR + sessionId;
+    }
+
+    /**
+     * 构建某个用户某个会话的并发锁键。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @return 并发锁键
+     */
+    public static String sessionLockKey(String userId, String sessionId) {
+        return KEY_PREFIX + SESSION_LOCK_PREFIX + userId + SLOT_SEPARATOR + sessionId;
     }
 }

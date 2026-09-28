@@ -7,6 +7,7 @@ import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.PageRespVO;
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Pattern;
 import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -59,6 +60,8 @@ public class AssistantController {
      */
     @GetMapping("/messages")
     public Result<PageRespVO<AssistantMessageRespVO>> messages(
+            @Pattern(regexp = AssistantChatReqVO.SESSION_ID_REGEXP,
+                    message = AssistantChatReqVO.SESSION_ID_PATTERN_MESSAGE)
             @RequestParam String sessionId,
             @RequestParam(defaultValue = "1") long pageNum,
             @RequestParam(defaultValue = "20") long pageSize) {
@@ -72,7 +75,10 @@ public class AssistantController {
      * @return 成功响应
      */
     @DeleteMapping("/session")
-    public Result<Void> clearSession(@RequestParam String sessionId) {
+    public Result<Void> clearSession(
+            @Pattern(regexp = AssistantChatReqVO.SESSION_ID_REGEXP,
+                    message = AssistantChatReqVO.SESSION_ID_PATTERN_MESSAGE)
+            @RequestParam String sessionId) {
         assistantService.clearSession(sessionId);
         return Result.success();
     }

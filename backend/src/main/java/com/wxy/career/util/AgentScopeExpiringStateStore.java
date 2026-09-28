@@ -39,6 +39,19 @@ public class AgentScopeExpiringStateStore implements AgentStateStore {
     private final long ttlHours;
 
     /**
+     * TTL 续期节流窗口，单位为秒。
+     *
+     * <p>续期需要按槽位前缀 SCAN 键空间，属于 O(键空间) 的操作；同一槽位在窗口内只续期一次，
+     * 把每轮对话的扫描次数从「每次状态写入」降到「每窗口一次」。
+     */
+    private static final long RENEW_THROTTLE_SECONDS = 60L;
+
+    /**
+     * 节流占位值。
+     */
+    private static final String THROTTLE_VALUE = "1";
+
+    /**
      * 构造带过期时间的会话状态存储。
      *
      * @param delegate 被装饰的会话状态存储
@@ -217,7 +230,23 @@ public class AgentScopeExpiringStateStore implements AgentStateStore {
      */
     private void renewTtl(String userId, String sessionId) {
         try {
+            // 节流键写入失败（已存在）说明窗口内已经续期过，直接跳过本次键空间扫描。
+            Boolean acquired = redisUtil.setIfAbsent(
+                    AgentScopeStateKeyUtil.ttlRenewKey(userId, sessionId),
+                    THROTTLE_VALUE,
+                    RENEW_THROTTLE_SECONDS,
+                    TimeUnit.SECONDS);
+            if (!Boolean.TRUE.equals(acquired)) {
+                return;
+            }
             Set<String> keys = redisUtil.scanKeys(AgentScopeStateKeyUtil.slotKeyPattern(userId, sessionId));
+            if (keys.isEmpty()) {
+                // 写入成功却扫不到键，说明 AgentScope 内部键格式与 AgentScopeStateKeyUtil 的假设已不一致，
+                // 此时 TTL 不会生效、会话状态将永不清理，必须留下告警而不是静默跳过。
+                log.warn("未匹配到 Agent 会话状态键，AgentScope 键格式假设可能已失效，userId={}，sessionId={}，pattern={}",
+                        userId, sessionId, AgentScopeStateKeyUtil.slotKeyPattern(userId, sessionId));
+                return;
+            }
             for (String key : keys) {
                 redisUtil.expire(key, ttlHours, TimeUnit.HOURS);
             }

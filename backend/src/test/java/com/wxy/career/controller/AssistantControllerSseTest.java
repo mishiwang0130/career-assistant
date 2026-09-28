@@ -92,6 +92,11 @@ class AssistantControllerSseTest {
     private JwtService jwtService;
 
     /**
+     * Redis 操作工具 mock，用于会话并发锁与埋点。
+     */
+    private RedisUtil redisUtil;
+
+    /**
      * 初始化 MockMvc、Agent 装配与拦截器。
      */
     @BeforeEach
@@ -110,8 +115,11 @@ class AssistantControllerSseTest {
         SystemPromptMiddleware systemPromptMiddleware = new SystemPromptMiddleware();
         ReflectionTestUtils.setField(systemPromptMiddleware, "systemPromptProvider", systemPromptProvider);
 
-        RedisUtil redisUtil = mock(RedisUtil.class);
+        redisUtil = mock(RedisUtil.class);
         when(redisUtil.getHash(anyString(), anyString(), eq(Long.class))).thenReturn(null);
+        // 默认会话锁可获取，并发拒绝场景在用例内重新打桩。
+        when(redisUtil.setIfAbsent(anyString(), ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.any()))
+                .thenReturn(true);
         MetricsMiddleware metricsMiddleware = new MetricsMiddleware();
         ReflectionTestUtils.setField(metricsMiddleware, "redisUtil", redisUtil);
 
@@ -137,6 +145,7 @@ class AssistantControllerSseTest {
         ReflectionTestUtils.setField(assistantService, "assistantMessageService", assistantMessageService);
         ReflectionTestUtils.setField(assistantService, "objectMapper", objectMapper);
         ReflectionTestUtils.setField(assistantService, "sseTaskScheduler", scheduler);
+        ReflectionTestUtils.setField(assistantService, "redisUtil", redisUtil);
 
         AssistantController assistantController = new AssistantController();
         ReflectionTestUtils.setField(assistantController, "assistantService", assistantService);
@@ -211,6 +220,42 @@ class AssistantControllerSseTest {
                         .content("{\"sessionId\":\"session-1\",\"content\":\"\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
+    }
+
+    /**
+     * 验证会话 ID 含通配符时被参数校验拦截。
+     *
+     * <p>会话 ID 会参与 Redis key 拼接与 SCAN 模式匹配，必须限制字符集。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldRejectSessionIdWithWildcard() throws Exception {
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sessionId\":\"*\",\"content\":\"你好\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    /**
+     * 验证同一会话并发请求被拒绝，避免两份上下文交错写入。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldRejectConcurrentRequestOnSameSession() throws Exception {
+        when(redisUtil.setIfAbsent(
+                anyString(), ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.any()))
+                .thenReturn(false);
+
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sessionId\":\"session-1\",\"content\":\"你好\"}"))
+                .andExpect(status().is(429))
+                .andExpect(jsonPath("$.code").value(1050));
     }
 
     /**
