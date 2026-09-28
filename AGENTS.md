@@ -69,6 +69,15 @@ public Long createUser(UserCreateReqVO reqVO) {
 - 单条查询不需要事务；需要一致性的多次查询可加 `@Transactional(readOnly = true)`。
 - 未在本文件明确写到的开发细节，一律参照《阿里巴巴Java开发手册》执行，例如禁止魔法值、避免 `Executors` 创建线程池、`equals` 用常量或确定非空对象调用、POJO 布尔字段不加 `is` 前缀等。
 
+## 接口响应与异常约定
+
+- 所有接口统一返回 `Result<T>`，字段固定为 `code`、`msg`、`data`。
+- 成功和业务异常（`BizException`）统一返回 HTTP 200，失败语义全部由自定义 `code` 表达；禁止用 HTTP 400、403 等状态表示业务失败。
+- 只有鉴权失败返回 HTTP 401：未登录、Access Token 失效、Refresh Token 失效，前端据此自动刷新 token 或跳转登录页。
+- 参数校验失败返回 400，路由资源不存在返回 404，未捕获的系统异常返回 500。
+- 业务错误统一通过 `throw new BizException(ErrorConstant.XXX)` 抛出，错误码只在 `ErrorConstant` 中新增，Controller 不得拼装错误响应。
+- 完整接口约定以 `docs/技术约定.md` 为准，新增或修改接口时必须同步更新该文档。
+
 ## 前端规范
 
 - 目录：`src/api/` 接口请求、`src/views/` 页面、`src/components/` 通用组件、`src/stores/` Pinia 状态、`src/router/` 路由、`src/utils/` 工具函数、`src/types/` 类型定义。

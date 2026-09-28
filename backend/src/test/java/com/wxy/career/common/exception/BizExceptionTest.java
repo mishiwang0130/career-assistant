@@ -17,15 +17,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BizExceptionTest {
 
     /**
-     * 验证默认 HTTP 状态。
+     * 验证业务异常默认返回 HTTP 200。
      */
     @Test
-    void shouldUseBadRequestAsDefaultStatus() {
+    void shouldUseOkAsDefaultStatus() {
         BizException exception = new BizException(ErrorConstant.USERNAME_ALREADY_EXISTS);
 
         assertThat(exception.getErrorCode().getCode()).isEqualTo(1001);
         assertThat(exception.getErrorCode().getMsg()).isEqualTo("用户名已存在");
-        assertThat(exception.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(exception.getHttpStatus()).isEqualTo(HttpStatus.OK);
     }
 
     /**
@@ -44,5 +44,21 @@ class BizExceptionTest {
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().getCode()).isEqualTo(1002);
         assertThat(response.getBody().getMsg()).isEqualTo("用户名或密码错误");
+    }
+
+    /**
+     * 验证默认业务异常经全局异常处理器后返回 HTTP 200。
+     */
+    @Test
+    void shouldReturnOkForDefaultBizException() {
+        BizException exception = new BizException(ErrorConstant.USERNAME_ALREADY_EXISTS);
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+        ResponseEntity<Result<Void>> response = handler.handleBizException(exception);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getCode()).isEqualTo(1001);
+        assertThat(response.getBody().getMsg()).isEqualTo("用户名已存在");
     }
 }

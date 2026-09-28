@@ -70,7 +70,7 @@ class AuthServiceImplTest {
                 .satisfies(exception -> {
                     BizException bizException = (BizException) exception;
                     assertThat(bizException.getErrorCode().getCode()).isEqualTo(1001);
-                    assertThat(bizException.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(bizException.getHttpStatus()).isEqualTo(HttpStatus.OK);
                 });
         verify(sysUserMapper, never()).insert(any(SysUser.class));
     }
@@ -90,7 +90,7 @@ class AuthServiceImplTest {
                 .satisfies(exception -> {
                     BizException bizException = (BizException) exception;
                     assertThat(bizException.getErrorCode().getCode()).isEqualTo(1002);
-                    assertThat(bizException.getHttpStatus()).isEqualTo(HttpStatus.UNAUTHORIZED);
+                    assertThat(bizException.getHttpStatus()).isEqualTo(HttpStatus.OK);
                 });
     }
 
@@ -109,7 +109,7 @@ class AuthServiceImplTest {
                 .satisfies(exception -> {
                     BizException bizException = (BizException) exception;
                     assertThat(bizException.getErrorCode().getCode()).isEqualTo(1003);
-                    assertThat(bizException.getHttpStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(bizException.getHttpStatus()).isEqualTo(HttpStatus.OK);
                 });
     }
 

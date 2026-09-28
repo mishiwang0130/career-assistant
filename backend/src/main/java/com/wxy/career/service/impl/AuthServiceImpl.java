@@ -93,10 +93,10 @@ public class AuthServiceImpl implements AuthService {
         SysUser user = findByUsername(reqVO.getUsername().trim());
         // 用户不存在与密码错误使用同一错误码，避免暴露账号是否存在。
         if (user == null || !passwordEncoder.matches(reqVO.getPassword(), user.getPassword())) {
-            throw new BizException(ErrorConstant.USERNAME_OR_PASSWORD_ERROR, HttpStatus.UNAUTHORIZED);
+            throw new BizException(ErrorConstant.USERNAME_OR_PASSWORD_ERROR);
         }
         if (user.getStatus() == null || user.getStatus() == SysUser.STATUS_DISABLED) {
-            throw new BizException(ErrorConstant.ACCOUNT_DISABLED, HttpStatus.FORBIDDEN);
+            throw new BizException(ErrorConstant.ACCOUNT_DISABLED);
         }
         return buildAuthResp(user, tokenService.issueTokens(user));
     }

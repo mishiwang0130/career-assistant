@@ -22,12 +22,15 @@ public class BizException extends RuntimeException {
     private final HttpStatus httpStatus;
 
     /**
-     * 创建默认 HTTP 400 的业务异常。
+     * 创建默认 HTTP 200 的业务异常。
+     *
+     * <p>业务异常统一返回 HTTP 200，错误语义由 {@link ErrorCode} 的 code 表达；
+     * 只有需要前端按登录态失效处理的场景才显式指定 HTTP 401。
      *
      * @param errorCode 业务错误码
      */
     public BizException(ErrorCode errorCode) {
-        this(errorCode, HttpStatus.BAD_REQUEST);
+        this(errorCode, HttpStatus.OK);
     }
 
     /**
