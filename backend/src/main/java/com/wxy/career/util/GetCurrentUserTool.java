@@ -34,7 +34,7 @@ public class GetCurrentUserTool extends ToolBase {
     /**
      * 工具说明，供模型理解调用时机。
      */
-    private static final String TOOL_DESCRIPTION = "查询当前登录用户的基本信息（用户 ID 与昵称），无入参";
+    private static final String TOOL_DESCRIPTION = "查询当前登录用户的基本信息，不得编造";
 
     /**
      * 空入参 JSON Schema。

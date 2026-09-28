@@ -16,8 +16,9 @@ app:
     secret: career-assistant-local-secret-change-me
   storage:
     minio:
-      endpoint: http://localhost:9000
-      access-key: ${MINIO_ACCESS_KEY:}
-      secret-key: ${MINIO_SECRET_KEY:}
-      bucket: career-assistant
       secure: false
+      endpoint: http://192.168.205.128:9000
+      access-key: ${MINIO_ACCESS_KEY:minio}
+      secret-key: ${MINIO_SECRET_KEY:minio123}
+      bucket: career
+
