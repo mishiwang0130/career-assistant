@@ -8,6 +8,9 @@ const USER_KEY = 'career_user'
 // 历史上由前端自造并持久化的会话 ID key。M16 起会话 ID 由后端生成，登录态清理时顺手删除该残留。
 const LEGACY_ASSISTANT_SESSION_KEY = 'career_assistant_session'
 
+// 本次登录是否已提示过求职目标未填写。写在 sessionStorage：登录成功时清除，关闭标签页自然失效。
+const PROFILE_PROMPTED_KEY = 'career_profile_prompted'
+
 /**
  * 获取 Access Token。
  */
@@ -61,4 +64,26 @@ export function clearAuthStorage(): void {
   window.localStorage.removeItem(REFRESH_TOKEN_KEY)
   window.localStorage.removeItem(USER_KEY)
   window.localStorage.removeItem(LEGACY_ASSISTANT_SESSION_KEY)
+  clearProfilePrompted()
+}
+
+/**
+ * 本次登录是否已经提示过求职目标未填写。
+ */
+export function getProfilePrompted(): boolean {
+  return window.sessionStorage.getItem(PROFILE_PROMPTED_KEY) === '1'
+}
+
+/**
+ * 标记本次登录已经提示过，保证同一个登录会话内最多弹一次提醒窗。
+ */
+export function setProfilePrompted(): void {
+  window.sessionStorage.setItem(PROFILE_PROMPTED_KEY, '1')
+}
+
+/**
+ * 清除提醒标记：登录成功与档案填写完成后都要调用，保证下次登录还会提醒。
+ */
+export function clearProfilePrompted(): void {
+  window.sessionStorage.removeItem(PROFILE_PROMPTED_KEY)
 }

@@ -10,6 +10,7 @@ import type {
 } from '@/types/auth'
 import {
   clearAuthStorage,
+  clearProfilePrompted,
   getAccessToken,
   getRefreshToken,
   getStoredUser,
@@ -40,6 +41,8 @@ export const useUserStore = defineStore('user', () => {
    */
   async function login(reqVO: UserLoginReqVO): Promise<void> {
     persistAuth(await authApi.login(reqVO))
+    // 每次登录都要重新提示一次求职目标未填写，因此登录成功后清掉上一次登录的标记。
+    clearProfilePrompted()
   }
 
   /**
@@ -47,6 +50,7 @@ export const useUserStore = defineStore('user', () => {
    */
   async function register(reqVO: UserRegisterReqVO): Promise<void> {
     persistAuth(await authApi.register(reqVO))
+    clearProfilePrompted()
   }
 
   /**
