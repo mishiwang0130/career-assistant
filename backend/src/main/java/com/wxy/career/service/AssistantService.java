@@ -30,11 +30,4 @@ public interface AssistantService {
      * @return 分页消息
      */
     PageRespVO<AssistantMessageRespVO> listMessages(String sessionId, long pageNum, long pageSize);
-
-    /**
-     * 清空当前用户指定会话的历史消息与 Agent 上下文。
-     *
-     * @param sessionId 会话 ID
-     */
-    void clearSession(String sessionId);
 }

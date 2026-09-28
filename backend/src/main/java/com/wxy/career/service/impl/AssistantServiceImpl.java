@@ -12,6 +12,7 @@ import com.wxy.career.config.AgentProperties;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.AssistantService;
+import com.wxy.career.service.ChatSessionService;
 import com.wxy.career.util.AgentEventMapper;
 import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.vo.AssistantChatReqVO;
@@ -92,6 +93,12 @@ public class AssistantServiceImpl implements AssistantService {
     private AssistantMessageService assistantMessageService;
 
     /**
+     * 会话中心服务，用于回写标题、活跃时间以及校验会话归属。
+     */
+    @Resource
+    private ChatSessionService chatSessionService;
+
+    /**
      * JSON 序列化组件。
      */
     @Resource
@@ -120,6 +127,7 @@ public class AssistantServiceImpl implements AssistantService {
         // 用户身份只取登录态，绝不接受前端传入的 userId，避免越权访问他人会话。
         Long userId = currentUserId();
         String sessionId = reqVO.getSessionId().trim();
+        Long sessionIdValue = parseSessionId(sessionId);
         String content = reqVO.getContent().trim();
 
         // 同一会话必须串行：并发请求会交错读写同一份 Agent 状态，抢不到锁直接拒绝而不是排队等待。
@@ -127,14 +135,16 @@ public class AssistantServiceImpl implements AssistantService {
         String lockToken = acquireSessionLock(lockKey);
         try {
             // 用户消息先落库，保证即使流式中断历史记录也完整。
-            assistantMessageService.saveMessage(userId, sessionId, MessageRoleEnum.USER, content);
+            assistantMessageService.saveMessage(userId, sessionIdValue, MessageRoleEnum.USER, content);
+            // 消息落库后回写会话标题与活跃时间；会话元数据缺失时该方法只记日志，不会影响对话。
+            chatSessionService.recordUserMessage(userId, sessionId, content);
 
             SseEmitterSupport support = new SseEmitterSupport(
                     objectMapper, sseTaskScheduler, agentProperties.getStreamTimeoutSeconds());
             support.sendMeta(
                     SCENE_ASSISTANT, sessionId, agentProperties.getProvider(), UUID.randomUUID().toString());
 
-            StreamState state = new StreamState(support, userId, sessionId, lockKey, lockToken);
+            StreamState state = new StreamState(support, userId, sessionId, sessionIdValue, lockKey, lockToken);
         HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
             RuntimeContext runtimeContext = RuntimeContext.builder()
                     .userId(String.valueOf(userId))
@@ -173,21 +183,11 @@ public class AssistantServiceImpl implements AssistantService {
     @Override
     public PageRespVO<AssistantMessageRespVO> listMessages(String sessionId, long pageNum, long pageSize) {
         Long userId = currentUserId();
-        return assistantMessageService.listMessages(userId, requireSessionId(sessionId), pageNum, pageSize);
-    }
-
-    /**
-     * 清空当前用户指定会话的历史消息与 Agent 上下文。
-     *
-     * @param sessionId 会话 ID
-     */
-    @Override
-    public void clearSession(String sessionId) {
-        Long userId = currentUserId();
         String normalizedSessionId = requireSessionId(sessionId);
-        assistantMessageService.clearSession(userId, normalizedSessionId);
-        // 只清消息表不够：Agent 仍会记得上下文，必须同时清理会话状态。
-        agentFactory.clearSession(userId, normalizedSessionId);
+        // 会话不存在、已删除或跨账号时统一抛「会话不存在」，前端据此回到新建会话草稿态。
+        chatSessionService.requireOwnedSession(userId, normalizedSessionId);
+        return assistantMessageService.listMessages(
+                userId, parseSessionId(normalizedSessionId), pageNum, pageSize);
     }
 
     /**
@@ -291,7 +291,7 @@ public class AssistantServiceImpl implements AssistantService {
         }
         try {
             assistantMessageService.saveMessage(
-                    state.userId, state.sessionId, MessageRoleEnum.ASSISTANT, state.reply.toString());
+                    state.userId, state.sessionIdValue, MessageRoleEnum.ASSISTANT, state.reply.toString());
         } catch (Exception exception) {
             // 落库失败不能影响已经推送给用户的内容。
             log.error("助手回复落库失败，userId={}，sessionId={}", state.userId, state.sessionId, exception);
@@ -352,6 +352,22 @@ public class AssistantServiceImpl implements AssistantService {
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
         return sessionId.trim();
+    }
+
+    /**
+     * 解析会话 ID。
+     *
+     * <p>会话 ID 已被参数校验限制为纯数字，这里再兜底一次，避免内部调用绕过校验后把异常抛到流里。
+     *
+     * @param sessionId 会话 ID 字符串
+     * @return 会话 ID
+     */
+    private Long parseSessionId(String sessionId) {
+        try {
+            return Long.valueOf(sessionId);
+        } catch (NumberFormatException exception) {
+            throw new BizException(ErrorConstant.PARAM_ERROR);
+        }
     }
 
     /**
@@ -420,6 +436,11 @@ public class AssistantServiceImpl implements AssistantService {
         private final String sessionId;
 
         /**
+         * 会话 ID 的数值形式，用于消息表读写。
+         */
+        private final Long sessionIdValue;
+
+        /**
          * 会话并发锁键。
          */
         private final String lockKey;
@@ -450,14 +471,21 @@ public class AssistantServiceImpl implements AssistantService {
          * @param support SSE 推送封装
          * @param userId 用户 ID
          * @param sessionId 会话 ID
+         * @param sessionIdValue 会话 ID 的数值形式
          * @param lockKey 会话并发锁键
          * @param lockToken 会话并发锁持有者令牌
          */
         private StreamState(
-                SseEmitterSupport support, Long userId, String sessionId, String lockKey, String lockToken) {
+                SseEmitterSupport support,
+                Long userId,
+                String sessionId,
+                Long sessionIdValue,
+                String lockKey,
+                String lockToken) {
             this.support = support;
             this.userId = userId;
             this.sessionId = sessionId;
+            this.sessionIdValue = sessionIdValue;
             this.lockKey = lockKey;
             this.lockToken = lockToken;
         }

@@ -10,7 +10,6 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -66,20 +65,5 @@ public class AssistantController {
             @RequestParam(defaultValue = "1") long pageNum,
             @RequestParam(defaultValue = "20") long pageSize) {
         return Result.success(assistantService.listMessages(sessionId, pageNum, pageSize));
-    }
-
-    /**
-     * 清空当前会话历史与 Agent 上下文。
-     *
-     * @param sessionId 会话 ID
-     * @return 成功响应
-     */
-    @DeleteMapping("/session")
-    public Result<Void> clearSession(
-            @Pattern(regexp = AssistantChatReqVO.SESSION_ID_REGEXP,
-                    message = AssistantChatReqVO.SESSION_ID_PATTERN_MESSAGE)
-            @RequestParam String sessionId) {
-        assistantService.clearSession(sessionId);
-        return Result.success();
     }
 }

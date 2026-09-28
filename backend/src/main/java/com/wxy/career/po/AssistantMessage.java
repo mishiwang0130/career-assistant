@@ -30,9 +30,9 @@ public class AssistantMessage extends BasePO {
     private Long userId;
 
     /**
-     * 会话 ID，对应 assistant_message.session_id，由前端生成并保证同一用户内唯一。
+     * 会话 ID，对应 assistant_message.session_id，取值是 chat_session.id。
      */
-    private String sessionId;
+    private Long sessionId;
 
     /**
      * 消息角色，对应 assistant_message.role，取值 USER / ASSISTANT / SYSTEM。
