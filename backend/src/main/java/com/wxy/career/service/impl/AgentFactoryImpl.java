@@ -14,7 +14,6 @@ import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.tool.Toolkit;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -93,10 +92,11 @@ public class AgentFactoryImpl implements AgentFactory {
     @Override
     public ReActAgent getAgent(String agentName) {
         if (!StringUtils.hasText(agentName)) {
-            throw new BizException(ErrorConstant.PARAM_ERROR, HttpStatus.BAD_REQUEST);
+            // 业务异常统一返回 HTTP 200，失败语义由 code 表达。
+            throw new BizException(ErrorConstant.PARAM_ERROR);
         }
         if (!MAIN_AGENT_NAME.equals(agentName)) {
-            throw new BizException(ErrorConstant.NOT_FOUND, HttpStatus.NOT_FOUND);
+            throw new BizException(ErrorConstant.NOT_FOUND);
         }
         return agentCache.computeIfAbsent(agentName, this::buildAgent);
     }

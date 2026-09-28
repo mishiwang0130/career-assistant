@@ -37,9 +37,11 @@ public class SseEmitterSupport {
     /**
      * 数据载荷类型。
      *
-     * <p>使用字节数组承载 UTF-8 编码后的单行 JSON，保证中文不会被默认字符集破坏。
+     * <p>与接口声明的 {@code text/event-stream} 保持一致，避免 data 片段把响应类型改成 text/plain；
+     * 载荷使用字节数组承载 UTF-8 编码后的单行 JSON，保证中文不会被默认字符集破坏。
      */
-    private static final MediaType PAYLOAD_MEDIA_TYPE = MediaType.TEXT_PLAIN;
+    private static final MediaType PAYLOAD_MEDIA_TYPE =
+            new MediaType("text", "event-stream", StandardCharsets.UTF_8);
 
     /**
      * 超时错误提示。

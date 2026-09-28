@@ -19,7 +19,8 @@ export class SseRequestError extends Error {
  * 发送 SSE 请求并逐事件回调。
  *
  * EventSource 不支持 POST 与自定义请求头，因此这里用 fetch + ReadableStream 手工解析 SSE 报文。
- * 进流前失败（HTTP 非 2xx，后端返回统一 Result）会抛出 SseRequestError；
+ * 进流前失败会抛出 SseRequestError，包括两种形态：HTTP 非 2xx（鉴权失败、参数校验失败），
+ * 以及 HTTP 200 但响应体是统一 Result 的业务异常（约定见 docs/技术约定.md）；
  * 进流后的失败由后端用 error 事件表达，通过 onEvent 回调交给业务处理。
  *
  * @param url 接口地址
@@ -45,7 +46,9 @@ export async function postSse(
     signal,
   })
 
-  if (!response.ok || !response.body) {
+  // 只有真正的 SSE 响应才按流解析：其余情况（含 HTTP 200 的 Result 业务异常）都按进流前失败处理。
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
     throw new SseRequestError(await readErrorMessage(response), response.status)
   }
 
