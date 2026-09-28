@@ -139,6 +139,19 @@ dev-bugfix/20260927-fix-login-token
 - 前端页面改动附截图，接口改动附请求与响应示例。
 - 功能分支至少一名 reviewer 通过后合并回 `dev`；`main` 只接受来自 `dev` 的发布合并。
 
+## 配置与环境隔离
+
+- Spring 配置必须按 Profile 隔离，禁止把数据库、Redis、JWT、模型密钥等环境相关配置集中写在 `application.yml`。
+- 配置文件划分固定为：
+  - `application.yml`：只放跨环境公共的非敏感配置，默认激活 `local`。
+  - `application-local.yml`：本地开发环境，可使用本地明文默认值。
+  - `application-dev.yml`：测试环境，可使用测试环境明文配置，便于部署。
+  - `application-prod.yml`：生产环境，数据库、Redis、JWT、模型密钥全部强制从环境变量读取。
+- 切换环境统一使用 `SPRING_PROFILES_ACTIVE`，例如 `$env:SPRING_PROFILES_ACTIVE = "dev"`。
+- 新增配置项必须在 `local`、`dev`、`prod` 对应文件中同步补齐，并按环境敏感度决定是否允许明文。
+- `DASHSCOPE_API_KEY` 等密钥在任何环境都不得写入 YAML，只能从环境变量读取；本地私有覆盖放已忽略的 `application-*.local.yml`。
+- 环境隔离的完整表格与变量清单以 `docs/技术约定.md` 的「环境配置隔离」章节为准，修改后需同步更新该文档。
+
 ## 安全与配置
 
 - 不要提交密钥。`application.yml` 中的默认值仅用于本地开发。
