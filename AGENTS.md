@@ -21,11 +21,13 @@ com.wxy.career
 ├─ po/           数据库实体类，与表一一对应
 ├─ vo/           请求与响应 VO
 ├─ job/          定时任务
+├─ middleware/   AgentScope 中间件（埋点、提示词等横切技术组件）
 ├─ util/         工具类
 └─ config/       配置类
 ```
 
 - Mapper XML 放在 `backend/src/main/resources/mapper/`，该路径已在 `application.yml` 中配置。
+- `middleware/` 于 M2 引入：AgentScope 的中间件属于横切技术组件，既不是配置类也不是普通工具类，单独成包便于后续模块按同一约定扩展（详见 `docs/技术约定.md`）。
 - 只有 Mapper 接口允许继承 MyBatis-Plus（统一继承 `BaseMapper<T>`）；Service 接口和 Service 实现禁止继承 MyBatis-Plus 的 `IService`、`ServiceImpl` 等基类，业务逻辑手写在 Service 实现中并通过 Mapper 操作数据库。
 - 数据库实体统一放 `po` 包，类名与表名对应，如 `sys_user` → `SysUser`。
 - 只有被接口使用的参数或返回值才建 VO：请求参数用 `xxxReqVO`，返回值用 `xxxRespVO`，例如 `UserLoginReqVO`、`UserInfoRespVO`。
