@@ -108,6 +108,22 @@ class ResumeDiagnosisServiceImplTest {
     }
 
     /**
+     * 验证没有默认简历但只有一份时直接用那一份。
+     *
+     * <p>用户说「诊断我的简历」说的就是默认简历；当默认简历没设置、而库里只有一份时不存在歧义，
+     * 不应该反问用户选哪一份。
+     */
+    @Test
+    void shouldUseSingleResumeWhenDefaultMissing() {
+        when(resumeMapper.selectByUserId(7L)).thenReturn(List.of(buildResume(2L, "唯一一份简历", "内容A")));
+
+        ResumeReadResultVO result = service.readResume(7L, null, null, null);
+
+        assertThat(result.isFound()).isTrue();
+        assertThat(result.getResumeId()).isEqualTo(2L);
+    }
+
+    /**
      * 验证没有简历时返回不可用原因并带上空候选列表。
      */
     @Test
@@ -175,7 +191,10 @@ class ResumeDiagnosisServiceImplTest {
                         ((BizException) exception).getErrorCode().getCode())
                         .isEqualTo(ErrorConstant.RESUME_CONTENT_UNAVAILABLE.getCode()));
 
-        when(resumeMapper.selectByUserId(7L)).thenReturn(List.of(buildResume(3L, "普通简历", "内容")));
+        // 多份简历且没有默认标记：不能替用户猜。
+        when(resumeMapper.selectByUserId(7L)).thenReturn(List.of(
+                buildResume(3L, "第一份简历", "内容"),
+                buildResume(4L, "第二份简历", "内容")));
         assertThatThrownBy(() -> service.resolveDiagnosisTarget(7L, null, null))
                 .isInstanceOf(BizException.class)
                 .satisfies(exception -> assertThat(

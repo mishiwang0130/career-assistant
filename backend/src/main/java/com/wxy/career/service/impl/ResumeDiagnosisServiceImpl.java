@@ -117,6 +117,9 @@ public class ResumeDiagnosisServiceImpl implements ResumeDiagnosisService {
     /**
      * 定位诊断目标：简历 ID → 标题 → 默认简历，并要求正文可用。
      *
+     * <p>「诊断我的简历」这类不点名的请求说的就是默认简历；用户没有设置默认简历但只有一份简历时
+     * 直接用它（只有一份时不存在歧义，没必要反问）。多份且都没有默认标记时才让模型向用户确认。
+     *
      * @param userId 用户 ID
      * @param resumeId 简历 ID，可为空
      * @param title 简历标题，可为空
@@ -141,7 +144,10 @@ public class ResumeDiagnosisServiceImpl implements ResumeDiagnosisService {
                 return requireUsableContent(resume);
             }
         }
-        // 既没指定也没有默认简历时不能替用户猜，交由模型向用户确认。
+        if (resumes.size() == 1) {
+            return requireUsableContent(resumes.get(0));
+        }
+        // 多份简历且没有默认标记时不能替用户猜，交由模型向用户确认。
         throw new BizException(ErrorConstant.RESUME_DIAGNOSIS_TARGET_MISSING);
     }
 
