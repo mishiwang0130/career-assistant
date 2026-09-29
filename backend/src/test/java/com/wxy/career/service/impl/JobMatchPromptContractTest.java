@@ -50,6 +50,9 @@ class JobMatchPromptContractTest {
             "JD 原文",
             "timeout_seconds 设为 180",
             "两项分析一次只派一个",
+            // 用户实测反馈：助手先自己读一遍简历写一版分析、拿到子 Agent 结论后又复述一版，回答里出现两份。
+            "不要自己先用 read_resume 读一遍简历",
+            "一份分析结论只讲一遍",
             "不许替用户编造简历里没有的数字");
 
     /**

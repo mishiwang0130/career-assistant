@@ -96,9 +96,13 @@ class AgentEventMapperTest {
     void shouldDetectForwardedSubagentEvent() {
         AgentEvent subagentEvent = new TextBlockDeltaEvent("reply-1", "block-1", "评分 JSON")
                 .withMetadataEntry(AgentEvent.METADATA_PARENT_SESSION_ID, "12");
+        // 本地同步派发不带元数据，只带来源（父会话Id/子Agent名），实测长这样。
+        AgentEvent sourcedSubagentEvent = new TextBlockDeltaEvent("reply-3", "block-3", "匹配分析正文")
+                .withSource("40/job-match");
         AgentEvent ownEvent = new TextBlockDeltaEvent("reply-2", "block-2", "第 2 题");
 
         assertThat(AgentEventMapper.isSubagentEvent(subagentEvent)).isTrue();
+        assertThat(AgentEventMapper.isSubagentEvent(sourcedSubagentEvent)).isTrue();
         assertThat(AgentEventMapper.isSubagentEvent(ownEvent)).isFalse();
         assertThat(AgentEventMapper.isSubagentEvent(null)).isFalse();
     }
