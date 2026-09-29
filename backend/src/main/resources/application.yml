@@ -59,6 +59,12 @@ app:
       database-name: career_assistant
       skills-table-name: agentscope_skills
       resources-table-name: agentscope_skill_resources
+  # 模拟面试（F5）：题量与上下文压缩阈值，三份 Profile 同步补齐，非敏感配置可按环境调整。
+  interview:
+    question-count: 8
+    compaction:
+      trigger-messages: 40
+      keep-messages: 16
 
 logging:
   level:
