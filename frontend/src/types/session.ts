@@ -8,10 +8,10 @@
  * 会话场景。
  *
  * 只有「有状态的长流程」型功能才算会话场景，一次性任务（简历诊断、岗位匹配、专项辅导）
- * 由助手 Agent 在对话内派发子 Agent 或加载 Skill 完成。本期只开放通用助手，
- * F5 落地时在这里加上 'INTERVIEW'，ChatView 的面板映射会因为类型不完整而编译报错，提醒补齐面板。
+ * 由助手 Agent 在对话内派发子 Agent 或加载 Skill 完成。当前开放通用助手（默认入口）与模拟面试；
+ * ChatView 的面板映射按本联合类型补全，新增场景时类型不完整会直接编译报错。
  */
-export type ChatScene = 'ASSISTANT'
+export type ChatScene = 'ASSISTANT' | 'INTERVIEW'
 
 /** 会话列表项。 */
 export interface ChatSessionRespVO {

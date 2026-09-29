@@ -16,6 +16,7 @@ import { ElMessage } from 'element-plus'
 
 import { BizError } from '@/api/request'
 import AssistantPanel from '@/components/chat/AssistantPanel.vue'
+import InterviewPanel from '@/components/chat/InterviewPanel.vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { useSessionStore } from '@/stores/session'
 import type { ChatScene } from '@/types/session'
@@ -31,6 +32,7 @@ const SESSION_NOT_FOUND_CODE = 1051
  */
 const SCENE_PANELS: Record<ChatScene, Component> = {
   ASSISTANT: AssistantPanel,
+  INTERVIEW: InterviewPanel,
 }
 
 const route = useRoute()

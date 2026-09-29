@@ -31,11 +31,14 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 
 import { useProfileStore } from '@/stores/profile'
 
 const profileStore = useProfileStore()
+const route = useRoute()
+const router = useRouter()
 
 /** 首屏回填中。 */
 const loading = ref(false)
@@ -95,11 +98,29 @@ async function handleSave(): Promise<void> {
     await profileStore.saveProfile({ targetPosition, workYears: form.workYears })
     form.targetPosition = targetPosition
     ElMessage.success('求职目标已保存')
+    // 从「模拟面试」等入口被拦进来的场景：填完回到原入口，用户不用自己再找一次。
+    const redirect = resolveRedirect()
+    if (redirect) {
+      await router.replace(redirect)
+    }
   } catch {
     // 请求层已统一提示。
   } finally {
     saving.value = false
   }
+}
+
+/**
+ * 解析回跳地址，只接受站内绝对路径，避免被外部地址利用。
+ *
+ * @returns 可回跳的站内路径，没有或非法时返回 null
+ */
+function resolveRedirect(): string | null {
+  const value = route.query.redirect
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
+    return null
+  }
+  return value
 }
 </script>
 
