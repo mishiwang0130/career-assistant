@@ -39,6 +39,18 @@
       />
       <!-- 面试结果：结束时由后端随流下发，回看历史面试时用结果接口补齐 -->
       <InterviewResultCard v-if="interviewResult" :result="interviewResult" />
+      <!--
+        面试报告：后台任务生成，面板先显示「报告生成中」，生成完成后自动刷新为完整内容；
+        失败时显示原因与重试入口，不会停在一个不动的「生成中」。
+      -->
+      <InterviewReportCard
+        v-if="report"
+        :report="report"
+        :retrying="reportRetrying"
+        :polling-exhausted="reportPollingExhausted"
+        @retry="handleReportRetry"
+        @refresh="refreshReport"
+      />
     </div>
 
     <div class="interview__input">
@@ -74,20 +86,32 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
-import { getInterviewResult, getInterviewState } from '@/api/interview'
+import {
+  getInterviewReport,
+  getInterviewResult,
+  getInterviewState,
+  retryInterviewReport,
+} from '@/api/interview'
 import { BizError } from '@/api/request'
+import InterviewReportCard from '@/components/chat/InterviewReportCard.vue'
 import InterviewResultCard from '@/components/chat/InterviewResultCard.vue'
 import MessageBubble from '@/components/MessageBubble.vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { useSessionStore } from '@/stores/session'
 import { useUserStore } from '@/stores/user'
-import type { InterviewProgressResult, InterviewResult, InterviewStateRespVO } from '@/types/interview'
+import type {
+  InterviewProgressResult,
+  InterviewReportResult,
+  InterviewResult,
+  InterviewStateRespVO,
+} from '@/types/interview'
 import {
   findLatestProgress,
+  findLatestReport,
   findLatestResult,
   formatDifficulty,
   formatInterviewProgress,
@@ -106,6 +130,18 @@ const PROFILE_REQUIRED_CODE = 1101
 
 /** 本场面试已结束的业务错误码。 */
 const INTERVIEW_FINISHED_CODE = 1501
+
+/** 面试尚未结束、报告暂不可用的业务错误码，与后端 ErrorConstant.INTERVIEW_REPORT_NOT_READY 一致。 */
+const REPORT_NOT_READY_CODE = 1601
+
+/** 报告正在生成中的业务错误码，与后端 ErrorConstant.INTERVIEW_REPORT_GENERATING 一致。 */
+const REPORT_GENERATING_CODE = 1602
+
+/** 报告状态轮询间隔，单位毫秒。 */
+const REPORT_POLL_INTERVAL_MS = 3000
+
+/** 报告状态轮询的最大次数（约 2 分钟），超过后改为手动刷新。 */
+const REPORT_POLL_MAX_ATTEMPTS = 40
 
 /** 追问轮次的编号，与后端 InterviewQa.ROUND_FOLLOW_UP 一致。 */
 const FOLLOW_UP_ROUND = 2
@@ -133,6 +169,21 @@ const progress = ref<InterviewProgressResult | null>(null)
 
 /** 面试结果：流内下发或结果接口回放，结束时渲染在消息区下方。 */
 const interviewResult = ref<InterviewResult | null>(null)
+
+/** 面试报告：流内状态事件或报告接口获取，状态包含生成中 / 已完成 / 生成失败。 */
+const report = ref<InterviewReportResult | null>(null)
+
+/** 是否正在重试生成报告。 */
+const reportRetrying = ref(false)
+
+/** 轮询是否已经超时：超时后报告卡片给出手动刷新入口，避免一直转圈。 */
+const reportPollingExhausted = ref(false)
+
+/** 报告状态轮询定时器句柄。 */
+let reportPollTimer: number | null = null
+
+/** 已轮询次数。 */
+let reportPollAttempts = 0
 
 /** 当前生效的进度：优先用流内进度，没有则用状态快照。 */
 const active = computed(() => progress.value ?? snapshot.value)
@@ -166,8 +217,12 @@ watch(
   async () => {
     progress.value = null
     interviewResult.value = null
+    report.value = null
+    stopReportPolling()
+    reportPollingExhausted.value = false
     await loadSnapshot()
     await loadResultIfFinished()
+    await loadReportIfFinished()
     await nextTick()
     scrollToBottom()
   },
@@ -196,6 +251,28 @@ watch(
   { immediate: true },
 )
 
+// 面试结束时后端会在同一轮里下发报告状态（生成中或派发失败），据此渲染报告卡片并开始轮询。
+watch(
+  () => findLatestReport(assistantStore.messages),
+  (latest) => {
+    if (!latest) {
+      return
+    }
+    report.value = latest
+    if (latest.status === 'GENERATING') {
+      startReportPolling()
+    } else {
+      stopReportPolling()
+    }
+  },
+  { immediate: true },
+)
+
+// 切换会话或卸载面板时停掉轮询，避免在别的会话上继续请求上一场的报告。
+onUnmounted(() => {
+  stopReportPolling()
+})
+
 /**
  * 已结束的面试（含刷新页面、回看历史会话）用结果接口补齐结果卡片。
  */
@@ -208,6 +285,110 @@ async function loadResultIfFinished(): Promise<void> {
     interviewResult.value = await getInterviewResult(sessionId)
   } catch {
     // 结果加载失败不影响其它内容，用户刷新后还会再试。
+  }
+}
+
+/**
+ * 已结束的面试（含刷新页面、回看历史会话）用报告接口补齐报告卡片。
+ *
+ * 面试没走到结束条件时接口返回 1601，这里按「还没有报告」处理，不打扰用户。
+ */
+async function loadReportIfFinished(): Promise<void> {
+  const sessionId = sessionStore.currentSessionId
+  if (!sessionId || snapshot.value?.finished !== true) {
+    return
+  }
+  await refreshReport()
+}
+
+/**
+ * 取一次报告最新状态。
+ *
+ * 生成中继续轮询，已完成或失败时停止：失败态由卡片给出重试入口。
+ */
+async function refreshReport(): Promise<void> {
+  const sessionId = sessionStore.currentSessionId
+  if (!sessionId) {
+    return
+  }
+  try {
+    const latest = await getInterviewReport(sessionId)
+    report.value = latest
+    if (latest.status === 'GENERATING') {
+      reportPollAttempts += 1
+      if (reportPollAttempts >= REPORT_POLL_MAX_ATTEMPTS) {
+        stopReportPolling()
+        reportPollingExhausted.value = true
+      }
+      return
+    }
+    stopReportPolling()
+    reportPollingExhausted.value = false
+  } catch (error) {
+    stopReportPolling()
+    if (error instanceof BizError && error.code === REPORT_NOT_READY_CODE) {
+      // 面试尚未结束：报告本来就不该有，静默按没有报告处理。
+      return
+    }
+    // 其它错误已由请求层提示，报告卡片保持当前状态，用户可手动刷新。
+  }
+}
+
+/**
+ * 开始轮询报告状态。
+ */
+function startReportPolling(): void {
+  if (reportPollTimer !== null) {
+    return
+  }
+  reportPollAttempts = 0
+  reportPollingExhausted.value = false
+  reportPollTimer = window.setInterval(() => {
+    void refreshReport()
+  }, REPORT_POLL_INTERVAL_MS)
+}
+
+/**
+ * 停止轮询报告状态。
+ */
+function stopReportPolling(): void {
+  if (reportPollTimer !== null) {
+    window.clearInterval(reportPollTimer)
+    reportPollTimer = null
+  }
+}
+
+/**
+ * 重试生成报告。
+ *
+ * 生成中（1602）不报错，直接继续轮询；已完成时接口幂等返回现有报告，界面照常渲染。
+ */
+async function handleReportRetry(): Promise<void> {
+  const sessionId = sessionStore.currentSessionId
+  if (!sessionId || reportRetrying.value) {
+    return
+  }
+  reportRetrying.value = true
+  try {
+    const latest = await retryInterviewReport(sessionId)
+    report.value = latest
+    if (latest.status === 'GENERATING') {
+      startReportPolling()
+    } else {
+      stopReportPolling()
+    }
+  } catch (error) {
+    if (error instanceof BizError && error.code === REPORT_GENERATING_CODE) {
+      startReportPolling()
+      return
+    }
+    if (error instanceof BizError && error.code === REPORT_NOT_READY_CODE) {
+      ElMessage.warning('本场面试还没结束，暂时不能生成报告')
+      return
+    }
+    // 其它错误已由请求层统一提示。
+  } finally {
+    reportRetrying.value = false
   }
 }
 

@@ -29,16 +29,23 @@
         <p v-else class="message-content message-empty">（未生成内容）</p>
       </div>
     </div>
-    <!-- 结构化产物挂在回答下方：当前是简历诊断卡片，F6 的点评与报告复用同一套渲染位置 -->
+    <!-- 结构化产物挂在回答下方：简历诊断卡片，以及 F6 面试的逐题点评卡片 -->
     <ResumeDiagnosisCard v-if="diagnosis" :diagnosis="diagnosis" />
+    <InterviewEvaluationCard
+      v-for="(evaluation, index) in evaluations"
+      :key="`evaluation-${index}`"
+      :evaluation="evaluation"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import InterviewEvaluationCard from '@/components/chat/InterviewEvaluationCard.vue'
 import ResumeDiagnosisCard from '@/components/chat/ResumeDiagnosisCard.vue'
 import type { ChatMessage, ResumeDiagnosisResult } from '@/types/assistant'
+import type { InterviewEvaluationResult } from '@/types/interview'
 import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps<{
@@ -56,6 +63,18 @@ const renderedContent = computed(() => renderMarkdown(props.message.content))
 const diagnosis = computed<ResumeDiagnosisResult | null>(() => {
   const result = props.message.result
   return result && result.type === 'resume_diagnosis' ? result : null
+})
+
+/**
+ * 本回合收到的逐题点评。
+ *
+ * 一轮里可能同时有进度、结果与点评等多个结构化结果，因此从 results 数组里挑出点评，逐个渲染成卡片。
+ */
+const evaluations = computed<InterviewEvaluationResult[]>(() => {
+  const payloads = props.message.results ?? []
+  return payloads.filter((payload): payload is InterviewEvaluationResult =>
+    payload.type === 'interview_evaluation'
+  )
 })
 </script>
 
