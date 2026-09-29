@@ -141,9 +141,9 @@ onMounted(async () => {
   }
 })
 
-// 流式增量与新消息都追加在末尾，需要跟随滚动到底部。
+// 流式增量（含生成期间的思考过程）与新消息都追加在末尾，需要跟随滚动到底部。
 watch(
-  () => assistantStore.messages.map((message) => message.content).join(''),
+  () => assistantStore.messages.map((message) => `${message.thinking}\n${message.content}`).join(''),
   async () => {
     await nextTick()
     scrollToBottom()

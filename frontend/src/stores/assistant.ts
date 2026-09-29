@@ -229,6 +229,8 @@ export const useAssistantStore = defineStore('assistant', () => {
       // 主动中断（退出登录、删除会话）不算失败：已经收到的内容留在该会话的消息区里。
     } finally {
       replyRef.streaming = false
+      // 本轮结束（含中途报错）就清空思考过程：它只在正文产出前给用户看，不留在界面上。
+      replyRef.thinking = ''
       state.streaming = false
       if (controllers.get(currentSessionId) === controller) {
         controllers.delete(currentSessionId)
@@ -326,11 +328,16 @@ export const useAssistantStore = defineStore('assistant', () => {
     try {
       switch (event) {
         case 'delta':
+          // 正文开始产出：思考过程只在正文出来前给用户看，这里立刻丢弃，也不留回看入口。
+          message.thinking = ''
           message.content += (JSON.parse(data) as AssistantContentEvent).content
           break
-        // 思考内容与工具调用只做记录，不在界面展示（产品要求不向终端用户暴露内部过程）。
+        // 思考内容只在正文产出前累积：正文已开始产出时收到的思考增量直接忽略，不再补回界面。
+        // 它只存在于前端内存，不落库，刷新页面或切换会话后随消息一起消失。
         case 'thinking':
-          message.thinking += (JSON.parse(data) as AssistantContentEvent).content
+          if (!message.content) {
+            message.thinking += (JSON.parse(data) as AssistantContentEvent).content
+          }
           break
         case 'tool': {
           const tool = JSON.parse(data) as AssistantToolEvent
