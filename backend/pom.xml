@@ -99,6 +99,11 @@
             <groupId>io.agentscope</groupId>
             <artifactId>agentscope-extensions-redis</artifactId>
         </dependency>
+        <!-- Skill 规则存 MySQL：F2 引入，后续 F3/F5/F6/F9 复用同一套技能仓库 -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-skill-mysql-repository</artifactId>
+        </dependency>
 
         <!-- 接口文档 -->
         <dependency>

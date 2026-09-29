@@ -19,6 +19,13 @@ public interface AgentFactory {
     String MAIN_AGENT_NAME = "career-assistant";
 
     /**
+     * 简历分析子 Agent 名，F2 冻结。
+     *
+     * <p>子 Agent 由助手按声明派发，不作为独立入口，也不通过 {@link #getAgent(String)} 获取。
+     */
+    String RESUME_ANALYST_AGENT_NAME = "resume-analyst";
+
+    /**
      * 按名字获取 Agent。
      *
      * @param agentName Agent 名

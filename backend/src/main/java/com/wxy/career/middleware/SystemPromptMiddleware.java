@@ -103,7 +103,9 @@ public class SystemPromptMiddleware implements MiddlewareBase {
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext runtimeContext, String prompt) {
         String basePrompt = prompt;
         try {
-            String currentPrompt = systemPromptProvider.currentPrompt();
+            // 一个 Agent 一份提示词：按当前 Agent 标识取，子 Agent 不会读到助手的提示词。
+            String agentId = agent == null ? null : agent.getName();
+            String currentPrompt = StringUtils.hasText(agentId) ? systemPromptProvider.prompt(agentId) : null;
             if (currentPrompt != null && !currentPrompt.isBlank()) {
                 basePrompt = currentPrompt;
             }

@@ -102,6 +102,11 @@
                 <artifactId>agentscope-extensions-redis</artifactId>
                 <version>${agentscope.version}</version>
             </dependency>
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-extensions-skill-mysql-repository</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
 
             <!-- Redisson：AgentScope Redis 会话状态存储使用，版本与 AgentScope 对齐 -->
             <dependency>

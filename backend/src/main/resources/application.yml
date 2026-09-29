@@ -54,6 +54,11 @@ app:
     # 系统提示词正文放在 classpath:prompts/{agent}.md，随代码版本发布；这里只配置文件位置。
     # 多 Agent 接入后每个 Agent 一份文件，按 Agent 标识取不同位置；业务规则类内容走 Skill，不写进提示词。
     prompt-location: classpath:prompts/assistant.md
+    # Skill（业务规则）存 MySQL，库名必须与数据源一致（框架默认库是 agentscope，不能直接用）。
+    skill:
+      database-name: career_assistant
+      skills-table-name: agentscope_skills
+      resources-table-name: agentscope_skill_resources
 
 logging:
   level:

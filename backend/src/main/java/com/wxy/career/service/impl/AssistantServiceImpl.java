@@ -13,11 +13,13 @@ import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.AssistantService;
 import com.wxy.career.service.ChatSessionService;
+import com.wxy.career.service.ResumeDiagnosisService;
 import com.wxy.career.util.AgentEventMapper;
 import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.PageRespVO;
+import com.wxy.career.vo.ResumeDiagnosisResultVO;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -115,6 +117,12 @@ public class AssistantServiceImpl implements AssistantService {
      */
     @Resource
     private RedisUtil redisUtil;
+
+    /**
+     * 简历诊断服务，用于在流结束时下发结构化诊断结论。
+     */
+    @Resource
+    private ResumeDiagnosisService resumeDiagnosisService;
 
     /**
      * 发送一条消息并流式返回 Agent 回复。
@@ -239,6 +247,9 @@ public class AssistantServiceImpl implements AssistantService {
     /**
      * 结束一次流式对话：落库已生成内容并按需发送结束事件。
      *
+     * <p>正常结束时先下发结构化产物（当前是简历诊断结论，没有就不发），再发 done：结构化结果属于
+     * 本次回答的一部分，必须在流结束前到达前端。异常结束时只发 error，不给半成品结果。
+     *
      * @param state 流式会话状态
      * @param errorMessage 错误提示，为空表示正常结束
      * @param sendTerminalEvent 是否向前端发送结束事件，连接已断开时为 false
@@ -256,7 +267,29 @@ public class AssistantServiceImpl implements AssistantService {
         if (StringUtils.hasText(errorMessage)) {
             state.support.sendError(errorMessage);
         } else {
+            sendStructuredResult(state);
             state.support.sendDone();
+        }
+    }
+
+    /**
+     * 下发本次流的结构化产物。
+     *
+     * <p>简历诊断结论由子 Agent 通过提交工具暂存在运行态缓冲里，这里取走并作为 {@code result} 事件
+     * 下发；没有结构化产物（普通问答）时不发 result。取用失败只记日志，不能影响正常结束。
+     *
+     * @param state 流式会话状态
+     */
+    private void sendStructuredResult(StreamState state) {
+        ResumeDiagnosisResultVO diagnosis;
+        try {
+            diagnosis = resumeDiagnosisService.consumeDiagnosis(state.userId, state.sessionId);
+        } catch (Exception exception) {
+            log.warn("读取结构化诊断结论失败，userId={}，sessionId={}", state.userId, state.sessionId, exception);
+            return;
+        }
+        if (diagnosis != null && !state.support.send(SseEvent.result(diagnosis))) {
+            log.warn("结构化诊断结论下发失败，连接可能已断开，sessionId={}", state.sessionId);
         }
     }
 

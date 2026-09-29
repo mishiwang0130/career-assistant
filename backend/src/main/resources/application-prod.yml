@@ -16,6 +16,8 @@ app:
     secret: ${JWT_SECRET}
   agent:
     api-key: ${DASHSCOPE_API_KEY}
+    skill:
+      database-name: ${MYSQL_DATABASE}
   storage:
     minio:
       endpoint: ${MINIO_ENDPOINT}

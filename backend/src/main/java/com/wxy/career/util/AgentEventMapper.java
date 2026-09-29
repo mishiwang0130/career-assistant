@@ -3,14 +3,12 @@ package com.wxy.career.util;
 import com.wxy.career.common.sse.SseEvent;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentEventType;
-import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.ExceedMaxItersEvent;
 import io.agentscope.core.event.SubagentExposedEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ThinkingBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallEndEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
-import io.agentscope.core.message.Msg;
 import org.springframework.util.StringUtils;
 
 /**
@@ -18,6 +16,9 @@ import org.springframework.util.StringUtils;
  *
  * <p>只映射协议中约定的八类事件，其余过程事件（模型调用、文本块起止等）直接忽略。
  * done 事件由流正常结束时统一发送，因此这里不处理 {@code AGENT_END}，避免重复结束事件。
+ *
+ * <p>{@code result} 事件承载的是**结构化产物**（F2 的简历诊断结论等），由业务侧在流结束时下发；
+ * 框架的 {@code AGENT_RESULT} 里只有助手最终文本，纯文本场景按协议不发 result，因此这里不映射它。
  *
  * @author wxy
  * @date 2026-09-28
@@ -52,8 +53,6 @@ public final class AgentEventMapper {
                 return mapToolEnd((ToolCallEndEvent) event);
             case SUBAGENT_EXPOSED:
                 return mapSubagent((SubagentExposedEvent) event);
-            case AGENT_RESULT:
-                return mapResult((AgentResultEvent) event);
             case EXCEED_MAX_ITERS:
                 return mapExceedMaxIters((ExceedMaxItersEvent) event);
             default:
@@ -100,17 +99,6 @@ public final class AgentEventMapper {
     private static SseEvent mapSubagent(SubagentExposedEvent event) {
         String label = StringUtils.hasText(event.getLabel()) ? event.getLabel() : event.getAgentId();
         return SseEvent.node(label);
-    }
-
-    /**
-     * 映射最终结果事件。
-     *
-     * @param event 最终结果事件
-     * @return SSE 事件
-     */
-    private static SseEvent mapResult(AgentResultEvent event) {
-        Msg result = event.getResult();
-        return SseEvent.result(result == null ? null : result.getTextContent());
     }
 
     /**

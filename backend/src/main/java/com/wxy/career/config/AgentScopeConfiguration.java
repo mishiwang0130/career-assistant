@@ -5,9 +5,12 @@ import com.wxy.career.util.AgentScopeExpiringStateStore;
 import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.util.AgentSettingsValidator;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.core.skill.repository.mysql.MysqlSkillRepository;
 import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
 import io.agentscope.extensions.redis.state.RedisAgentStateStore;
+import javax.sql.DataSource;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
@@ -135,5 +138,30 @@ public class AgentScopeConfiguration {
         scheduler.setWaitForTasksToCompleteOnShutdown(false);
         scheduler.initialize();
         return scheduler;
+    }
+
+    /**
+     * 装配 MySQL 技能仓库。
+     *
+     * <p>Skill（业务规则）存 MySQL：改规则不用发版，重启也不用动代码。表由框架自动建
+     * （{@code agentscope_skills} 与 {@code agentscope_skill_resources}），默认内容由
+     * {@code sql/career_assistant.sql} 的幂等脚本写入。
+     *
+     * <p>必须显式指定库名：框架默认库名是 {@code agentscope}，与本项目库名不一致；
+     * 库名来自 {@code app.agent.skill.database-name}，三份 Profile 各自配置。
+     *
+     * @param dataSource 数据源，复用 Spring 管理的连接池
+     * @param agentProperties Agent 配置
+     * @return 技能仓库
+     */
+    @Bean(destroyMethod = "close")
+    public AgentSkillRepository agentSkillRepository(DataSource dataSource, AgentProperties agentProperties) {
+        return MysqlSkillRepository.builder(dataSource)
+                .databaseName(agentProperties.getSkill().getDatabaseName())
+                .skillsTableName(agentProperties.getSkill().getSkillsTableName())
+                .resourcesTableName(agentProperties.getSkill().getResourcesTableName())
+                .createIfNotExist(true)
+                .writeable(true)
+                .build();
     }
 }

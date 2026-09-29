@@ -14,6 +14,9 @@ spring:
 app:
   jwt:
     secret: career-assistant-local-secret-change-me
+  agent:
+    skill:
+      database-name: career_assistant
   storage:
     minio:
       secure: false

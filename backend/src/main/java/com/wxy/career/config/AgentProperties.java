@@ -60,4 +60,37 @@ public class AgentProperties {
      * Redis 会话状态过期时间，单位为小时。
      */
     private long sessionTtlHours = 168L;
+
+    /**
+     * Skill（业务规则）相关配置。
+     *
+     * <p>技能正文存 MySQL（框架的 {@code MysqlSkillRepository}），仓库自带默认库名 {@code agentscope}，
+     * 与本项目库名不一致，因此必须显式配置为本项目数据库名，否则启动即报表不存在。
+     */
+    private Skill skill = new Skill();
+
+    /**
+     * Skill 仓库配置。
+     *
+     * @author wxy
+     * @date 2026-09-29
+     */
+    @Data
+    public static class Skill {
+
+        /**
+         * 技能表所在数据库名，必须与数据源指向的库一致。
+         */
+        private String databaseName = "career_assistant";
+
+        /**
+         * 技能表名，与框架 {@code MysqlSkillRepository} 的默认表名保持一致。
+         */
+        private String skillsTableName = "agentscope_skills";
+
+        /**
+         * 技能资源表名，与框架 {@code MysqlSkillRepository} 的默认表名保持一致。
+         */
+        private String resourcesTableName = "agentscope_skill_resources";
+    }
 }

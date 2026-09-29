@@ -15,16 +15,21 @@ import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.po.SysUser;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.ChatSessionService;
+import com.wxy.career.service.ResumeDiagnosisService;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.UserProfileService;
 import com.wxy.career.service.impl.AgentFactoryImpl;
 import com.wxy.career.service.impl.AssistantServiceImpl;
+import com.wxy.career.tool.ReadResumeTool;
+import com.wxy.career.tool.SubmitResumeDiagnosisTool;
+import com.wxy.career.vo.ResumeDiagnosisResultVO;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ToolSchema;
+import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -101,6 +106,11 @@ class AssistantControllerSseTest {
     private RedisUtil redisUtil;
 
     /**
+     * 简历诊断服务 mock，用于验证流结束前的结构化结果下发。
+     */
+    private ResumeDiagnosisService resumeDiagnosisService;
+
+    /**
      * 初始化 MockMvc、Agent 装配与拦截器。
      */
     @BeforeEach
@@ -115,7 +125,7 @@ class AssistantControllerSseTest {
         user.setNickname("Alice");
         when(sysUserMapper.selectById(1L)).thenReturn(user);
 
-        SystemPromptProvider systemPromptProvider = () -> "测试系统提示词";
+        SystemPromptProvider systemPromptProvider = agentId -> "测试系统提示词";
         SystemPromptMiddleware systemPromptMiddleware = new SystemPromptMiddleware();
         ReflectionTestUtils.setField(systemPromptMiddleware, "systemPromptProvider", systemPromptProvider);
         ReflectionTestUtils.setField(systemPromptMiddleware, "sysUserMapper", sysUserMapper);
@@ -137,6 +147,10 @@ class AssistantControllerSseTest {
         ReflectionTestUtils.setField(agentFactory, "systemPromptProvider", systemPromptProvider);
         ReflectionTestUtils.setField(agentFactory, "systemPromptMiddleware", systemPromptMiddleware);
         ReflectionTestUtils.setField(agentFactory, "metricsMiddleware", metricsMiddleware);
+        ReflectionTestUtils.setField(agentFactory, "agentSkillRepository", mock(AgentSkillRepository.class));
+        ReflectionTestUtils.setField(agentFactory, "readResumeTool", new ReadResumeTool());
+        ReflectionTestUtils.setField(
+                agentFactory, "submitResumeDiagnosisTool", new SubmitResumeDiagnosisTool());
 
         assistantMessageService = mock(AssistantMessageService.class);
         chatSessionService = mock(ChatSessionService.class);
@@ -153,6 +167,8 @@ class AssistantControllerSseTest {
         ReflectionTestUtils.setField(assistantService, "objectMapper", objectMapper);
         ReflectionTestUtils.setField(assistantService, "sseTaskScheduler", scheduler);
         ReflectionTestUtils.setField(assistantService, "redisUtil", redisUtil);
+        resumeDiagnosisService = mock(ResumeDiagnosisService.class);
+        ReflectionTestUtils.setField(assistantService, "resumeDiagnosisService", resumeDiagnosisService);
 
         AssistantController assistantController = new AssistantController();
         ReflectionTestUtils.setField(assistantController, "assistantService", assistantService);
@@ -185,11 +201,13 @@ class AssistantControllerSseTest {
         assertThat(body).contains("\"scene\":\"assistant\"");
         assertThat(body).contains("\"sessionId\":\"1\"");
         assertThat(body).contains("\"provider\":\"dashscope\"");
-        // 本模块不注册任何业务工具，流里不应出现工具调用事件。
+        // 桩模型不调用工具，流里不应出现工具调用事件。
         assertThat(body).doesNotContain("event:tool");
         assertThat(body).contains("event:delta");
         assertThat(body).endsWith("event:done\ndata:{}\n\n");
         assertThat(body).doesNotContain("event:error");
+        // 纯文本问答不发 result：result 只承载结构化产物。
+        assertThat(body).doesNotContain("event:result");
 
         // 用户消息与助手回复都必须落库，助手回复内容为全部文本增量拼接。
         verify(assistantMessageService).saveMessage(1L, 1L, MessageRoleEnum.USER, "你好");
@@ -197,6 +215,35 @@ class AssistantControllerSseTest {
                 eq(1L), eq(1L), eq(MessageRoleEnum.ASSISTANT), ArgumentMatchers.contains("桩模型回复"));
         // 保存用户消息后必须回写会话标题与活跃时间，左侧列表才能显示首条消息标题。
         verify(chatSessionService).recordUserMessage(1L, "1", "你好");
+    }
+
+    /**
+     * 验证有结构化诊断结论时，流在 done 之前下发 result 事件。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldSendStructuredResultBeforeDone() throws Exception {
+        ResumeDiagnosisResultVO diagnosis = new ResumeDiagnosisResultVO();
+        diagnosis.setResumeId(5L);
+        diagnosis.setResumeTitle("Java 开发简历");
+        diagnosis.setOverallScore(72);
+        when(resumeDiagnosisService.consumeDiagnosis(1L, "1")).thenReturn(diagnosis);
+
+        MvcResult result = mockMvc.perform(post("/api/assistant/chat")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sessionId\":\"1\",\"content\":\"帮我诊断简历\"}"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        String body = awaitStreamBody(result.getResponse());
+
+        assertThat(body).contains("event:result");
+        assertThat(body).contains("\"type\":\"resume_diagnosis\"");
+        assertThat(body).contains("\"overallScore\":72");
+        // result 属于本次回答的一部分，必须排在 done 之前。
+        assertThat(body.indexOf("event:result")).isLessThan(body.indexOf("event:done"));
     }
 
     /**

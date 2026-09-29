@@ -109,6 +109,20 @@ public final class ErrorConstant {
     public static final ErrorCode FILE_STORAGE_ERROR = new ErrorCode(1206, "文件存储失败");
 
     /**
+     * 简历正文为空或还在解析中。
+     *
+     * <p>F2 简历优化引入：诊断必须有可用正文，上传解析失败或解析中都不能作为诊断输入。
+     */
+    public static final ErrorCode RESUME_CONTENT_UNAVAILABLE = new ErrorCode(1301, "简历正文为空或还在解析中");
+
+    /**
+     * 没有可诊断的简历。
+     *
+     * <p>F2 简历优化引入：既未指定简历，用户也没有任何简历（或没有默认简历）时无法确定诊断对象。
+     */
+    public static final ErrorCode RESUME_DIAGNOSIS_TARGET_MISSING = new ErrorCode(1302, "没有可诊断的简历");
+
+    /**
      * 工具类禁止实例化。
      */
     private ErrorConstant() {

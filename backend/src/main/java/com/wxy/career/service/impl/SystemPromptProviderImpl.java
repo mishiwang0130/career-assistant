@@ -1,5 +1,6 @@
 package com.wxy.career.service.impl;
 
+import com.wxy.career.service.AgentFactory;
 import com.wxy.career.config.AgentProperties;
 import com.wxy.career.service.SystemPromptProvider;
 import jakarta.annotation.Resource;
@@ -10,15 +11,17 @@ import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 基于 Markdown 文件的系统提示词提供者。
  *
- * <p>提示词正文放在 {@code resources/prompts/} 下，每个 Agent 一份，随代码版本发布：
+ * <p>提示词正文放在 {@code resources/prompts/} 下，每个 Agent 一份，按 Agent 标识取不同文件：
  * 与代码强耦合的内容（引用工具名、输出结构、Agent 名）放文件可以 diff、可以 review，
  * 不一致在启动阶段就会暴露；放进数据库反而会出现「提示词里写的还是老工具名」的漂移。
  *
- * <p>文件内容在进程内只读一次并缓存：提示词属于随版本发布的静态资源，不改代码就不需要热更新。
+ * <p>文件内容按 Agent 在进程内只读一次并缓存：提示词属于随版本发布的静态资源，不改代码就不需要热更新。
  *
  * @author wxy
  * @date 2026-09-28
@@ -26,6 +29,15 @@ import java.nio.charset.StandardCharsets;
 @Slf4j
 @Service
 public class SystemPromptProviderImpl implements SystemPromptProvider {
+
+    /**
+     * 子 Agent 的提示词文件位置，与 {@code docs/功能模块清单.md} 第 6.4 节的提示词清单保持一致。
+     *
+     * <p>只有助手 Agent 的提示词位置来自配置项（历史原因，正文同样在文件里）；子 Agent 的提示词
+     * 与代码一一对应，直接在这里登记，避免为一个新增文件就要同步三份 Profile 配置。
+     */
+    private static final Map<String, String> SUB_AGENT_PROMPT_LOCATIONS = Map.of(
+            AgentFactory.RESUME_ANALYST_AGENT_NAME, "classpath:prompts/sub-resume-analyst.md");
 
     /**
      * 提示词文件缺失或读取失败时使用的兜底提示词。
@@ -49,6 +61,24 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
             8. 只使用当前登录用户自己的数据，敏感或高风险话题建议咨询专业人士。""";
 
     /**
+     * 简历分析子 Agent 的兜底提示词。
+     *
+     * <p>与 {@code prompts/sub-resume-analyst.md} 保持同一套底线：只依据工具返回的简历正文与用户求职目标、
+     * 不虚构经历与数字、不写库不改简历。子 Agent 用助手提示词会跑偏（去聊天、去改档案），因此单独兜底。
+     */
+    private static final String DEFAULT_SUB_AGENT_PROMPT = """
+            你是一名简历分析专家，只做一件事：把一份简历诊断清楚，给出可执行的修改建议，使用简体中文。
+            要求：
+            1. 先用 read_resume 工具读取简历正文（正文较长时按 segment 分段读完），只依据读到的正文与
+               系统给出的求职目标判断，简历里没写过的公司、项目、数字、时间一律不许补；
+            2. 只诊断这一份简历，不做岗位匹配，也不闲聊；
+            3. 结论必须写全：综合得分、维度评分（至少 4 项）、问题清单、亮点、优化建议、优化后的简历正文、
+               可能被追问的项目点；优化后的正文只做重组与改写，不得虚构新经历、新成果、新数字；
+            4. 原文缺失但影响判断的信息标注「原文未提及」，并说明建议补充什么；
+            5. 不评价用户本人，只评价这份简历的写法；不写库、不改简历、不替用户创建新简历；
+            6. 结构化结论必须通过 submit_resume_diagnosis 工具提交一次，字段口径与正文保持一致。""";
+
+    /**
      * Agent 配置，提供提示词文件位置。
      */
     @Resource
@@ -61,57 +91,79 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
     private ResourceLoader resourceLoader;
 
     /**
-     * 缓存后的提示词正文，双检锁懒加载，避免每次调用都读文件。
+     * 按 Agent 缓存的提示词正文，避免每次调用都读文件。
      */
-    private volatile String cachedPrompt;
+    private final Map<String, String> promptCache = new ConcurrentHashMap<>();
 
     /**
-     * 获取当前生效的系统提示词。
+     * 按 Agent 标识获取系统提示词。
      *
+     * @param agentId Agent 标识
      * @return 系统提示词
      */
     @Override
-    public String currentPrompt() {
-        String prompt = cachedPrompt;
-        if (prompt != null) {
-            return prompt;
+    public String prompt(String agentId) {
+        if (!StringUtils.hasText(agentId)) {
+            log.warn("未指定 Agent 标识，使用助手兜底提示词");
+            return DEFAULT_PROMPT;
         }
-        synchronized (this) {
-            if (cachedPrompt == null) {
-                cachedPrompt = loadPrompt();
-            }
-            return cachedPrompt;
-        }
+        return promptCache.computeIfAbsent(agentId, this::loadPrompt);
     }
 
     /**
-     * 读取提示词文件，任何异常都退回兜底提示词并记 warn，保证对话主流程不中断。
+     * 读取指定 Agent 的提示词文件，任何异常都退回该 Agent 的兜底提示词并记 warn，保证对话主流程不中断。
      *
+     * @param agentId Agent 标识
      * @return 提示词正文
      */
-    private String loadPrompt() {
-        String location = agentProperties.getPromptLocation();
+    private String loadPrompt(String agentId) {
+        String location = resolveLocation(agentId);
+        String fallbackPrompt = resolveFallbackPrompt(agentId);
         if (!StringUtils.hasText(location)) {
-            log.warn("未配置 app.agent.prompt-location，使用兜底系统提示词");
-            return DEFAULT_PROMPT;
+            log.warn("Agent 未登记提示词位置，使用兜底提示词，agentId={}", agentId);
+            return fallbackPrompt;
         }
         // 这里必须写全限定名：jakarta.annotation.Resource 与本类型的 Spring Resource 同名，
         // 引入后者会让 @Resource 注入注解解析失败。
         org.springframework.core.io.Resource resource = resourceLoader.getResource(location);
         if (!resource.exists()) {
-            log.warn("系统提示词文件不存在，使用兜底提示词，location={}", location);
-            return DEFAULT_PROMPT;
+            log.warn("系统提示词文件不存在，使用兜底提示词，agentId={}，location={}", agentId, location);
+            return fallbackPrompt;
         }
         try {
             String content = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             if (!StringUtils.hasText(content)) {
-                log.warn("系统提示词文件为空，使用兜底提示词，location={}", location);
-                return DEFAULT_PROMPT;
+                log.warn("系统提示词文件为空，使用兜底提示词，agentId={}，location={}", agentId, location);
+                return fallbackPrompt;
             }
             return content.strip();
         } catch (IOException exception) {
-            log.warn("系统提示词读取失败，使用兜底提示词，location={}", location, exception);
-            return DEFAULT_PROMPT;
+            log.warn("系统提示词读取失败，使用兜底提示词，agentId={}，location={}", agentId, location, exception);
+            return fallbackPrompt;
         }
+    }
+
+    /**
+     * 解析 Agent 对应的提示词文件位置。
+     *
+     * @param agentId Agent 标识
+     * @return 提示词文件位置，未登记的 Agent 返回 null
+     */
+    private String resolveLocation(String agentId) {
+        if (AgentFactory.MAIN_AGENT_NAME.equals(agentId)) {
+            return agentProperties.getPromptLocation();
+        }
+        return SUB_AGENT_PROMPT_LOCATIONS.get(agentId);
+    }
+
+    /**
+     * 解析 Agent 对应的兜底提示词。
+     *
+     * @param agentId Agent 标识
+     * @return 兜底提示词
+     */
+    private String resolveFallbackPrompt(String agentId) {
+        return AgentFactory.RESUME_ANALYST_AGENT_NAME.equals(agentId)
+                ? DEFAULT_SUB_AGENT_PROMPT : DEFAULT_PROMPT;
     }
 }

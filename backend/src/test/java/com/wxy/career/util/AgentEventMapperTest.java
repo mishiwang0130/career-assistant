@@ -87,17 +87,18 @@ class AgentEventMapperTest {
     }
 
     /**
-     * 验证最终结果映射为 result 事件并携带文本内容。
+     * 验证纯文本场景不发 result 事件。
+     *
+     * <p>{@code result} 承载的是结构化产物（F2 起的简历诊断结论等），由业务侧在流结束时下发；
+     * 框架的 AGENT_RESULT 里只有助手最终文本，不能直接当成结构化结果推给前端。
      */
     @Test
-    void shouldMapAgentResult() {
+    void shouldNotMapAgentResultToResultEvent() {
         Msg result = Msg.builder().role(MsgRole.ASSISTANT).textContent("最终结果").build();
 
         SseEvent event = AgentEventMapper.map(new AgentResultEvent(result));
 
-        assertThat(event).isNotNull();
-        assertThat(event.getName()).isEqualTo(SseEvent.NAME_RESULT);
-        assertThat(fieldOf(event, "data")).isEqualTo("最终结果");
+        assertThat(event).isNull();
     }
 
     /**
