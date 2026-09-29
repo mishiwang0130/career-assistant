@@ -21,9 +21,9 @@ public enum ChatSceneEnum {
     ASSISTANT("ASSISTANT", true),
 
     /**
-     * 模拟面试，F5 落地时开放。
+     * 模拟面试，F5 落地时开放：专属 Agent、按回答追问或换题、难度自适应，历史会话可回访。
      */
-    INTERVIEW("INTERVIEW", false);
+    INTERVIEW("INTERVIEW", true);
 
     /**
      * 场景字符串值，落库与接口传输均使用该值。

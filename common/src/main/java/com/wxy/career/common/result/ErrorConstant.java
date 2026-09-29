@@ -123,6 +123,21 @@ public final class ErrorConstant {
     public static final ErrorCode RESUME_DIAGNOSIS_TARGET_MISSING = new ErrorCode(1302, "没有可诊断的简历");
 
     /**
+     * 本场面试已结束。
+     *
+     * <p>F5 模拟面试引入（1500-1599 段）：题量走满或用户主动结束后，该会话不再接受新的作答，
+     * 需要新开一场面试。
+     */
+    public static final ErrorCode INTERVIEW_FINISHED = new ErrorCode(1501, "本场面试已结束");
+
+    /**
+     * 会话不是模拟面试。
+     *
+     * <p>F5 模拟面试引入：面试状态接口只能作用于 INTERVIEW 场景的会话，传助手会话按本码拒绝。
+     */
+    public static final ErrorCode INTERVIEW_SCENE_MISMATCH = new ErrorCode(1502, "该会话不是模拟面试");
+
+    /**
      * 工具类禁止实例化。
      */
     private ErrorConstant() {
