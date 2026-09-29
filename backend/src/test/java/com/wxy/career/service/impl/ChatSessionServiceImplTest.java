@@ -4,14 +4,18 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.wxy.career.common.auth.LoginUser;
 import com.wxy.career.common.auth.LoginUserHolder;
 import com.wxy.career.common.exception.BizException;
+import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.mapper.ChatSessionMapper;
 import com.wxy.career.po.ChatSession;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.AssistantMessageService;
+import com.wxy.career.service.InterviewFlowService;
+import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.ChatSessionCreateReqVO;
 import com.wxy.career.vo.ChatSessionRenameReqVO;
 import com.wxy.career.vo.ChatSessionRespVO;
 import com.wxy.career.vo.PageRespVO;
+import com.wxy.career.vo.UserProfileRespVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -61,6 +65,18 @@ class ChatSessionServiceImplTest {
      */
     @Mock
     private AgentFactory agentFactory;
+
+    /**
+     * 求职目标服务，F5 起面试会话建会话前必须先确认档案已填写。
+     */
+    @Mock
+    private UserProfileService userProfileService;
+
+    /**
+     * 面试流程服务，删除面试会话时顺手清掉回合缓冲。
+     */
+    @Mock
+    private InterviewFlowService interviewFlowService;
 
     /**
      * 被测会话中心服务。
@@ -113,24 +129,58 @@ class ChatSessionServiceImplTest {
     }
 
     /**
-     * 验证未登记或尚未开放的场景被拒绝。
+     * 验证未登记的场景被拒绝。
      */
     @Test
     void shouldRejectUnavailableScene() {
         ChatSessionCreateReqVO reqVO = new ChatSessionCreateReqVO();
-        reqVO.setScene("INTERVIEW");
-
-        assertThatThrownBy(() -> chatSessionService.create(reqVO))
-                .isInstanceOf(BizException.class)
-                .satisfies(exception -> assertThat(((BizException) exception).getErrorCode().getCode())
-                        .isEqualTo(1052));
-
         reqVO.setScene("UNKNOWN");
         assertThatThrownBy(() -> chatSessionService.create(reqVO))
                 .isInstanceOf(BizException.class)
                 .satisfies(exception -> assertThat(((BizException) exception).getErrorCode().getCode())
                         .isEqualTo(1052));
 
+        verify(chatSessionMapper, never()).insert(any(ChatSession.class));
+    }
+
+    /**
+     * 验证面试会话的标题带上目标岗位，列表里一眼能分辨，也不会被首条消息覆盖。
+     */
+    @Test
+    void shouldCreateInterviewSessionWithPositionTitle() {
+        UserProfileRespVO profile = new UserProfileRespVO();
+        profile.setTargetPosition("Java 后端开发");
+        profile.setWorkYears(5);
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(profile);
+        when(chatSessionMapper.insert(any(ChatSession.class))).thenAnswer(invocation -> {
+            ChatSession session = invocation.getArgument(0);
+            session.setId(21L);
+            return 1;
+        });
+        ChatSessionCreateReqVO reqVO = new ChatSessionCreateReqVO();
+        reqVO.setScene("INTERVIEW");
+
+        ChatSessionRespVO response = chatSessionService.create(reqVO);
+
+        assertThat(response.getTitle()).isEqualTo("模拟面试 · Java 后端开发");
+        assertThat(response.getScene()).isEqualTo("INTERVIEW");
+        assertThat(response.getSessionId()).isEqualTo("21");
+    }
+
+    /**
+     * 验证求职目标未填写时建不了面试会话（F4 的 1101），并且不写入任何会话行。
+     */
+    @Test
+    void shouldRejectInterviewSessionWithoutProfile() {
+        when(userProfileService.getRequiredUserProfile(1L))
+                .thenThrow(new BizException(ErrorConstant.USER_PROFILE_REQUIRED));
+        ChatSessionCreateReqVO reqVO = new ChatSessionCreateReqVO();
+        reqVO.setScene("INTERVIEW");
+
+        assertThatThrownBy(() -> chatSessionService.create(reqVO))
+                .isInstanceOf(BizException.class)
+                .satisfies(exception -> assertThat(((BizException) exception).getErrorCode().getCode())
+                        .isEqualTo(1101));
         verify(chatSessionMapper, never()).insert(any(ChatSession.class));
     }
 

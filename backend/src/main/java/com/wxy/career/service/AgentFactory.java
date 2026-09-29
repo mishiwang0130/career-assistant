@@ -26,6 +26,22 @@ public interface AgentFactory {
     String RESUME_ANALYST_AGENT_NAME = "resume-analyst";
 
     /**
+     * 面试 Agent 名，F5 冻结。
+     *
+     * <p>会话场景 INTERVIEW 的专属 Agent：一场有状态的长流程面试，有自己的提示词、工具白名单、
+     * 评分子 Agent 与上下文压缩配置，与助手 Agent 互不影响。
+     */
+    String INTERVIEWER_AGENT_NAME = "interviewer";
+
+    /**
+     * 评分子 Agent 名，F5 冻结。
+     *
+     * <p>由面试 Agent 按声明派发，不作为独立入口，也不通过 {@link #getAgent(String)} 获取：
+     * 提问与评分必须是两个角色，评分结论回到面试流程里决定追问还是换题。
+     */
+    String ANSWER_EVALUATOR_AGENT_NAME = "answer-evaluator";
+
+    /**
      * 按名字获取 Agent。
      *
      * @param agentName Agent 名

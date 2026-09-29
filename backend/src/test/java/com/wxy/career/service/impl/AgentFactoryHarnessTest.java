@@ -3,6 +3,7 @@ package com.wxy.career.service.impl;
 import com.wxy.career.common.exception.BizException;
 import com.wxy.career.common.redis.RedisUtil;
 import com.wxy.career.config.AgentProperties;
+import com.wxy.career.config.InterviewProperties;
 import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.mapper.SysUserMapper;
@@ -12,6 +13,8 @@ import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.UserProfileRespVO;
 import com.wxy.career.tool.ReadResumeTool;
+import com.wxy.career.tool.GetInterviewStateTool;
+import com.wxy.career.tool.RecordInterviewAnswerTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
@@ -25,6 +28,7 @@ import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -112,6 +116,10 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(agentFactory, "agentSkillRepository", agentSkillRepository);
         ReflectionTestUtils.setField(agentFactory, "readResumeTool", new ReadResumeTool());
         ReflectionTestUtils.setField(agentFactory, "submitResumeDiagnosisTool", new SubmitResumeDiagnosisTool());
+        ReflectionTestUtils.setField(agentFactory, "getInterviewStateTool", new GetInterviewStateTool());
+        ReflectionTestUtils.setField(
+                agentFactory, "recordInterviewAnswerTool", new RecordInterviewAnswerTool());
+        ReflectionTestUtils.setField(agentFactory, "interviewProperties", new InterviewProperties());
     }
 
     /**
@@ -243,6 +251,76 @@ class AgentFactoryHarnessTest {
         assertThat(systemPrompt).contains("测试系统提示词:" + AgentFactory.RESUME_ANALYST_AGENT_NAME);
         assertThat(systemPrompt).contains("目标岗位「后端开发」");
         assertThat(systemPrompt).contains("当前对话用户昵称：Alice");
+    }
+
+    /**
+     * 验证面试 Agent 的工具白名单：读简历 + 面试状态 + 记录回合 + 技能加载 + 框架派发工具，
+     * 助手侧的业务工具（提交诊断结论）与框架默认工具都没有混入。
+     */
+    @Test
+    void shouldExposeOnlyInterviewerTools() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.INTERVIEWER_AGENT_NAME);
+
+        assertThat(agent).isInstanceOf(HarnessAgent.class);
+        assertThat(agent.getName()).isEqualTo(AgentFactory.INTERVIEWER_AGENT_NAME);
+        assertThat(agent.getToolkit().getToolNames()).containsExactlyInAnyOrder(
+                "read_resume",
+                "get_interview_state",
+                "record_interview_answer",
+                "load_skill_through_path",
+                "agent_spawn",
+                "agent_send",
+                "agent_list");
+        // 面试不写库：提交简历诊断结论这类工具不能出现在面试 Agent 上。
+        assertThat(agent.getToolkit().getToolNames()).doesNotContain("submit_resume_diagnosis");
+    }
+
+    /**
+     * 验证评分子 Agent 的声明：只声明 answer-evaluation 技能，不暴露给用户，不注册业务工具。
+     */
+    @Test
+    void shouldDeclareAnswerEvaluatorSubagent() {
+        SubagentDeclaration declaration = agentFactory.buildAnswerEvaluatorDeclaration();
+
+        assertThat(declaration.getName()).isEqualTo(AgentFactory.ANSWER_EVALUATOR_AGENT_NAME);
+        assertThat(declaration.getSkills()).containsExactly("answer-evaluation");
+        assertThat(declaration.getExposeToUser()).isFalse();
+        assertThat(declaration.getTools()).isNullOrEmpty();
+    }
+
+    /**
+     * 验证评分子 Agent 的工具集被收窄到只剩技能加载工具：评分只依据派发消息给全的输入。
+     */
+    @Test
+    void shouldNarrowAnswerEvaluatorTools() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.INTERVIEWER_AGENT_NAME);
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId("1").sessionId("12").build();
+
+        var subagent = agent.getSubagentAgentManager()
+                .createAgentIfPresent(AgentFactory.ANSWER_EVALUATOR_AGENT_NAME, runtimeContext);
+
+        assertThat(subagent).isPresent();
+        Set<String> subagentTools = subagent.get().getToolkit().getToolNames();
+        assertThat(subagentTools).containsExactly("load_skill_through_path");
+        assertThat(subagentTools).doesNotContain("read_resume", "web_search", "web_fetch", "wait_async_results");
+    }
+
+    /**
+     * 验证面试会话的上下文压缩阈值就是登记值：40 条触发、保留 16 条，且压缩前不落盘、不卸载。
+     *
+     * <p>阈值是第 3 批能力接入项的一部分，改了必须同步 docs/技术约定.md 的取值理由，因此用测试固定。
+     */
+    @Test
+    void shouldConfigureInterviewCompaction() {
+        CompactionConfig compactionConfig = agentFactory.buildInterviewCompactionConfig();
+
+        assertThat(compactionConfig.getTriggerMessages()).isEqualTo(40);
+        assertThat(compactionConfig.getKeepMessages()).isEqualTo(16);
+        assertThat(compactionConfig.isOffloadBeforeCompact()).isFalse();
+        assertThat(compactionConfig.isFlushBeforeCompact()).isFalse();
+
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.INTERVIEWER_AGENT_NAME);
+        assertThat(agent.getCompactionHook()).isNotNull();
     }
 
     /**

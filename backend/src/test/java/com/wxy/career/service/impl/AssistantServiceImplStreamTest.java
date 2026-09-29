@@ -10,6 +10,7 @@ import com.wxy.career.config.AgentProperties;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.ChatSessionService;
+import com.wxy.career.service.InterviewFlowService;
 import com.wxy.career.service.ResumeDiagnosisService;
 import com.wxy.career.vo.AssistantChatReqVO;
 import io.agentscope.core.agent.RuntimeContext;
@@ -111,6 +112,8 @@ class AssistantServiceImplStreamTest {
         ReflectionTestUtils.setField(assistantService, "sseTaskScheduler", scheduler);
         ReflectionTestUtils.setField(assistantService, "redisUtil", redisUtil);
         ReflectionTestUtils.setField(assistantService, "resumeDiagnosisService", mock(ResumeDiagnosisService.class));
+        // F5：助手会话不是面试会话，面试流程服务返回 null，本轮仍走原对话链路。
+        ReflectionTestUtils.setField(assistantService, "interviewFlowService", mock(InterviewFlowService.class));
 
         LoginUserHolder.set(new LoginUser(USER_ID, "alice", "jti-1"));
     }

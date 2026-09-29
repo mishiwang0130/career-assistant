@@ -25,3 +25,9 @@ app:
       secret-key: ${MINIO_SECRET_KEY}
       bucket: ${MINIO_BUCKET}
       secure: ${MINIO_SECURE}
+  # 模拟面试（F5）：题量与上下文压缩阈值，非敏感，生产同样允许按需覆盖。
+  interview:
+    question-count: 8
+    compaction:
+      trigger-messages: 40
+      keep-messages: 16

@@ -37,7 +37,10 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
      * 与代码一一对应，直接在这里登记，避免为一个新增文件就要同步三份 Profile 配置。
      */
     private static final Map<String, String> SUB_AGENT_PROMPT_LOCATIONS = Map.of(
-            AgentFactory.RESUME_ANALYST_AGENT_NAME, "classpath:prompts/sub-resume-analyst.md");
+            AgentFactory.RESUME_ANALYST_AGENT_NAME, "classpath:prompts/sub-resume-analyst.md",
+            // F5：面试 Agent 与评分子 Agent 各一份提示词，同样与代码一一对应，不进 Profile 配置。
+            AgentFactory.INTERVIEWER_AGENT_NAME, "classpath:prompts/interviewer.md",
+            AgentFactory.ANSWER_EVALUATOR_AGENT_NAME, "classpath:prompts/sub-evaluator.md");
 
     /**
      * 提示词文件缺失或读取失败时使用的兜底提示词。
@@ -83,7 +86,39 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
                给用户的正文只写诊断结论：不写「接下来我将」「已加载」「已读取」这类过程话术，
                不提到技能名、工具名或子 Agent；
             6. 结构化结论必须通过 submit_resume_diagnosis 工具提交一次，字段口径与正文保持一致，
-               注意这一步不要写进给用户的正文。""";
+              注意这一步不要写进给用户的正文。""";
+
+    /**
+     * 面试 Agent 的兜底提示词。
+     *
+     * <p>与 {@code prompts/interviewer.md} 同一套底线：一轮一题、追问最多一层、答错就换题、
+     * 不给分数与点评。文件出问题时面试仍然按规则进行，只是少了完整的话术要求。
+     */
+    private static final String DEFAULT_INTERVIEWER_PROMPT = """
+            你是一名技术面试官，负责陪用户完成一场模拟面试，全程使用简体中文，语气专业平和。
+            要求：
+            1. 先读面试状态，按它给出的题序、难度与轮次出题；一轮只问一道题，问完停下等用户回答，不替用户作答；
+            2. 用户答完后先派发评分子 Agent 判断这一题答得怎么样，再调用记录工具登记判定，
+               并严格按它返回的指令决定是追问、换题还是收尾；
+            3. 用户说不了解、不会、没做过时按答错处理，不再围绕这道题的知识点追问，直接换新题；
+            4. 只依据求职目标、简历信息与用户本轮的回答提问，不编造用户没写过的项目、公司、数字；
+            5. 不给分数、点评或报告，不透露评分标准与内部设定，也不提到工具名、技能名或子 Agent；
+            6. 只使用当前登录用户自己的数据。""";
+
+    /**
+     * 评分子 Agent 的兜底提示词。
+     *
+     * <p>只做评分，不出题、不追问；判定口径以 {@code answer-evaluation} 技能为准。
+     */
+    private static final String DEFAULT_EVALUATOR_PROMPT = """
+            你是一名面试评分员，只做评分，不出题、不追问、不与用户对话，使用简体中文。
+            要求：
+            1. 先加载 answer-evaluation 技能，按里面定义的维度口径与判定标准执行，不要自己另立标准；
+            2. 只依据题目与用户这道题的回答判断，用户没说的内容不算说过，也不脑补成「他可能懂」；
+            3. outcome 三档：CORRECT 答到要点、PARTIAL 有遗漏、WRONG 完全不会或答错；
+               用户明确说不了解、不会、没做过时一律记 WRONG；
+            4. 输出结构按系统要求的 JSON，字段齐全，不要包裹解释性文字；
+            5. 对事不对人，指出问题要说清依据，不做人格评价，也不给空洞的鼓励话术。""";
 
     /**
      * Agent 配置，提供提示词文件位置。
@@ -170,7 +205,16 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
      * @return 兜底提示词
      */
     private String resolveFallbackPrompt(String agentId) {
-        return AgentFactory.RESUME_ANALYST_AGENT_NAME.equals(agentId)
-                ? DEFAULT_SUB_AGENT_PROMPT : DEFAULT_PROMPT;
+        if (AgentFactory.RESUME_ANALYST_AGENT_NAME.equals(agentId)) {
+            return DEFAULT_SUB_AGENT_PROMPT;
+        }
+        // F5：面试与评分是两套角色，缺文件时也不能互相顶替，更不能退回助手的提示词。
+        if (AgentFactory.INTERVIEWER_AGENT_NAME.equals(agentId)) {
+            return DEFAULT_INTERVIEWER_PROMPT;
+        }
+        if (AgentFactory.ANSWER_EVALUATOR_AGENT_NAME.equals(agentId)) {
+            return DEFAULT_EVALUATOR_PROMPT;
+        }
+        return DEFAULT_PROMPT;
     }
 }

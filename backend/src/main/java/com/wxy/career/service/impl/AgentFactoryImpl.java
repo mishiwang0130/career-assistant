@@ -3,11 +3,14 @@ package com.wxy.career.service.impl;
 import com.wxy.career.common.exception.BizException;
 import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.config.AgentProperties;
+import com.wxy.career.config.InterviewProperties;
 import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
+import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.ReadResumeTool;
+import com.wxy.career.tool.RecordInterviewAnswerTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.model.GenerateOptions;
@@ -16,6 +19,7 @@ import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import io.agentscope.harness.agent.middleware.SubagentEntry;
 import io.agentscope.harness.agent.subagent.DefaultAgentManager;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
@@ -206,7 +210,8 @@ public class AgentFactoryImpl implements AgentFactory {
             // 业务异常统一返回 HTTP 200，失败语义由 code 表达。
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
-        if (!MAIN_AGENT_NAME.equals(agentName)) {
+        // F5 起面试会话有自己的专属 Agent；其它未登记的 Agent 名仍按 404 拒绝。
+        if (!MAIN_AGENT_NAME.equals(agentName) && !INTERVIEWER_AGENT_NAME.equals(agentName)) {
             throw new BizException(ErrorConstant.NOT_FOUND);
         }
         return agentCache.computeIfAbsent(agentName, this::buildAgent);
@@ -229,6 +234,11 @@ public class AgentFactoryImpl implements AgentFactory {
             if (agent != null) {
                 agent.clearContext(userKey, sessionId);
             }
+            // F5：面试会话的上下文挂在面试 Agent 上，删除会话时一并清掉，避免重建同 ID 会话时带着旧面试记录。
+            HarnessAgent interviewer = agentCache.get(INTERVIEWER_AGENT_NAME);
+            if (interviewer != null) {
+                interviewer.clearContext(userKey, sessionId);
+            }
             // 即使 Agent 尚未创建，也要清掉可能残留的会话状态。
             agentStateStore.delete(userKey, sessionId);
         } catch (Exception exception) {
@@ -248,6 +258,10 @@ public class AgentFactoryImpl implements AgentFactory {
      * @return Agent 实例
      */
     private HarnessAgent buildAgent(String agentName) {
+        // F5 模拟面试：面试场景用专属 Agent（专属提示词、工具白名单、评分子 Agent 与上下文压缩）。
+        if (INTERVIEWER_AGENT_NAME.equals(agentName)) {
+            return buildInterviewerAgent();
+        }
         // 业务工具在工厂里集中注册：读简历助手与子 Agent 共用，提交诊断结论只给子 Agent 用。
         // 用户背景（昵称、求职目标）仍由 SystemPromptMiddleware 注入提示词，不注册业务工具。
         Toolkit toolkit = new Toolkit();
@@ -376,5 +390,245 @@ public class AgentFactoryImpl implements AgentFactory {
         toolsConfig.setAllow(ASSISTANT_ALLOWED_TOOL_NAMES);
         toolsConfig.setDeny(DENIED_PLATFORM_TOOL_NAMES);
         return toolsConfig;
+    }
+
+    // ==================== F5 模拟面试 ====================
+
+    /**
+     * 面试 Agent 描述，说明它负责一场有状态的模拟面试。
+     */
+    private static final String INTERVIEWER_AGENT_DESCRIPTION =
+            "模拟面试官：按目标岗位与工作年限出题，根据用户回答追问或换题，难度逐步上调，题量走满即结束。";
+
+    /**
+     * 面试 Agent 的步数上限。
+     *
+     * <p>一回合里要读状态、派发评分子 Agent、记录判定并组织下一段话术，比普通问答步数更多；
+     * 超出上限会以 error 事件结束，这里留出足够余量。
+     */
+    private static final int INTERVIEWER_MAX_ITERS = 20;
+
+    /**
+     * 读面试状态工具名。
+     */
+    private static final String INTERVIEW_STATE_TOOL_NAME = "get_interview_state";
+
+    /**
+     * 记录面试回合工具名。追问、换题与难度阶梯由它返回的指令决定。
+     */
+    private static final String INTERVIEW_ANSWER_TOOL_NAME = "record_interview_answer";
+
+    /**
+     * 面试 Agent 可见的工具白名单：读简历定项目题 + 面试流程两个工具 + 框架的子 Agent 派发工具。
+     *
+     * <p>写库、改档、文件与 Shell 一概不在其中；评分子 Agent 的结论通过派发回报，
+     * 本 Agent 不直接读写评分数据。
+     */
+    private static final List<String> INTERVIEWER_ALLOWED_TOOL_NAMES = List.of(
+            READ_RESUME_TOOL_NAME,
+            INTERVIEW_STATE_TOOL_NAME,
+            INTERVIEW_ANSWER_TOOL_NAME,
+            SKILL_LOAD_TOOL_NAME,
+            SUBAGENT_SPAWN_TOOL_NAME,
+            SUBAGENT_SEND_TOOL_NAME,
+            SUBAGENT_LIST_TOOL_NAME);
+
+    /**
+     * 评分子 Agent 描述，决定面试 Agent 在什么场景下把它派出去。
+     */
+    private static final String ANSWER_EVALUATOR_DESCRIPTION =
+            "面试评分员：对用户当前这道题的回答给出 outcome（答到要点 / 有遗漏 / 不会或答错）、"
+                    + "答对的点、遗漏的点、说错的点与一句话判定要点。需要判断用户答得怎么样时派给它。";
+
+    /**
+     * 评分子 Agent 加载的技能名，对应 MySQL 技能仓库里的 answer-evaluation。
+     */
+    private static final String ANSWER_EVALUATION_SKILL_NAME = "answer-evaluation";
+
+    /**
+     * 评分子 Agent 允许保留的工具：只有技能加载工具，不给任何业务工具。
+     *
+     * <p>评分的输入（题目、回答、岗位与年限）由派发消息给全，因此它不需要读库、读简历或写任何东西；
+     * 收窄到只剩技能加载工具，避免框架默认的平台工具混进来。
+     */
+    private static final List<String> ANSWER_EVALUATOR_ALLOWED_TOOL_NAMES = List.of(SKILL_LOAD_TOOL_NAME);
+
+    /**
+     * 面试 Agent 的子 Agent 白名单：按子 Agent 名收窄工具集，未列出的子 Agent 保持框架默认。
+     */
+    private static final Map<String, List<String>> INTERVIEWER_SUBAGENT_ALLOWED_TOOLS =
+            Map.of(AgentFactory.ANSWER_EVALUATOR_AGENT_NAME, ANSWER_EVALUATOR_ALLOWED_TOOL_NAMES);
+
+    /**
+     * 读面试状态工具。
+     */
+    @Resource
+    private GetInterviewStateTool getInterviewStateTool;
+
+    /**
+     * 记录面试回合工具。
+     */
+    @Resource
+    private RecordInterviewAnswerTool recordInterviewAnswerTool;
+
+    /**
+     * 面试配置，提供上下文压缩阈值。
+     */
+    @Resource
+    private InterviewProperties interviewProperties;
+
+    /**
+     * 构建面试 Agent（场景 INTERVIEW）。
+     *
+     * <p>与助手 Agent 的差别有三处：专属提示词与工具白名单、评分子 Agent（提问与评分分离）、
+     * 上下文压缩（面试是本项目最长的会话）。文件读写、Shell、工作区上下文、记忆工具仍然关闭。
+     *
+     * @return 面试 Agent 实例
+     */
+    HarnessAgent buildInterviewerAgent() {
+        // 面试只需要「读简历 + 读面试状态 + 记录回合」，不注册任何写类业务工具。
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(readResumeTool);
+        toolkit.registerTool(getInterviewStateTool);
+        toolkit.registerTool(recordInterviewAnswerTool);
+        HarnessAgent agent = HarnessAgent.builder()
+                .name(AgentFactory.INTERVIEWER_AGENT_NAME)
+                .description(INTERVIEWER_AGENT_DESCRIPTION)
+                .sysPrompt(systemPromptProvider.prompt(AgentFactory.INTERVIEWER_AGENT_NAME))
+                .model(agentModel)
+                .generateOptions(GenerateOptions.builder().temperature(0.6).build())
+                .toolkit(toolkit)
+                .maxIters(INTERVIEWER_MAX_ITERS)
+                .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
+                .stateStore(agentStateStore)
+                .skillRepository(agentSkillRepository)
+                .subagent(buildAnswerEvaluatorDeclaration())
+                // 第 3 批的能力接入项：上下文压缩，阈值见 InterviewProperties 与 docs/技术约定.md。
+                .compaction(buildInterviewCompactionConfig())
+                .toolsConfig(buildInterviewerToolsConfig())
+                .disableFilesystemTools()
+                .disableShellTool()
+                .disableWorkspaceContext()
+                .disableAtPathExpansion()
+                .disableDynamicSkills()
+                .disableDefaultWorkspaceSkills()
+                .disableTranscript()
+                .disableMemoryTools()
+                .disableMemoryHooks()
+                // 面试时长最长，明确关掉大结果卸载：卸载会把内容写到共享工作区，且本项目没有文件工具取回。
+                .disableToolResultEviction()
+                .build();
+        narrowSubagentTools(agent, INTERVIEWER_SUBAGENT_ALLOWED_TOOLS);
+        log.info("构建 Agent 完成，agentName={}，tools={}，skills={}",
+                agent.getName(), agent.getToolkit().getToolNames(), agent.getSkillRepositories().size());
+        return agent;
+    }
+
+    /**
+     * 构建「评分」子 Agent 声明。
+     *
+     * <p>与简历分析子 Agent 同样的声明式装配：代码声明、不落工作区文件、不暴露给用户，
+     * 评分结论回到面试流程里用于决定下一步问什么。
+     *
+     * @return 子 Agent 声明
+     */
+    SubagentDeclaration buildAnswerEvaluatorDeclaration() {
+        return SubagentDeclaration.builder()
+                .name(AgentFactory.ANSWER_EVALUATOR_AGENT_NAME)
+                .description(ANSWER_EVALUATOR_DESCRIPTION)
+                .skills(List.of(ANSWER_EVALUATION_SKILL_NAME))
+                .maxIters(RESUME_ANALYST_MAX_ITERS)
+                .exposeToUser(false)
+                .build();
+    }
+
+    /**
+     * 构建面试会话的上下文压缩配置。
+     *
+     * <p>阈值来自配置项，默认达到 40 条消息触发、压缩后保留最近 16 条：一场 8 题的面试大约是
+     * 16 轮问答，保留最近 16 条刚好覆盖当前这道题与上一轮问答，更早的问答压缩成摘要即可。
+     * 压缩前不落盘、不卸载，避免往共享工作区写文件。
+     *
+     * @return 上下文压缩配置
+     */
+    CompactionConfig buildInterviewCompactionConfig() {
+        InterviewProperties.Compaction compaction = interviewProperties.getCompaction();
+        return CompactionConfig.builder()
+                .triggerMessages(compaction.getTriggerMessages())
+                .keepMessages(compaction.getKeepMessages())
+                .flushBeforeCompact(false)
+                .offloadBeforeCompact(false)
+                .build();
+    }
+
+    /**
+     * 构建面试 Agent 的工具白名单配置。
+     *
+     * @return 工具白名单配置
+     */
+    ToolsConfig buildInterviewerToolsConfig() {
+        ToolsConfig toolsConfig = new ToolsConfig();
+        toolsConfig.setAllow(INTERVIEWER_ALLOWED_TOOL_NAMES);
+        toolsConfig.setDeny(DENIED_PLATFORM_TOOL_NAMES);
+        return toolsConfig;
+    }
+
+    /**
+     * 按白名单收紧指定 Agent 下所有子 Agent 的工具集。
+     *
+     * <p>与助手侧同源的做法：框架给声明式子 Agent 自动注册了平台工具，而子 Agent 不套用父 Agent 的
+     * {@code ToolsConfig}，所以包一层工厂，在子 Agent 实例创建后移除多余工具。这里按「子 Agent 名 →
+     * 允许工具集」的映射处理，便于后续模块继续追加自己的子 Agent。
+     *
+     * @param agent 已构建的父 Agent
+     * @param allowedToolsBySubagent 子 Agent 名到允许工具集的映射
+     */
+    private void narrowSubagentTools(HarnessAgent agent, Map<String, List<String>> allowedToolsBySubagent) {
+        DefaultAgentManager agentManager = agent.getSubagentAgentManager();
+        if (agentManager == null) {
+            log.warn("当前 Agent 没有子 Agent 管理器，跳过子 Agent 工具白名单收紧，agentName={}", agent.getName());
+            return;
+        }
+        Map<String, SubagentFactory> factories = agentManager.getAgentFactories();
+        List<SubagentEntry> entries = new ArrayList<>(factories.size());
+        for (Map.Entry<String, SubagentFactory> factoryEntry : factories.entrySet()) {
+            String subagentName = factoryEntry.getKey();
+            SubagentFactory factory = factoryEntry.getValue();
+            SubagentDeclaration declaration = agentManager.getDeclaration(subagentName).orElse(null);
+            List<String> allowedTools = allowedToolsBySubagent.get(subagentName);
+            if (allowedTools == null || allowedTools.isEmpty()) {
+                entries.add(new SubagentEntry(
+                        subagentName,
+                        declaration == null ? subagentName : declaration.getDescription(),
+                        factory,
+                        declaration));
+                continue;
+            }
+            SubagentFactory narrowed = runtimeContext -> keepTools(factory.create(runtimeContext), allowedTools);
+            entries.add(new SubagentEntry(
+                    subagentName,
+                    declaration == null ? subagentName : declaration.getDescription(),
+                    narrowed,
+                    declaration));
+        }
+        agentManager.replaceAgents(entries);
+    }
+
+    /**
+     * 按给定白名单移除子 Agent 上多余的框架默认工具。
+     *
+     * @param subagent 框架创建出来的子 Agent
+     * @param allowedTools 允许保留的工具名
+     * @return 原样返回收紧后的子 Agent
+     */
+    private Agent keepTools(Agent subagent, List<String> allowedTools) {
+        Toolkit toolkit = subagent.getToolkit();
+        for (String toolName : List.copyOf(toolkit.getToolNames())) {
+            if (!allowedTools.contains(toolName)) {
+                toolkit.removeTool(toolName);
+                log.debug("移除子 Agent 的框架默认工具，agentName={}，tool={}", subagent.getName(), toolName);
+            }
+        }
+        return subagent;
     }
 }

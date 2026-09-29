@@ -24,4 +24,10 @@ app:
       access-key: ${MINIO_ACCESS_KEY:minio}
       secret-key: ${MINIO_SECRET_KEY:minio123}
       bucket: career
+  # 模拟面试（F5）：题量与上下文压缩阈值，与公共配置保持一致，本地可自行调整。
+  interview:
+    question-count: 8
+    compaction:
+      trigger-messages: 40
+      keep-messages: 16
 

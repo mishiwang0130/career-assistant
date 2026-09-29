@@ -13,11 +13,14 @@ import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.AssistantService;
 import com.wxy.career.service.ChatSessionService;
+import com.wxy.career.service.InterviewFlowService;
 import com.wxy.career.service.ResumeDiagnosisService;
 import com.wxy.career.util.AgentEventMapper;
 import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.AssistantMessageRespVO;
+import com.wxy.career.vo.InterviewProgressResultVO;
+import com.wxy.career.vo.InterviewStateRespVO;
 import com.wxy.career.vo.PageRespVO;
 import com.wxy.career.vo.ResumeDiagnosisResultVO;
 import io.agentscope.core.agent.RuntimeContext;
@@ -142,6 +145,9 @@ public class AssistantServiceImpl implements AssistantService {
         String lockKey = AgentScopeStateKeyUtil.sessionLockKey(String.valueOf(userId), sessionId);
         String lockToken = acquireSessionLock(lockKey);
         try {
+            // F5 模拟面试：面试会话在进流前完成准入校验（求职目标必填、未结束）并记下本回合的回答；
+            // 助手会话返回 null，后面按原链路走。
+            InterviewStateRespVO interviewState = interviewFlowService.prepareTurn(userId, sessionId, content);
             // 用户消息先落库，保证即使流式中断历史记录也完整。
             assistantMessageService.saveMessage(userId, sessionIdValue, MessageRoleEnum.USER, content);
             // 消息落库后回写会话标题与活跃时间；会话元数据缺失时该方法只记日志，不会影响对话。
@@ -149,10 +155,14 @@ public class AssistantServiceImpl implements AssistantService {
 
             SseEmitterSupport support = createEmitterSupport();
             support.sendMeta(
-                    SCENE_ASSISTANT, sessionId, agentProperties.getProvider(), UUID.randomUUID().toString());
+                    interviewState == null ? SCENE_ASSISTANT : SCENE_INTERVIEW,
+                    sessionId, agentProperties.getProvider(), UUID.randomUUID().toString());
 
             StreamState state = new StreamState(support, userId, sessionId, sessionIdValue, lockKey, lockToken);
-        HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
+            // 面试会话走专属 Agent：自己的提示词、工具白名单与评分子 Agent。
+            state.interview = interviewState != null;
+            HarnessAgent agent = agentFactory.getAgent(interviewState == null
+                    ? AgentFactory.MAIN_AGENT_NAME : AgentFactory.INTERVIEWER_AGENT_NAME);
             RuntimeContext runtimeContext = RuntimeContext.builder()
                     .userId(String.valueOf(userId))
                     .sessionId(sessionId)
@@ -287,9 +297,17 @@ public class AssistantServiceImpl implements AssistantService {
             return;
         }
         if (StringUtils.hasText(errorMessage)) {
+            // 异常结束时面试回合不落库：进度停在出错前那一步，用户重新作答即可，避免半截推进。
+            if (state.interview) {
+                interviewFlowService.discardTurn(state.userId, state.sessionId);
+            }
             state.support.sendError(errorMessage);
         } else {
-            sendStructuredResult(state);
+            if (state.interview) {
+                sendInterviewProgress(state);
+            } else {
+                sendStructuredResult(state);
+            }
             state.support.sendDone();
         }
     }
@@ -521,6 +539,11 @@ public class AssistantServiceImpl implements AssistantService {
         private volatile boolean detached;
 
         /**
+         * 本次流是否属于模拟面试会话：结束时走面试的落库与进度下发，不走简历诊断结果。
+         */
+        private boolean interview;
+
+        /**
          * 上游订阅句柄，结束时可主动释放。
          */
         private final AtomicReference<Disposable> subscription = new AtomicReference<>();
@@ -548,6 +571,43 @@ public class AssistantServiceImpl implements AssistantService {
             this.sessionIdValue = sessionIdValue;
             this.lockKey = lockKey;
             this.lockToken = lockToken;
+        }
+    }
+
+    // ==================== F5 模拟面试 ====================
+
+    /**
+     * 面试场景标识，写入 meta 事件，与前端 {@code ChatScene} 的取值口径一致。
+     */
+    private static final String SCENE_INTERVIEW = "interview";
+
+    /**
+     * 面试流程服务，负责回合落库与进度下发。
+     */
+    @Resource
+    private InterviewFlowService interviewFlowService;
+
+    /**
+     * 落库本回合的面试问答并下发最新进度与难度。
+     *
+     * <p>下发时机与简历诊断结论一致：流正常结束前、{@code done} 之前。开场那一轮只提问、没有待落库
+     * 的问答，此时不下发进度事件（界面进度由面试状态接口给出）。落库失败只记日志，不影响已推送的正文。
+     *
+     * @param state 流式会话状态
+     */
+    private void sendInterviewProgress(StreamState state) {
+        InterviewStateRespVO progress;
+        try {
+            progress = interviewFlowService.commitTurn(state.userId, state.sessionId);
+        } catch (Exception exception) {
+            log.error("面试回合落库失败，userId={}，sessionId={}", state.userId, state.sessionId, exception);
+            return;
+        }
+        if (progress == null) {
+            return;
+        }
+        if (!state.support.send(SseEvent.result(InterviewProgressResultVO.from(progress)))) {
+            log.warn("面试进度下发失败，连接可能已断开，sessionId={}", state.sessionId);
         }
     }
 }

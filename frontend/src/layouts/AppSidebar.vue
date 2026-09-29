@@ -6,6 +6,25 @@
       + 新建会话
     </el-button>
 
+    <!-- F5 模拟面试：会话型入口按第 5.1 节骨架分组，通用助手是默认入口，模拟面试点开即开一场 -->
+    <div class="sidebar__section">会话入口</div>
+    <div class="sidebar__nav">
+      <div
+        class="nav-item"
+        :class="{ 'nav-item--active': isAssistantEntryActive }"
+        @click="handleCreateSession"
+      >
+        通用助手
+      </div>
+      <div
+        class="nav-item"
+        :class="{ 'nav-item--active': isInterviewEntryActive }"
+        @click="handleStartInterview"
+      >
+        模拟面试
+      </div>
+    </div>
+
     <div class="sidebar__section">会话</div>
     <div
       v-infinite-scroll="handleLoadMore"
@@ -84,7 +103,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Delete, EditPen } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -93,7 +112,12 @@ import { useAssistantStore } from '@/stores/assistant'
 import { useProfileStore } from '@/stores/profile'
 import { useSessionStore } from '@/stores/session'
 import { useUserStore } from '@/stores/user'
+import { BizError } from '@/api/request'
 import type { ChatSessionRespVO } from '@/types/session'
+import { INTERVIEW_KICKOFF_COMMAND } from '@/utils/interview'
+
+/** 求职目标未填写的业务错误码，与后端 ErrorConstant.USER_PROFILE_REQUIRED 一致。 */
+const PROFILE_REQUIRED_CODE = 1101
 
 /** 点击会话或资料库后通知外层关闭窄屏抽屉。 */
 const emit = defineEmits<{ (event: 'navigate'): void }>()
@@ -115,6 +139,22 @@ const isResumeRoute = computed(
 
 /** 求职目标页是否处于选中态。 */
 const isProfileRoute = computed(() => route.name === 'ProfileView')
+
+/** 是否正在新建面试会话，避免连点建出多场。 */
+const startingInterview = ref(false)
+
+/** 通用助手入口的选中态：草稿态（还没有会话）按助手会话处理。 */
+const isAssistantEntryActive = computed(() => {
+  if (!isChatRoute.value) {
+    return false
+  }
+  return (sessionStore.currentSession?.scene ?? 'ASSISTANT') === 'ASSISTANT'
+})
+
+/** 模拟面试入口的选中态。 */
+const isInterviewEntryActive = computed(
+  () => isChatRoute.value && sessionStore.currentSession?.scene === 'INTERVIEW',
+)
 
 /** 是否处于会话路由：切到资料库时会话项不再保持选中态。 */
 const isChatRoute = computed(
@@ -151,6 +191,41 @@ async function handleCreateSession(): Promise<void> {
   sessionStore.startDraft()
   if (route.name !== 'ChatView') {
     await router.push({ name: 'ChatView' })
+  }
+}
+
+/**
+ * 开一场模拟面试：先过 F4 的求职目标校验，再新建 INTERVIEW 会话并把开场指令排队。
+ *
+ * 面试是有状态的长流程，因此入口直连「建会话 → 开场出题」，用户不需要选模式；
+ * 求职目标未填写时按 F4 的流程拦到 `/profile`，填完回到原入口。
+ */
+async function handleStartInterview(): Promise<void> {
+  emit('navigate')
+  // 侧栏红点、登录提醒窗与引导卡片共用这份状态，这里只保证至少取过一次。
+  await profileStore.ensureLoaded()
+  if (!profileStore.filled) {
+    ElMessage.warning('先填好目标岗位和工作年限，模拟面试才能按你的方向出题')
+    await router.push({ name: 'ProfileView', query: { redirect: '/chat' } })
+    return
+  }
+  if (startingInterview.value) {
+    return
+  }
+  startingInterview.value = true
+  try {
+    const sessionId = await sessionStore.createNewSession('INTERVIEW')
+    // 开场指令由面试面板在会话就绪后发出，避免在切换会话的异步间隙里发到旧会话。
+    assistantStore.queuePendingCommand(INTERVIEW_KICKOFF_COMMAND)
+    await router.push({ name: 'ChatSessionView', params: { sessionId } })
+  } catch (error) {
+    if (error instanceof BizError && error.code === PROFILE_REQUIRED_CODE) {
+      ElMessage.warning('请先填写求职目标')
+      await router.push({ name: 'ProfileView', query: { redirect: '/chat' } })
+    }
+    // 其它错误已由请求层统一提示。
+  } finally {
+    startingInterview.value = false
   }
 }
 

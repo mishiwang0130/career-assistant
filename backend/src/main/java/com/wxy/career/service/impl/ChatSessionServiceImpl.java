@@ -10,10 +10,13 @@ import com.wxy.career.po.ChatSession;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.ChatSessionService;
+import com.wxy.career.service.InterviewFlowService;
+import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.ChatSessionCreateReqVO;
 import com.wxy.career.vo.ChatSessionRenameReqVO;
 import com.wxy.career.vo.ChatSessionRespVO;
 import com.wxy.career.vo.PageRespVO;
+import com.wxy.career.vo.UserProfileRespVO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -52,6 +55,16 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     private static final int AUTO_TITLE_MAX_LENGTH = 20;
 
     /**
+     * 会话标题最大长度，与 chat_session.title 的列宽保持一致。
+     */
+    private static final int TITLE_MAX_LENGTH = 100;
+
+    /**
+     * 面试会话的标题前缀，后面接目标岗位，便于在会话列表里一眼分辨。
+     */
+    private static final String INTERVIEW_TITLE_PREFIX = "模拟面试 · ";
+
+    /**
      * 会话元数据 Mapper。
      */
     @Resource
@@ -68,6 +81,18 @@ public class ChatSessionServiceImpl implements ChatSessionService {
      */
     @Resource
     private AgentFactory agentFactory;
+
+    /**
+     * 求职目标服务，面试会话建会话前必须确认档案已填写（F4 的 1101）。
+     */
+    @Resource
+    private UserProfileService userProfileService;
+
+    /**
+     * 面试流程服务，删除面试会话时顺手清掉本回合的运行态缓冲。
+     */
+    @Resource
+    private InterviewFlowService interviewFlowService;
 
     /**
      * 新建会话，返回后端生成的会话 ID。
@@ -88,7 +113,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         ChatSession session = new ChatSession();
         session.setUserId(userId);
         session.setScene(scene.getValue());
-        session.setTitle(ChatSession.DEFAULT_TITLE);
+        session.setTitle(resolveTitle(scene, userId));
         session.setStatus(ChatSession.STATUS_ACTIVE);
         // 活跃时间在创建时就落一个值，保证列表排序有确定依据。
         session.setLastMessageAt(LocalDateTime.now());
@@ -157,6 +182,8 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         assistantMessageService.clearSession(userId, session.getId());
         // Agent 里的上下文同样要清掉，否则重建同 ID 会话时会带着旧记忆继续回答。
         agentFactory.clearSession(userId, String.valueOf(session.getId()));
+        // F5：面试回合的运行态缓冲同样按会话隔离，会话删了就一并丢弃。
+        interviewFlowService.discardTurn(userId, String.valueOf(session.getId()));
     }
 
     /**
@@ -267,5 +294,26 @@ public class ChatSessionServiceImpl implements ChatSessionService {
             return "";
         }
         return raw.strip().replaceAll("\\s+", " ");
+    }
+
+    /**
+     * 解析新建会话的初始标题。
+     *
+     * <p>面试是「第几题、什么岗位」的长会话，用「模拟面试 · 目标岗位」做初始标题，列表里一眼能分辨，
+     * 且因为已经不是默认标题，首条 kickoff 消息不会把它覆盖掉；助手会话沿用「新会话」，由首条消息自动改写。
+     *
+     * <p>面试依赖求职目标：这里调用 F4 的必填校验，未填写时抛 1101，前端据此跳 {@code /profile}。
+     *
+     * @param scene 会话场景
+     * @param userId 用户 ID
+     * @return 初始标题
+     */
+    private String resolveTitle(ChatSceneEnum scene, Long userId) {
+        if (ChatSceneEnum.INTERVIEW != scene) {
+            return ChatSession.DEFAULT_TITLE;
+        }
+        UserProfileRespVO profile = userProfileService.getRequiredUserProfile(userId);
+        String title = INTERVIEW_TITLE_PREFIX + profile.getTargetPosition();
+        return title.length() <= TITLE_MAX_LENGTH ? title : title.substring(0, TITLE_MAX_LENGTH);
     }
 }
