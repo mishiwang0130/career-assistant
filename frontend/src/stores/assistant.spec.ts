@@ -143,6 +143,51 @@ describe('助手对话状态', () => {
     expect(assistantStore.isStreaming('100')).toBe(false)
     expect(assistantStore.errorMessage).toBe('')
   })
+
+  it('思考过程只在正文产出前保留，正文一出现就丢弃且不再补回', async () => {
+    let emit: ((event: string, data: string) => void) | null = null
+    let finishChat: (() => void) | null = null
+    vi.mocked(assistantApi.chat).mockImplementation(async (_data, onEvent) => {
+      emit = onEvent
+      await new Promise<void>((resolve) => {
+        finishChat = resolve
+      })
+    })
+    const assistantStore = useAssistantStore()
+
+    const sending = assistantStore.sendMessage('你好')
+    await flushPromises()
+    const reply = assistantStore.messages[assistantStore.messages.length - 1]
+
+    emitWith(emit, 'thinking', { content: '先看简历' })
+    expect(reply.thinking).toBe('先看简历')
+
+    emitWith(emit, 'delta', { content: '你的简历' })
+    expect(reply.thinking).toBe('')
+
+    // 正文已开始产出后再来的思考增量不再累积，避免界面又冒出一个回看入口。
+    emitWith(emit, 'thinking', { content: '又想到一点' })
+    expect(reply.thinking).toBe('')
+
+    emitWith(emit, 'done', {})
+    finishChatWith(finishChat)
+    await sending
+
+    expect(reply.content).toBe('你的简历')
+    expect(reply.thinking).toBe('')
+  })
+
+  it('整轮没有产出正文时，流结束也会清掉思考内容', async () => {
+    vi.mocked(assistantApi.chat).mockImplementation(async (_data, onEvent) => {
+      onEvent('thinking', JSON.stringify({ content: '先看简历' }))
+      onEvent('done', '{}')
+    })
+    const assistantStore = useAssistantStore()
+
+    await assistantStore.sendMessage('你好')
+
+    expect(assistantStore.messages[assistantStore.messages.length - 1].thinking).toBe('')
+  })
 })
 
 /**
