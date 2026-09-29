@@ -57,12 +57,12 @@ class AgentEventMapperTest {
      */
     @Test
     void shouldMapToolCallStartAndEnd() {
-        SseEvent start = AgentEventMapper.map(new ToolCallStartEvent("reply-1", "call-1", "get_user_profile"));
-        SseEvent end = AgentEventMapper.map(new ToolCallEndEvent("reply-1", "call-1", "get_user_profile"));
+        SseEvent start = AgentEventMapper.map(new ToolCallStartEvent("reply-1", "call-1", "search_question_bank"));
+        SseEvent end = AgentEventMapper.map(new ToolCallEndEvent("reply-1", "call-1", "search_question_bank"));
 
         assertThat(start).isNotNull();
         assertThat(start.getName()).isEqualTo(SseEvent.NAME_TOOL);
-        assertThat(fieldOf(start, "name")).isEqualTo("get_user_profile");
+        assertThat(fieldOf(start, "name")).isEqualTo("search_question_bank");
         assertThat(fieldOf(start, "status")).isEqualTo(SseEvent.TOOL_STATUS_START);
         assertThat(fieldOf(start, "detail")).isEqualTo("call-1");
 

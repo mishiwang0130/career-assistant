@@ -19,11 +19,8 @@ import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.UserProfileService;
 import com.wxy.career.service.impl.AgentFactoryImpl;
 import com.wxy.career.service.impl.AssistantServiceImpl;
-import com.wxy.career.tool.GetUserProfileTool;
-import com.wxy.career.tool.UpdateUserProfileTool;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
-import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
@@ -42,10 +39,8 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import reactor.core.publisher.Flux;
 
-import java.util.List;
-import java.util.Map;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -124,6 +119,8 @@ class AssistantControllerSseTest {
         SystemPromptMiddleware systemPromptMiddleware = new SystemPromptMiddleware();
         ReflectionTestUtils.setField(systemPromptMiddleware, "systemPromptProvider", systemPromptProvider);
         ReflectionTestUtils.setField(systemPromptMiddleware, "sysUserMapper", sysUserMapper);
+        UserProfileService userProfileService = mock(UserProfileService.class);
+        ReflectionTestUtils.setField(systemPromptMiddleware, "userProfileService", userProfileService);
 
         redisUtil = mock(RedisUtil.class);
         when(redisUtil.getHash(anyString(), anyString(), eq(Long.class))).thenReturn(null);
@@ -140,11 +137,6 @@ class AssistantControllerSseTest {
         ReflectionTestUtils.setField(agentFactory, "systemPromptProvider", systemPromptProvider);
         ReflectionTestUtils.setField(agentFactory, "systemPromptMiddleware", systemPromptMiddleware);
         ReflectionTestUtils.setField(agentFactory, "metricsMiddleware", metricsMiddleware);
-        UserProfileService userProfileService = mock(UserProfileService.class);
-        ReflectionTestUtils.setField(agentFactory, "getUserProfileTool",
-                new GetUserProfileTool(userProfileService, objectMapper));
-        ReflectionTestUtils.setField(agentFactory, "updateUserProfileTool",
-                new UpdateUserProfileTool(userProfileService, objectMapper));
 
         assistantMessageService = mock(AssistantMessageService.class);
         chatSessionService = mock(ChatSessionService.class);
@@ -193,10 +185,8 @@ class AssistantControllerSseTest {
         assertThat(body).contains("\"scene\":\"assistant\"");
         assertThat(body).contains("\"sessionId\":\"1\"");
         assertThat(body).contains("\"provider\":\"dashscope\"");
-        // 工具调用事件必须成对出现，且 START 早于 END。
-        assertThat(body).contains("\"name\":\"get_user_profile\"");
-        assertThat(body.indexOf("\"status\":\"START\"")).isGreaterThan(-1);
-        assertThat(body.indexOf("\"status\":\"START\"")).isLessThan(body.indexOf("\"status\":\"END\""));
+        // 本模块不注册任何业务工具，流里不应出现工具调用事件。
+        assertThat(body).doesNotContain("event:tool");
         assertThat(body).contains("event:delta");
         assertThat(body).endsWith("event:done\ndata:{}\n\n");
         assertThat(body).doesNotContain("event:error");
@@ -375,7 +365,7 @@ class AssistantControllerSseTest {
     }
 
     /**
-     * 测试用桩模型：第一轮请求调用只读工具，第二轮分片返回文本。
+     * 测试用桩模型：直接分片返回文本（本模块没有工具，不走工具调用轮）。
      *
      * @author wxy
      * @date 2026-09-28
@@ -383,12 +373,7 @@ class AssistantControllerSseTest {
     private static final class StubChatModel implements Model {
 
         /**
-         * 调用次数，用于区分工具调用轮与文本回复轮。
-         */
-        private final AtomicInteger callCount = new AtomicInteger();
-
-        /**
-         * 按调用轮次返回固定响应。
+         * 返回固定文本分片。
          *
          * @param messages 上下文消息
          * @param tools 可用工具
@@ -398,14 +383,6 @@ class AssistantControllerSseTest {
         @Override
         public Flux<ChatResponse> stream(
                 List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
-            if (callCount.getAndIncrement() == 0) {
-                ToolUseBlock toolUse = ToolUseBlock.builder()
-                        .id("call-1")
-                        .name(GetUserProfileTool.TOOL_NAME)
-                        .input(Map.of())
-                        .build();
-                return Flux.just(ChatResponse.builder().id("stub-tool").content(List.of(toolUse)).build());
-            }
             return Flux.fromArray(new String[]{"这是", "桩模型回复"})
                     .map(chunk -> ChatResponse.builder()
                             .id("stub-text")

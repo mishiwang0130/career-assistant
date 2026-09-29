@@ -1,6 +1,5 @@
 package com.wxy.career.service.impl;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.common.exception.BizException;
 import com.wxy.career.common.redis.RedisUtil;
 import com.wxy.career.config.AgentProperties;
@@ -8,9 +7,6 @@ import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
-import com.wxy.career.service.UserProfileService;
-import com.wxy.career.tool.GetUserProfileTool;
-import com.wxy.career.tool.UpdateUserProfileTool;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
@@ -73,12 +69,6 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(agentFactory, "systemPromptProvider", systemPromptProvider);
         ReflectionTestUtils.setField(agentFactory, "systemPromptMiddleware", systemPromptMiddleware);
         ReflectionTestUtils.setField(agentFactory, "metricsMiddleware", metricsMiddleware);
-        ObjectMapper objectMapper = new ObjectMapper();
-        UserProfileService userProfileService = mock(UserProfileService.class);
-        ReflectionTestUtils.setField(agentFactory, "getUserProfileTool",
-                new GetUserProfileTool(userProfileService, objectMapper));
-        ReflectionTestUtils.setField(agentFactory, "updateUserProfileTool",
-                new UpdateUserProfileTool(userProfileService, objectMapper));
     }
 
     /**
@@ -96,14 +86,14 @@ class AgentFactoryHarnessTest {
     }
 
     /**
-     * 验证工具白名单只有求职目标的两个工具，框架默认工具（文件、Shell、Web、异步等待等）没有混入。
+     * 验证本 Agent 不向模型暴露任何工具：用户背景由系统提示词注入，框架默认工具
+     * （文件、Shell、Web、异步等待等）也没有混入。
      */
     @Test
-    void shouldExposeOnlyWhitelistedTools() {
+    void shouldExposeNoTools() {
         HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
 
-        assertThat(agent.getToolkit().getToolNames()).containsExactlyInAnyOrder(
-                GetUserProfileTool.TOOL_NAME, UpdateUserProfileTool.TOOL_NAME);
+        assertThat(agent.getToolkit().getToolNames()).isEmpty();
     }
 
     /**
