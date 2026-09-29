@@ -139,6 +139,39 @@ class SystemPromptProviderImplTest {
     }
 
     /**
+     * 校验面试 Agent 与评分子 Agent 各读各的提示词，缺文件时各自的兜底也不会串到别的角色。
+     *
+     * <p>面试提示词是本模块「一轮一题、追问最多一层、答错就换题」的行为契约；评分提示词必须写明以
+     * {@code answer-evaluation} 技能为准。文件位置写错时，线上会静默走兜底，因此这两条一起固定。
+     *
+     * @throws Exception 读取配置文件失败
+     */
+    @Test
+    @DisplayName("面试与评分提示词各取各的且兜底不串角色")
+    void shouldLoadInterviewPromptsSeparately() throws Exception {
+        SystemPromptProviderImpl provider = newProvider(PROMPT_LOCATION);
+        String interviewerPrompt = provider.prompt(AgentFactory.INTERVIEWER_AGENT_NAME);
+        String evaluatorPrompt = provider.prompt(AgentFactory.ANSWER_EVALUATOR_AGENT_NAME);
+
+        assertEquals(readPromptFile("prompts/interviewer.md").strip(), interviewerPrompt,
+                "面试 Agent 应原样读到自己的提示词文件");
+        assertEquals(readPromptFile("prompts/sub-evaluator.md").strip(), evaluatorPrompt,
+                "评分子 Agent 应原样读到自己的提示词文件");
+        assertTrue(interviewerPrompt.contains("get_interview_state"), "面试提示词要写明读状态工具");
+        assertTrue(interviewerPrompt.contains("record_interview_answer"), "面试提示词要写明记录工具");
+        assertTrue(interviewerPrompt.contains("interview-questioning"), "出题规则必须走技能，不在提示词里重写");
+        assertTrue(interviewerPrompt.contains("不要再围绕刚才的知识点"), "错题不纠缠要写进提示词");
+        assertTrue(evaluatorPrompt.contains("answer-evaluation"), "评分口径以技能为准");
+        assertTrue(evaluatorPrompt.contains("WRONG"), "评分提示词要写明三档判定");
+
+        SystemPromptProviderImpl fallbackProvider = newProvider("classpath:prompts/not-exists.md");
+        String fallbackInterviewer = fallbackProvider.prompt(AgentFactory.INTERVIEWER_AGENT_NAME);
+        assertTrue(fallbackInterviewer.contains("面试官"), "缺文件时面试 Agent 应退回面试官兜底提示词");
+        assertFalse(fallbackInterviewer.contains("求职智能助手"), "面试兜底不能变成助手角色");
+        assertFalse(fallbackInterviewer.contains("简历分析专家"), "面试兜底不能变成简历分析角色");
+    }
+
+    /**
      * 构造只注入必要依赖的提示词提供者。
      *
      * @param location 提示词文件位置

@@ -48,4 +48,36 @@ class SkillSeedScriptTest {
         assertThat(skillSection).contains("submit_resume_diagnosis");
         assertThat(skillSection.length()).isGreaterThan(500);
     }
+
+    /**
+     * 验证建库脚本包含 F5 的面试问答表与两个幂等技能。
+     *
+     * <p>真实取数同样需要 MySQL，因此这里只固定脚本契约：面试问答表带账号与会话索引、两个技能都写成幂等插入、
+     * 内容覆盖三类题型配比 / 难度阶梯 / 追问换题（含答错记错题）与三档判定。
+     *
+     * @throws Exception 读取脚本失败
+     */
+    @Test
+    void shouldSeedInterviewSkillsIdempotently() throws Exception {
+        String script = Files.readString(SCRIPT_PATH, StandardCharsets.UTF_8);
+
+        assertThat(script).contains("CREATE TABLE IF NOT EXISTS `interview_qa`");
+        assertThat(script).contains("idx_interview_qa_user_session");
+        assertThat(script).contains("'interview-questioning'");
+        assertThat(script).contains("'answer-evaluation'");
+
+        int questioning = script.indexOf("'interview-questioning'");
+        String questioningSection = script.substring(
+                questioning, script.indexOf("ON DUPLICATE KEY UPDATE", questioning));
+        assertThat(questioningSection).contains("4:2:2").contains("难度阶梯")
+                .contains("追问").contains("换题").contains("错题");
+        assertThat(questioningSection.length()).isGreaterThan(500);
+
+        int evaluation = script.indexOf("'answer-evaluation'");
+        String evaluationSection = script.substring(
+                evaluation, script.indexOf("ON DUPLICATE KEY UPDATE", evaluation));
+        assertThat(evaluationSection).contains("CORRECT").contains("PARTIAL").contains("WRONG")
+                .contains("掌握度");
+        assertThat(evaluationSection.length()).isGreaterThan(500);
+    }
 }
