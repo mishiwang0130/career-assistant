@@ -79,3 +79,56 @@ describe('消息气泡的思考过程', () => {
     expect(container.textContent).not.toContain('思考')
   })
 })
+
+describe('消息气泡的正文渲染', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('助手正文按 Markdown 渲染成 HTML', async () => {
+    const { container } = mountBubble(
+      createMessage({ content: '## 综合评分\n\n**78 分**', streaming: false }),
+    )
+    await nextTick()
+
+    // 模型按提示词要求用小标题与加粗组织正文，页面上不应再出现裸露的 ## 与 ** 符号。
+    expect(container.querySelector('h2')?.textContent).toBe('综合评分')
+    expect(container.querySelector('strong')?.textContent).toBe('78 分')
+    expect(container.textContent).not.toContain('## 综合评分')
+  })
+
+  it('助手正文里的脚本被过滤', async () => {
+    const { container } = mountBubble(
+      createMessage({ content: '<script>alert(1)</script>', streaming: false }),
+    )
+    await nextTick()
+
+    expect(container.querySelector('script')).toBeNull()
+  })
+
+  it('用户消息按原文展示，不解析 Markdown', async () => {
+    const { container } = mountBubble(
+      createMessage({ role: 'USER', content: '**不要加粗**', streaming: false }),
+    )
+    await nextTick()
+
+    expect(container.querySelector('strong')).toBeNull()
+    expect(container.textContent).toContain('**不要加粗**')
+  })
+
+  it('流式期间正文容器带流式标记，结束后摘掉', async () => {
+    const { container, message } = mountBubble(createMessage({ streaming: true }))
+    await nextTick()
+
+    expect(container.querySelector('.message-content--streaming')).not.toBeNull()
+
+    message.streaming = false
+    message.content = '已经写完了'
+    await nextTick()
+
+    expect(container.querySelector('.message-content--streaming')).toBeNull()
+    expect(container.querySelector('.message-content--markdown')?.textContent).toContain(
+      '已经写完了',
+    )
+  })
+})
