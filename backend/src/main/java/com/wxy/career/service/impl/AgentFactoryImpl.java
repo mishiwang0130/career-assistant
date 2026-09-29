@@ -135,6 +135,42 @@ public class AgentFactoryImpl implements AgentFactory {
     private static final List<String> DENIED_PLATFORM_TOOL_NAMES = List.of(
             "wait_async_results", "web_search", "web_fetch", "task_output", "task_list", "task_cancel");
 
+    // ==================== F3 岗位匹配 ====================
+
+    /**
+     * 岗位匹配子 Agent 描述，决定助手在什么场景下把它派出去。
+     */
+    private static final String JOB_MATCH_DESCRIPTION =
+            "岗位匹配专家：对照用户的简历与用户当场粘贴的 JD，给出匹配度、多维度评分、命中关键词、"
+                    + "缺失关键词与差距补齐建议。用户粘一段 JD 问「我匹配吗」时派给它。";
+
+    /**
+     * 岗位匹配子 Agent 的步数上限：读分段简历 + 读技能 + 逐条比对 JD 要求，比一次问答需要更多步。
+     */
+    private static final int JOB_MATCH_MAX_ITERS = 12;
+
+    /**
+     * 岗位匹配子 Agent 加载的技能名，对应 MySQL 技能仓库里的 job-match。
+     */
+    private static final String JOB_MATCH_SKILL_NAME = "job-match";
+
+    /**
+     * 岗位匹配子 Agent 的工具白名单：只用 F2 的只读读简历工具。
+     *
+     * <p>JD 由用户在对话里粘贴、内容随派发指令进入上下文，因此不需要任何读 JD 的工具；
+     * 本模块也不下发结构化卡片，结论直接写进回答正文，因此不需要 F2 那种提交工具。
+     */
+    private static final List<String> JOB_MATCH_TOOL_NAMES = List.of(READ_RESUME_TOOL_NAME);
+
+    /**
+     * 岗位匹配子 Agent 最终允许保留的工具集合：读简历 + 技能加载工具。
+     *
+     * <p>与 F2 同理，框架给声明式子 Agent 也自动注册了平台工具（联网检索、抓取、异步等待），
+     * 而子 Agent 不走父 Agent 的 {@code ToolsConfig}，因此要在子 Agent 实例创建后按本白名单逐个移除。
+     */
+    private static final List<String> JOB_MATCH_ALLOWED_TOOL_NAMES =
+            List.of(READ_RESUME_TOOL_NAME, SKILL_LOAD_TOOL_NAME);
+
     /**
      * Agent 实例缓存，按 Agent 名缓存，会话隔离由运行时上下文与共享会话存储负责。
      */
@@ -266,6 +302,7 @@ public class AgentFactoryImpl implements AgentFactory {
                 // 技能正文存 MySQL；子 Agent 用声明（下面一行）而不是工作区里的 subagents/*.md。
                 .skillRepository(agentSkillRepository)
                 .subagent(buildResumeAnalystDeclaration())
+                .subagent(buildJobMatchDeclaration())
                 .toolsConfig(buildToolsConfig())
                 .disableFilesystemTools()
                 .disableShellTool()
@@ -279,6 +316,8 @@ public class AgentFactoryImpl implements AgentFactory {
                 .build();
         // 子 Agent 不走父 Agent 的工具白名单，这里按本模块的白名单再收紧一次。
         narrowSubagentTools(agent);
+        // F3 的岗位匹配子 Agent 用独立的收紧方法追加，不改 F2 那段循环（并行开发只追加）。
+        narrowJobMatchSubagentTools(agent);
         // 构建后打印实际工具集：ToolFilter 会按 allow/deny 直接改写 Toolkit，因此这里就是模型真正看到的集合。
         log.info("构建 Agent 完成，agentName={}，tools={}，skills={}",
                 agentName, agent.getToolkit().getToolNames(), agent.getSkillRepositories().size());
@@ -360,6 +399,84 @@ public class AgentFactoryImpl implements AgentFactory {
                 // 子 Agent 不是入口：结论回到当前对话继续用，不暴露给用户直接对话。
                 .exposeToUser(false)
                 .build();
+    }
+
+    /**
+     * 构建「岗位匹配」子 Agent 声明。
+     *
+     * <p>与 F2 的简历分析子 Agent 同一套约定：代码声明、不用工作区 {@code subagents/*.md}、
+     * 用户身份只从 RuntimeContext 取、子 Agent 自己不再往下派。工具只有只读的读简历工具，
+     * JD 由用户在对话里粘贴、随派发指令进入上下文。
+     *
+     * @return 子 Agent 声明
+     */
+    SubagentDeclaration buildJobMatchDeclaration() {
+        return SubagentDeclaration.builder()
+                .name(AgentFactory.JOB_MATCH_AGENT_NAME)
+                .description(JOB_MATCH_DESCRIPTION)
+                .tools(JOB_MATCH_TOOL_NAMES)
+                .skills(List.of(JOB_MATCH_SKILL_NAME))
+                .maxIters(JOB_MATCH_MAX_ITERS)
+                // 子 Agent 不是入口：结论回到当前对话继续用，不暴露给用户直接对话。
+                .exposeToUser(false)
+                .build();
+    }
+
+    /**
+     * 收紧岗位匹配子 Agent 的工具集。
+     *
+     * <p>与 {@link #narrowSubagentTools(HarnessAgent)} 同理，但单独成一个方法：F2 的循环已经
+     * 固化了「简历分析」的白名单，F3 只把自己的子 Agent 再包一层，避免改动 F2 已冻结的代码。
+     *
+     * @param agent 已构建的助手 Agent
+     */
+    private void narrowJobMatchSubagentTools(HarnessAgent agent) {
+        DefaultAgentManager agentManager = agent.getSubagentAgentManager();
+        if (agentManager == null) {
+            log.warn("当前 Agent 没有子 Agent 管理器，跳过岗位匹配子 Agent 工具白名单收紧");
+            return;
+        }
+        Map<String, SubagentFactory> factories = agentManager.getAgentFactories();
+        if (!factories.containsKey(AgentFactory.JOB_MATCH_AGENT_NAME)) {
+            log.warn("未找到岗位匹配子 Agent 工厂，子 Agent 工具白名单未收紧，factories={}", factories.keySet());
+            return;
+        }
+        List<SubagentEntry> entries = new ArrayList<>(factories.size());
+        for (Map.Entry<String, SubagentFactory> factoryEntry : factories.entrySet()) {
+            String subagentName = factoryEntry.getKey();
+            SubagentFactory factory = factoryEntry.getValue();
+            SubagentDeclaration declaration = agentManager.getDeclaration(subagentName).orElse(null);
+            if (AgentFactory.JOB_MATCH_AGENT_NAME.equals(subagentName)) {
+                SubagentFactory narrowed = runtimeContext -> keepJobMatchTools(factory.create(runtimeContext));
+                entries.add(new SubagentEntry(
+                        subagentName, JOB_MATCH_DESCRIPTION, narrowed, declaration));
+            } else {
+                entries.add(new SubagentEntry(
+                        subagentName,
+                        declaration == null ? subagentName : declaration.getDescription(),
+                        factory,
+                        declaration));
+            }
+        }
+        agentManager.replaceAgents(entries);
+    }
+
+    /**
+     * 按岗位匹配白名单移除子 Agent 上多余的框架默认工具。
+     *
+     * @param subagent 框架创建出来的子 Agent
+     * @return 原样返回收紧后的子 Agent
+     */
+    private Agent keepJobMatchTools(Agent subagent) {
+        Toolkit toolkit = subagent.getToolkit();
+        for (String toolName : List.copyOf(toolkit.getToolNames())) {
+            if (!JOB_MATCH_ALLOWED_TOOL_NAMES.contains(toolName)) {
+                toolkit.removeTool(toolName);
+                log.debug("移除岗位匹配子 Agent 的框架默认工具，agentName={}，tool={}",
+                        subagent.getName(), toolName);
+            }
+        }
+        return subagent;
     }
 
     /**
