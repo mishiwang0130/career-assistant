@@ -137,7 +137,6 @@ class AgentFactoryHarnessTest {
         HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
 
         Set<String> toolNames = agent.getToolkit().getToolNames();
-        System.out.println("ASSISTANT_TOOLS=" + new ArrayList<>(toolNames));
         // 白名单是精确集合：只多一个框架默认工具或业务工具都说明 allow / deny 没配好。
         assertThat(toolNames).containsExactlyInAnyOrder(
                 "read_resume", "agent_spawn", "agent_send", "agent_list");
@@ -203,7 +202,6 @@ class AgentFactoryHarnessTest {
 
         assertThat(subagent).isPresent();
         Set<String> subagentTools = subagent.get().getToolkit().getToolNames();
-        System.out.println("SUBAGENT_TOOLS=" + new ArrayList<>(subagentTools));
         assertThat(subagentTools)
                 .containsExactlyInAnyOrder("read_resume", "submit_resume_diagnosis", "load_skill_through_path");
         assertThat(subagentTools).doesNotContain("web_search", "web_fetch", "wait_async_results");
