@@ -1,5 +1,5 @@
 import type { AssistantResultPayload } from '@/types/assistant'
-import type { InterviewProgressResult, InterviewStateRespVO } from '@/types/interview'
+import type { InterviewProgressResult, InterviewResult, InterviewStateRespVO } from '@/types/interview'
 
 /**
  * 面试进度与难度的展示口径。
@@ -52,6 +52,26 @@ export function findLatestProgress(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const result = messages[index].result
     if (result && result.type === 'interview_progress') {
+      return result
+    }
+  }
+  return null
+}
+
+/**
+ * 取消息区里最近一次面试结果。
+ *
+ * 面试结束时后端会在同一轮里下发结果事件；看历史面试时消息里没有结果，改由结果接口补齐。
+ *
+ * @param messages 消息区消息
+ * @returns 最近一次面试结果，没有时返回 null
+ */
+export function findLatestResult(
+  messages: ReadonlyArray<{ result: AssistantResultPayload | null }>,
+): InterviewResult | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const result = messages[index].result
+    if (result && result.type === 'interview_result') {
       return result
     }
   }

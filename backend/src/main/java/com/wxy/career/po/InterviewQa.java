@@ -97,4 +97,13 @@ public class InterviewQa extends BasePO {
      * 本回合之后的流程动作，对应 interview_qa.next_action，取值见 InterviewActionEnum。
      */
     private String nextAction;
+
+    /**
+     * 评分子 Agent 的结构化结论 JSON，对应 interview_qa.evaluation_json。
+     *
+     * <p>字段与 {@code AnswerEvaluationSubmitVO} 一一对应（评分、答对的点、缺失点、错误点、表达问题、建议、
+     * 知识点、一句话点评、标准答案）。面试结束时的逐题结果直接读这一列回放，F6 的逐题点评也复用它；
+     * 评分不可用时为 null。
+     */
+    private String evaluationJson;
 }

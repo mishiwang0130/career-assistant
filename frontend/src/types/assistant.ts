@@ -1,4 +1,4 @@
-import type { InterviewProgressResult } from '@/types/interview'
+import type { InterviewProgressResult, InterviewResult } from '@/types/interview'
 
 /**
  * 通用助手相关类型。
@@ -148,7 +148,7 @@ export interface ResumeDiagnosisResult {
  * 用 type 做判别联合：当前有简历诊断结论与面试进度，后续 F6 的点评与报告只新增取值，
  * 不改这里的字段含义与事件形态。
  */
-export type AssistantResultPayload = ResumeDiagnosisResult | InterviewProgressResult
+export type AssistantResultPayload = ResumeDiagnosisResult | InterviewProgressResult | InterviewResult
 
 /** result 事件数据。 */
 export interface AssistantResultEvent {

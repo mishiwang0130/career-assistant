@@ -65,6 +65,9 @@ class SkillSeedScriptTest {
         assertThat(script).contains("idx_interview_qa_user_session");
         assertThat(script).contains("'interview-questioning'");
         assertThat(script).contains("'answer-evaluation'");
+        // 面试结果的逐题明细与标准答案存在这一列，技能也要求评分子 Agent 给出 referenceAnswer。
+        assertThat(script).contains("evaluation_json");
+        assertThat(script).contains("referenceAnswer");
 
         int questioning = script.indexOf("'interview-questioning'");
         String questioningSection = script.substring(

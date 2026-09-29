@@ -32,7 +32,8 @@ public class SubmitAnswerEvaluationTool {
      */
     private static final String FIELD_HINT =
             "请检查：outcome 取 CORRECT（答到要点）、PARTIAL（有遗漏）、WRONG（不会或答错）之一；"
-                    + "score 为 0-100 的整数；comment 是一句话点评。";
+                    + "score 为 0-100 的整数；comment 是一句话点评；referenceAnswer 是这道题的标准答案（必填，"
+                    + "写成可直接对照的要点与结论）。";
 
     /**
      * 面试流程服务。
@@ -54,7 +55,8 @@ public class SubmitAnswerEvaluationTool {
     public String submitAnswerEvaluation(
             @ToolParam(name = "evaluation", required = true,
                     description = "评分结论：outcome（CORRECT/PARTIAL/WRONG）、score（0-100）、correctPoints、"
-                            + "missingPoints、wrongPoints、expressionIssues、suggestions、knowledgePoints、comment")
+                            + "missingPoints、wrongPoints、expressionIssues、suggestions、knowledgePoints、comment、"
+                            + "referenceAnswer（标准答案，必填）")
             AnswerEvaluationSubmitVO evaluation,
             RuntimeContext runtimeContext) {
         Long userId = RuntimeContextUserUtil.requireUserId(runtimeContext);

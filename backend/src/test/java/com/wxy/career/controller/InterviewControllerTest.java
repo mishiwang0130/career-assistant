@@ -11,6 +11,8 @@ import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.service.InterviewFlowService;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.InterviewStateRespVO;
+import com.wxy.career.vo.InterviewResultItemVO;
+import com.wxy.career.vo.InterviewResultRespVO;
 import jakarta.validation.constraints.Pattern;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,6 +21,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+import java.util.List;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -96,6 +100,39 @@ class InterviewControllerTest {
                 .andExpect(jsonPath("$.data.questionCount").value(8))
                 .andExpect(jsonPath("$.data.difficulty").value(4))
                 .andExpect(jsonPath("$.data.finished").value(false));
+    }
+
+    /**
+     * 读取面试结果：逐题明细（哪里答得不好、标准答案）与整体统计。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldReturnInterviewResult() throws Exception {
+        InterviewResultRespVO result = new InterviewResultRespVO();
+        result.setSessionId("12");
+        result.setQuestionCount(8);
+        result.setAnsweredCount(1);
+        result.setPartialCount(1);
+        result.setAverageScore(80);
+        result.setFinished(true);
+        InterviewResultItemVO item = new InterviewResultItemVO();
+        item.setQuestionIndex(1);
+        item.setRoundNo(1);
+        item.setOutcome("PARTIAL");
+        item.setMissingPoints(List.of("漏了树化条件"));
+        item.setReferenceAnswer("标准答案：数组+链表+红黑树；链表长度>8 且容量≥64 时树化");
+        result.setItems(List.of(item));
+        when(interviewFlowService.getCurrentUserResult("12")).thenReturn(result);
+
+        mockMvc.perform(get("/api/interviews/12/result")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.type").value("interview_result"))
+                .andExpect(jsonPath("$.data.items[0].missingPoints[0]").value("漏了树化条件"))
+                .andExpect(jsonPath("$.data.items[0].referenceAnswer")
+                        .value("标准答案：数组+链表+红黑树；链表长度>8 且容量≥64 时树化"));
     }
 
     /**

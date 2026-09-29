@@ -4,6 +4,7 @@ import com.wxy.career.common.result.Result;
 import com.wxy.career.service.InterviewFlowService;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.InterviewStateRespVO;
+import com.wxy.career.vo.InterviewResultRespVO;
 import jakarta.annotation.Resource;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.validation.annotation.Validated;
@@ -45,5 +46,22 @@ public class InterviewController {
                     message = AssistantChatReqVO.SESSION_ID_PATTERN_MESSAGE)
             String sessionId) {
         return Result.success(interviewFlowService.getCurrentUserState(sessionId));
+    }
+
+    /**
+     * 读取面试结果：逐题明细（哪里答得不好、标准答案）与整体统计。
+     *
+     * <p>面试结束时也会用 SSE 的 {@code result} 事件下发同一份数据，这条接口用于刷新页面与回看历史会话。
+     *
+     * @param sessionId 面试会话 ID
+     * @return 面试结果
+     */
+    @GetMapping("/{sessionId}/result")
+    public Result<InterviewResultRespVO> result(
+            @PathVariable
+            @Pattern(regexp = AssistantChatReqVO.SESSION_ID_REGEXP,
+                    message = AssistantChatReqVO.SESSION_ID_PATTERN_MESSAGE)
+            String sessionId) {
+        return Result.success(interviewFlowService.getCurrentUserResult(sessionId));
     }
 }

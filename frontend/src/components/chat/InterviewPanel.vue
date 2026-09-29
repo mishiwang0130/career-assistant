@@ -37,6 +37,8 @@
         :key="message.id"
         :message="message"
       />
+      <!-- 面试结果：结束时由后端随流下发，回看历史面试时用结果接口补齐 -->
+      <InterviewResultCard v-if="interviewResult" :result="interviewResult" />
     </div>
 
     <div class="interview__input">
@@ -76,15 +78,17 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
-import { getInterviewState } from '@/api/interview'
+import { getInterviewResult, getInterviewState } from '@/api/interview'
 import { BizError } from '@/api/request'
+import InterviewResultCard from '@/components/chat/InterviewResultCard.vue'
 import MessageBubble from '@/components/MessageBubble.vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { useSessionStore } from '@/stores/session'
 import { useUserStore } from '@/stores/user'
-import type { InterviewProgressResult, InterviewStateRespVO } from '@/types/interview'
+import type { InterviewProgressResult, InterviewResult, InterviewStateRespVO } from '@/types/interview'
 import {
   findLatestProgress,
+  findLatestResult,
   formatDifficulty,
   formatInterviewProgress,
   INTERVIEW_KICKOFF_COMMAND,
@@ -127,6 +131,9 @@ const snapshot = ref<InterviewStateRespVO | null>(null)
 /** 流内最新下发的进度：比快照新，因此顶部进度以它为准。 */
 const progress = ref<InterviewProgressResult | null>(null)
 
+/** 面试结果：流内下发或结果接口回放，结束时渲染在消息区下方。 */
+const interviewResult = ref<InterviewResult | null>(null)
+
 /** 当前生效的进度：优先用流内进度，没有则用状态快照。 */
 const active = computed(() => progress.value ?? snapshot.value)
 
@@ -158,7 +165,9 @@ watch(
   () => route.params.sessionId,
   async () => {
     progress.value = null
+    interviewResult.value = null
     await loadSnapshot()
+    await loadResultIfFinished()
     await nextTick()
     scrollToBottom()
   },
@@ -175,6 +184,32 @@ watch(
   },
   { immediate: true },
 )
+
+// 面试结束时后端会在同一轮里下发结果事件，直接用它渲染结果卡片。
+watch(
+  () => findLatestResult(assistantStore.messages),
+  (latest) => {
+    if (latest) {
+      interviewResult.value = latest
+    }
+  },
+  { immediate: true },
+)
+
+/**
+ * 已结束的面试（含刷新页面、回看历史会话）用结果接口补齐结果卡片。
+ */
+async function loadResultIfFinished(): Promise<void> {
+  const sessionId = sessionStore.currentSessionId
+  if (!sessionId || interviewResult.value || snapshot.value?.finished !== true) {
+    return
+  }
+  try {
+    interviewResult.value = await getInterviewResult(sessionId)
+  } catch {
+    // 结果加载失败不影响其它内容，用户刷新后还会再试。
+  }
+}
 
 // 流式增量与新消息都追加在末尾，需要跟随滚动到底部。
 watch(

@@ -64,4 +64,11 @@ public class AnswerEvaluationSubmitVO {
      * 一句话点评，直接给结论；落库时作为判定要点（截断到 500 字符）。
      */
     private String comment;
+
+    /**
+     * 标准答案（参考答案）：这道题应该怎么答，写成可直接对照的要点与结论。
+     *
+     * <p>面试结束后随逐题结果一起给用户回看，因此必须给出，且不要写评分过程。
+     */
+    private String referenceAnswer;
 }

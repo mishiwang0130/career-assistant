@@ -212,6 +212,7 @@ class SystemPromptProviderImplTest {
         assertTrue(interviewerPrompt.contains("评分内容属于内部信息"), "提示词要禁止把评分内容写进回答");
         assertTrue(interviewerPrompt.contains("评分由系统"), "评分由平台完成，面试官不参与评分");
         assertTrue(interviewerPrompt.contains("调用文本"), "提示词要禁止把工具调用写成文本");
+        assertTrue(interviewerPrompt.contains("收尾只说一次"), "提示词要禁止重复输出收尾语（实测出现过说两遍）");
         assertTrue(evaluatorPrompt.contains("answer-evaluation"), "评分口径以技能为准");
         assertTrue(evaluatorPrompt.contains("WRONG"), "评分提示词要写明三档判定");
         assertTrue(evaluatorPrompt.contains("submit_answer_evaluation"), "子 Agent 要用工具提交结论");
