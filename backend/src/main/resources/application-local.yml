@@ -35,8 +35,8 @@ app:
     enabled: ${MEM0_ENABLED:true}
     recall-timeout-ms: ${MEM0_RECALL_TIMEOUT_MS:3000}
     mem0:
-      base-url: ${MEM0_BASE_URL:http://localhost:8000}
-      api-key: ${MEM0_API_KEY:}
+      base-url: ${MEM0_BASE_URL:http://192.168.205.128:8765}
+      api-key: ${MEM0_API_KEY:9008f059de5cb44d31f41b8a9603513acc7401e78c84a9c4}
       api-type: ${MEM0_API_TYPE:SELF_HOSTED}
       timeout-ms: ${MEM0_TIMEOUT_MS:60000}
 
