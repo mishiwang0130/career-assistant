@@ -48,8 +48,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="createTime" label="创建时间" width="170" />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" @click="handleDiagnose(row)">诊断</el-button>
             <el-button link type="primary" @click="openEdit(row.id)">编辑</el-button>
             <el-button
               link
@@ -103,6 +104,8 @@ import {
   setDefaultResume,
   uploadResume,
 } from '@/api/resume'
+import { useAssistantStore } from '@/stores/assistant'
+import { useSessionStore } from '@/stores/session'
 import type {
   ResumeListRespVO,
   ResumeManualReqVO,
@@ -117,9 +120,12 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024
 const ALLOWED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md']
 
 const router = useRouter()
+const sessionStore = useSessionStore()
+const assistantStore = useAssistantStore()
 const loading = ref(false)
 const uploading = ref(false)
 const submitting = ref(false)
+const diagnosing = ref(false)
 const manualDialogVisible = ref(false)
 const resumes = ref<ResumeListRespVO[]>([])
 const manualForm = reactive<ResumeManualReqVO>({
@@ -207,6 +213,30 @@ async function handleCreateManual(): Promise<void> {
     // 请求层已经统一展示错误提示。
   } finally {
     submitting.value = false
+  }
+}
+
+/**
+ * 诊断简历：新建一个助手会话并把诊断指令排队，跳转后由助手面板自动发出。
+ *
+ * 简历诊断是助手会话内的一次性任务，因此不新增场景、不新增路由，只新建 ASSISTANT 会话。
+ *
+ * @param resume 要诊断的简历
+ */
+async function handleDiagnose(resume: ResumeListRespVO): Promise<void> {
+  if (diagnosing.value) {
+    return
+  }
+  diagnosing.value = true
+  try {
+    const sessionId = await sessionStore.createNewSession('ASSISTANT')
+    // 指令在会话历史加载完成后由面板消费，避免在切换会话的异步间隙里发到旧会话。
+    assistantStore.queuePendingCommand(`帮我诊断简历《${resume.title}》`)
+    await router.push({ name: 'ChatSessionView', params: { sessionId } })
+  } catch {
+    // 请求层已经统一展示错误提示。
+  } finally {
+    diagnosing.value = false
   }
 }
 

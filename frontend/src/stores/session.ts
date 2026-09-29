@@ -94,6 +94,21 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
+   * 新建一个助手会话并登记到列表，不做任何本地持久化。
+   *
+   * 由资料库页面（例如简历列表的「诊断」）调用：先拿到后端生成的会话 ID，再跳转到该会话并由
+   * 助手面板决定何时发消息，避免在会话切换的异步间隙里把消息发到旧会话上。
+   *
+   * @param scene 会话场景
+   * @returns 新建的会话 ID
+   */
+  async function createNewSession(scene: ChatScene): Promise<string> {
+    const created = await sessionApi.createSession({ scene })
+    applyCreated(created)
+    return created.sessionId
+  }
+
+  /**
    * 重命名会话，成功后用服务端返回的归一化标题就地替换列表项。
    *
    * @param sessionId 会话 ID
@@ -201,6 +216,7 @@ export const useSessionStore = defineStore('session', () => {
     loadSessions,
     loadMoreSessions,
     ensureSession,
+    createNewSession,
     renameSession,
     deleteSession,
     refreshSession,

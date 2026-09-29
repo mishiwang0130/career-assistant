@@ -69,6 +69,90 @@ export interface AssistantErrorEvent {
   message: string
 }
 
+/** 简历诊断的单项维度评分。 */
+export interface ResumeDiagnosisDimension {
+  /** 维度名。 */
+  name: string
+  /** 维度得分，0-100。 */
+  score: number
+  /** 一句话理由。 */
+  comment: string
+}
+
+/** 简历诊断的问题条目。 */
+export interface ResumeDiagnosisProblem {
+  /** 问题描述。 */
+  problem: string
+  /** 问题出现的位置。 */
+  location: string
+  /** 为什么是问题。 */
+  reason: string
+  /** 怎么改。 */
+  suggestion: string
+  /** 严重程度：HIGH / MEDIUM / LOW。 */
+  severity: string
+}
+
+/** 简历诊断的亮点条目。 */
+export interface ResumeDiagnosisHighlight {
+  /** 值得保留的写法。 */
+  point: string
+  /** 为什么好。 */
+  reason: string
+}
+
+/** 简历诊断的优化建议条目。 */
+export interface ResumeDiagnosisSuggestion {
+  /** 优先级，1 最高。 */
+  priority: number
+  /** 建议内容。 */
+  content: string
+}
+
+/**
+ * 简历诊断结论。
+ *
+ * 与后端 ResumeDiagnosisResultVO 一一对应：诊断卡片据此渲染，其中 optimizedResume 用于
+ * 「另存为新简历」，不覆盖原简历。
+ */
+export interface ResumeDiagnosisResult {
+  /** 结果类型标识，用于区分后续 F6 的点评卡片与报告卡片。 */
+  type: 'resume_diagnosis'
+  /** 被诊断的简历 ID。 */
+  resumeId: number
+  /** 被诊断的简历标题。 */
+  resumeTitle: string
+  /** 综合得分，0-100。 */
+  overallScore: number
+  /** 综合得分说明。 */
+  scoreSummary: string
+  /** 维度评分，至少 4 项。 */
+  dimensions: ResumeDiagnosisDimension[]
+  /** 问题清单。 */
+  problems: ResumeDiagnosisProblem[]
+  /** 亮点清单。 */
+  highlights: ResumeDiagnosisHighlight[]
+  /** 优化建议。 */
+  suggestions: ResumeDiagnosisSuggestion[]
+  /** 优化后的简历正文。 */
+  optimizedResume: string
+  /** 可能被追问的项目点。 */
+  interviewFollowUps: string[]
+}
+
+/**
+ * SSE result 事件的结构化载荷。
+ *
+ * 用 type 做判别联合：后续 F6 的点评与报告只新增取值，不改这里的字段含义。
+ */
+export type AssistantResultPayload = ResumeDiagnosisResult
+
+/** result 事件数据。 */
+export interface AssistantResultEvent {
+  /** 结构化结果。 */
+  data: AssistantResultPayload
+}
+
 /** 页面展示用的工具调用提示。 */
 export interface ToolTip {
   /** 工具名或子智能体名。 */
@@ -95,4 +179,6 @@ export interface ChatMessage {
   streaming: boolean
   /** 是否以错误结束。 */
   failed: boolean
+  /** 结构化结果（如简历诊断结论），没有时为空。 */
+  result: AssistantResultPayload | null
 }

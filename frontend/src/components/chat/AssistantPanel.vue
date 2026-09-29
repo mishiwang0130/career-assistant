@@ -157,9 +157,40 @@ watch(
     if (previousLoading && !loading) {
       await nextTick()
       scrollToBottom()
+      await sendPendingCommand()
     }
   },
 )
+
+// 从简历列表跳进来时带着待发指令：会话 ID 就绪、历史加载完成、当前没有流式请求时才发出。
+watch(
+  [() => sessionStore.currentSessionId, () => assistantStore.streaming],
+  async () => {
+    await sendPendingCommand()
+  },
+  { immediate: true },
+)
+
+/**
+ * 消费待发指令。
+ *
+ * 只在当前路由的会话已经加载完成时发送，发送前先清空指令，避免重复发出或发到旧会话。
+ */
+async function sendPendingCommand(): Promise<void> {
+  const command = assistantStore.pendingCommand
+  const currentSessionId = sessionStore.currentSessionId
+  if (!command || !currentSessionId) {
+    return
+  }
+  if (assistantStore.loading || assistantStore.streaming || creating.value) {
+    return
+  }
+  if (route.params.sessionId !== currentSessionId) {
+    return
+  }
+  assistantStore.clearPendingCommand()
+  await sendContent(command)
+}
 
 /**
  * 发送消息：草稿态先创建会话拿到后端生成的 ID，再发消息并替换 URL。

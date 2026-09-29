@@ -7,6 +7,7 @@ import type {
   AssistantContentEvent,
   AssistantErrorEvent,
   AssistantMessageRespVO,
+  AssistantResultEvent,
   AssistantToolEvent,
   ChatMessage,
 } from '@/types/assistant'
@@ -46,6 +47,9 @@ export const useAssistantStore = defineStore('assistant', () => {
 
   /** 错误提示。 */
   const errorMessage = ref('')
+
+  /** 从其它页面带过来的待发指令（例如简历列表的「诊断」按钮）。 */
+  const pendingCommand = ref<string | null>(null)
 
   /** 是否还有更早的历史消息。 */
   const hasMoreMessages = computed(() => messages.value.length < messageTotal.value)
@@ -119,6 +123,7 @@ export const useAssistantStore = defineStore('assistant', () => {
       tools: [],
       streaming: false,
       failed: false,
+      result: null,
     })
     const reply: ChatMessage = {
       id: createMessageId(),
@@ -128,6 +133,7 @@ export const useAssistantStore = defineStore('assistant', () => {
       tools: [],
       streaming: true,
       failed: false,
+      result: null,
     }
     messages.value.push(reply)
     // 必须取回数组中的响应式代理再写入：直接改 push 进去的原始对象不会触发 Vue 更新，
@@ -212,6 +218,26 @@ export const useAssistantStore = defineStore('assistant', () => {
   function reset(): void {
     abortStreaming()
     resetMessages()
+    clearPendingCommand()
+  }
+
+  /**
+   * 排队一条待发指令。
+   *
+   * 简历列表点「诊断」时用：先建会话再跳转，等会话历史加载完成后由面板自动发出这条指令，
+   * 避免在会话切换的异步间隙里把消息发到旧会话上。
+   *
+   * @param command 待发指令
+   */
+  function queuePendingCommand(command: string): void {
+    pendingCommand.value = command
+  }
+
+  /**
+   * 清空待发指令，避免同一条指令被重复发送。
+   */
+  function clearPendingCommand(): void {
+    pendingCommand.value = null
   }
 
   /**
@@ -243,6 +269,14 @@ export const useAssistantStore = defineStore('assistant', () => {
             detail: '子智能体',
           })
           break
+        case 'result': {
+          // 结构化产物（当前是简历诊断结论）：挂在当前回复上，由消息气泡渲染诊断卡片。
+          const resultEvent = JSON.parse(data) as AssistantResultEvent
+          if (resultEvent.data) {
+            message.result = resultEvent.data
+          }
+          break
+        }
         case 'error': {
           const errorEvent = JSON.parse(data) as AssistantErrorEvent
           message.failed = true
@@ -250,7 +284,7 @@ export const useAssistantStore = defineStore('assistant', () => {
           break
         }
         default:
-          // meta / result / done 事件不需要额外处理：流结束由 store 统一收尾。
+          // meta / done 事件不需要额外处理：流结束由 store 统一收尾。
           break
       }
     } catch {
@@ -267,10 +301,13 @@ export const useAssistantStore = defineStore('assistant', () => {
     loadingMoreHistory,
     messageTotal,
     errorMessage,
+    pendingCommand,
     hasMoreMessages,
     loadHistory,
     loadOlderMessages,
     sendMessage,
+    queuePendingCommand,
+    clearPendingCommand,
     abortStreaming,
     resetMessages,
     reset,
@@ -303,6 +340,7 @@ function toChatMessage(message: AssistantMessageRespVO): ChatMessage {
     tools: [],
     streaming: false,
     failed: false,
+    result: null,
   }
 }
 
