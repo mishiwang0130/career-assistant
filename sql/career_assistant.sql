@@ -251,6 +251,7 @@ CREATE TABLE IF NOT EXISTS `interview_qa` (
     `outcome`        VARCHAR(16)  NOT NULL COMMENT '本题判定：CORRECT-答到要点，PARTIAL-有遗漏，WRONG-不会或答错',
     `judgement`      VARCHAR(500) DEFAULT NULL COMMENT '判定要点，来自评分子 Agent 的结论摘要，已截断',
     `next_action`    VARCHAR(16)  NOT NULL COMMENT '本回合之后的流程动作：FOLLOW_UP-追问，NEXT_QUESTION-换题，FINISHED-结束',
+    `evaluation_json` LONGTEXT    DEFAULT NULL COMMENT '评分子 Agent 的结构化结论JSON：评分、答对的点、缺失点、错误点、表达问题、建议、知识点、一句话点评、标准答案',
     `create_time`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `create_by`      BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
     `update_time`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -262,6 +263,18 @@ CREATE TABLE IF NOT EXISTS `interview_qa` (
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci
   COMMENT = '面试问答表';
+
+-- F5 存量环境同步：补上评分结论列（面试结果的逐题明细与标准答案存在这一列）。
+-- 先查 information_schema 再执行，重复跑脚本不会因「列已存在」报错。
+SET @add_evaluation_json := (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE `interview_qa` ADD COLUMN `evaluation_json` LONGTEXT DEFAULT NULL COMMENT ''评分子 Agent 的结构化结论JSON：评分、答对的点、缺失点、错误点、表达问题、建议、知识点、一句话点评、标准答案''',
+              'SELECT ''interview_qa.evaluation_json already exists''')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'interview_qa' AND column_name = 'evaluation_json');
+PREPARE add_evaluation_json_stmt FROM @add_evaluation_json;
+EXECUTE add_evaluation_json_stmt;
+DEALLOCATE PREPARE add_evaluation_json_stmt;
 
 -- 幂等写入 F5 的默认 Skill：interview-questioning（出题与追问换题规范）。
 -- 重复执行不产生重复数据，也不覆盖人工在表里临时调整过的规则（命中唯一键时只做同值更新）。
@@ -327,8 +340,10 @@ VALUES ('answer-evaluation',
 
 # 四、提交方式（本批只落判定结果，掌握度由后续批次统计）
 1. 把上面各项结论用 submit_answer_evaluation 工具提交一次：outcome、score、correctPoints、missingPoints、
-   wrongPoints、expressionIssues、suggestions、knowledgePoints、comment，字段齐全。
+   wrongPoints、expressionIssues、suggestions、knowledgePoints、comment、referenceAnswer，字段齐全。
 2. 提交后正文只回一句「评分完成」：结论属于内部信息，不要输出 JSON、字段清单、分数或点评正文。
+3. referenceAnswer 是这道题的标准答案，面试结束后用户会拿它对答案：写成可直接对照的要点与结论（一般 3-6 条），
+   不写评分过程，也不要用「他应该提到」这类评价口吻。
 
 # 五、底线
 1. 只依据题目与用户这道题的回答，用户没说的内容不算说过，也不脑补「他可能懂」。
