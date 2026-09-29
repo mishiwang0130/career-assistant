@@ -100,6 +100,12 @@ class AgentFactoryHarnessTest {
                         .description("简历分析规范")
                         .skillContent("简历分析规范")
                         .build());
+        when(agentSkillRepository.getSkill("job-match"))
+                .thenReturn(AgentSkill.builder()
+                        .name("job-match")
+                        .description("岗位匹配规范")
+                        .skillContent("岗位匹配规范")
+                        .build());
 
         RedisUtil redisUtil = mock(RedisUtil.class);
         when(redisUtil.getHash(anyString(), anyString(), eq(Long.class))).thenReturn(null);
@@ -327,6 +333,90 @@ class AgentFactoryHarnessTest {
 
         HarnessAgent agent = agentFactory.getAgent(AgentFactory.INTERVIEWER_AGENT_NAME);
         assertThat(agent.getCompactionHook()).isNotNull();
+    }
+
+    /**
+     * 验证助手同时声明了「简历分析」与「岗位匹配」两个子 Agent，两者互不取代。
+     *
+     * <p>用户说「简历和这个 JD 一起看看」时两项分析都要能派出去，所以两个声明必须在同一个
+     * 助手上都注册成功，而不是只剩其中一个。
+     */
+    @Test
+    void shouldDeclareBothAnalysisSubagents() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
+        var agentManager = agent.getSubagentAgentManager();
+
+        assertThat(agentManager.getAgentFactories().keySet())
+                .contains(AgentFactory.RESUME_ANALYST_AGENT_NAME, AgentFactory.JOB_MATCH_AGENT_NAME);
+        assertThat(agentManager.getDeclaration(AgentFactory.RESUME_ANALYST_AGENT_NAME)).isPresent();
+        assertThat(agentManager.getDeclaration(AgentFactory.JOB_MATCH_AGENT_NAME)).isPresent();
+    }
+
+    /**
+     * 验证岗位匹配子 Agent 的声明：工具只有只读的读简历工具，技能为 job-match，不暴露给用户。
+     *
+     * <p>JD 由用户在对话里粘贴、内容随派发指令进入上下文，所以 F3 不需要读 JD 的工具；
+     * F3 也不下发结构化卡片，因此没有 F2 那种提交工具——工具集必须收窄到只剩读简历。
+     */
+    @Test
+    void shouldDeclareJobMatchSubagent() {
+        SubagentDeclaration declaration = agentFactory.buildJobMatchDeclaration();
+
+        assertThat(declaration.getName()).isEqualTo(AgentFactory.JOB_MATCH_AGENT_NAME);
+        assertThat(declaration.getTools()).containsExactly("read_resume");
+        assertThat(declaration.getSkills()).containsExactly("job-match");
+        assertThat(declaration.getExposeToUser()).isFalse();
+    }
+
+    /**
+     * 验证两个子 Agent 的工具白名单各自收紧、互不串号。
+     *
+     * <p>岗位匹配子 Agent 只保留读简历与技能加载工具；简历分析子 Agent 的三件套（含提交诊断结论）
+     * 不受影响，说明 F3 追加收窄没有破坏 F2 已冻结的白名单。
+     */
+    @Test
+    void shouldNarrowBothSubagentsSeparately() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId("1").sessionId("1").build();
+
+        var jobMatch = agent.getSubagentAgentManager()
+                .createAgentIfPresent(AgentFactory.JOB_MATCH_AGENT_NAME, runtimeContext);
+        assertThat(jobMatch).isPresent();
+        Set<String> jobMatchTools = jobMatch.get().getToolkit().getToolNames();
+        assertThat(jobMatchTools)
+                .containsExactlyInAnyOrder("read_resume", "load_skill_through_path");
+        assertThat(jobMatchTools).doesNotContain(
+                "submit_resume_diagnosis", "web_search", "web_fetch", "wait_async_results");
+
+        var resumeAnalyst = agent.getSubagentAgentManager()
+                .createAgentIfPresent(AgentFactory.RESUME_ANALYST_AGENT_NAME, runtimeContext);
+        assertThat(resumeAnalyst).isPresent();
+        assertThat(resumeAnalyst.get().getToolkit().getToolNames())
+                .containsExactlyInAnyOrder("read_resume", "submit_resume_diagnosis", "load_skill_through_path");
+    }
+
+    /**
+     * 验证岗位匹配子 Agent 跑的是自己的提示词，并且同样继承了用户背景注入。
+     *
+     * <p>匹配判断需要求职目标作参照，提示词也必须与简历分析区分开，否则子 Agent 会去写诊断报告。
+     */
+    @Test
+    void shouldUseOwnPromptAndInheritUserContextInJobMatchSubagent() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId("1").sessionId("101").build();
+        HarnessAgent subagent = (HarnessAgent) agent.getSubagentAgentManager()
+                .createAgentIfPresent(AgentFactory.JOB_MATCH_AGENT_NAME, runtimeContext)
+                .orElseThrow();
+
+        capturingModel.reset();
+        subagent.streamEvents(
+                Msg.builder().role(MsgRole.USER).textContent("这段 JD 我匹配吗").build(),
+                runtimeContext).blockLast();
+
+        String systemPrompt = capturingModel.systemPrompt();
+        assertThat(systemPrompt).contains("测试系统提示词:" + AgentFactory.JOB_MATCH_AGENT_NAME);
+        assertThat(systemPrompt).contains("目标岗位「后端开发」");
+        assertThat(systemPrompt).contains("当前对话用户昵称：Alice");
     }
 
     /**

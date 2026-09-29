@@ -42,6 +42,14 @@ public interface AgentFactory {
     String ANSWER_EVALUATOR_AGENT_NAME = "answer-evaluator";
 
     /**
+     * 岗位匹配子 Agent 名，F3 冻结。
+     *
+     * <p>与简历分析子 Agent 同源：由助手按声明派发，不作为独立入口，也不通过
+     * {@link #getAgent(String)} 获取；两个分析子 Agent 互不调用，各自不再往下派。
+     */
+    String JOB_MATCH_AGENT_NAME = "job-match";
+
+    /**
      * 按名字获取 Agent。
      *
      * @param agentName Agent 名

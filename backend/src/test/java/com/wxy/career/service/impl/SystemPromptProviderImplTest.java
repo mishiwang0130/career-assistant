@@ -67,6 +67,17 @@ class SystemPromptProviderImplTest {
             "不写库、不改简历");
 
     /**
+     * 岗位匹配子 Agent 提示词必须包含的关键约定（F3 追加，不改上面两条的语义）。
+     */
+    private static final List<String> JOB_MATCH_REQUIRED_SNIPPETS = List.of(
+            "read_resume",
+            "不要先反问",
+            "不写「接下来我将」「已加载」「已读取」",
+            "不提到技能名、工具名或子 Agent",
+            "缺失关键词",
+            "差距补齐建议");
+
+    /**
      * 校验提示词文件可读取、内容完整，且能原样返回给 Agent。
      *
      * @throws Exception 读取配置文件失败
@@ -107,6 +118,43 @@ class SystemPromptProviderImplTest {
         assertTrue(assistantPrompt.contains("你是「求职智能助手」"), "助手提示词不能被子 Agent 覆盖");
         assertTrue(subAgentPrompt.contains("简历分析专家"), "子 Agent 提示词应是简历分析角色");
         assertFalse(subAgentPrompt.contains("你是「求职智能助手」"), "子 Agent 不能读到助手的提示词");
+    }
+
+    /**
+     * 校验岗位匹配子 Agent 读到自己的提示词，且没有挤掉 F2 的简历分析提示词。
+     *
+     * @throws Exception 读取配置文件失败
+     */
+    @Test
+    @DisplayName("岗位匹配子 Agent 提示词各取各的且互不串号")
+    void shouldLoadJobMatchPromptSeparately() throws Exception {
+        String filePrompt = readPromptFile("prompts/sub-job-match.md");
+        JOB_MATCH_REQUIRED_SNIPPETS.forEach(snippet ->
+                assertTrue(filePrompt.contains(snippet), "岗位匹配提示词缺少约定片段：" + snippet));
+
+        SystemPromptProviderImpl provider = newProvider(PROMPT_LOCATION);
+        String jobMatchPrompt = provider.prompt(AgentFactory.JOB_MATCH_AGENT_NAME);
+
+        assertEquals(filePrompt.strip(), jobMatchPrompt, "岗位匹配子 Agent 应原样读到自己的提示词文件");
+        assertTrue(jobMatchPrompt.contains("岗位匹配分析专家"), "岗位匹配提示词应是对应的分析角色");
+        assertFalse(jobMatchPrompt.contains("你是「求职智能助手」"), "岗位匹配子 Agent 不能读到助手的提示词");
+        // 新增一个子 Agent 后，F2 的简历分析提示词必须仍然指向它自己的文件。
+        assertTrue(provider.prompt(AgentFactory.RESUME_ANALYST_AGENT_NAME).contains("简历分析专家"),
+                "新增岗位匹配提示词不能挤掉简历分析子 Agent 的提示词");
+    }
+
+    /**
+     * 校验岗位匹配子 Agent 在提示词文件缺失时退回自己的兜底提示词，而不是助手的角色设定。
+     */
+    @Test
+    @DisplayName("岗位匹配提示词文件缺失时退回自己的兜底提示词")
+    void shouldFallbackForJobMatchSubagent() {
+        String fallback = newProvider("classpath:prompts/not-exists.md")
+                .prompt(AgentFactory.JOB_MATCH_AGENT_NAME);
+
+        JOB_MATCH_REQUIRED_SNIPPETS.forEach(snippet ->
+                assertTrue(fallback.contains(snippet), "岗位匹配兜底提示词缺少片段：" + snippet));
+        assertFalse(fallback.contains("你是「求职智能助手」"), "岗位匹配子 Agent 不能退回助手提示词");
     }
 
     /**

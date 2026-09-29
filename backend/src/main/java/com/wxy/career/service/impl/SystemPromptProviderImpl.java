@@ -40,7 +40,9 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
             AgentFactory.RESUME_ANALYST_AGENT_NAME, "classpath:prompts/sub-resume-analyst.md",
             // F5：面试 Agent 与评分子 Agent 各一份提示词，同样与代码一一对应，不进 Profile 配置。
             AgentFactory.INTERVIEWER_AGENT_NAME, "classpath:prompts/interviewer.md",
-            AgentFactory.ANSWER_EVALUATOR_AGENT_NAME, "classpath:prompts/sub-evaluator.md");
+            AgentFactory.ANSWER_EVALUATOR_AGENT_NAME, "classpath:prompts/sub-evaluator.md",
+            // F3：岗位匹配子 Agent 与代码一一对应，同样直接在这里登记。
+            AgentFactory.JOB_MATCH_AGENT_NAME, "classpath:prompts/sub-job-match.md");
 
     /**
      * 提示词文件缺失或读取失败时使用的兜底提示词。
@@ -119,6 +121,30 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
                用户明确说不了解、不会、没做过时一律记 WRONG；
             4. 输出结构按系统要求的 JSON，字段齐全，不要包裹解释性文字；
             5. 对事不对人，指出问题要说清依据，不做人格评价，也不给空洞的鼓励话术。""";
+
+    /**
+     * 岗位匹配子 Agent 的兜底提示词。
+     *
+     * <p>与 {@code prompts/sub-job-match.md} 保持同一套底线：只依据读到的简历正文与用户当场粘贴的 JD、
+     * 不编造经历与岗位信息、缺失关键词必须有依据。子 Agent 落到助手提示词会跑偏（去聊天、去改档案），
+     * 因此必须有自己的兜底。
+     */
+    private static final String DEFAULT_JOB_MATCH_PROMPT = """
+            你是一名岗位匹配分析专家，只做一件事：判断一份简历和一段 JD 匹不匹配、差在哪、怎么补，使用简体中文。
+            要求：
+            1. 先用 read_resume 工具读取简历正文：用户没点名时直接读默认简历，不要先反问用户有没有上传、
+               标题是什么；正文较长时按 segment 分段读完；只依据读到的正文与用户粘贴的 JD 判断，
+               简历里没写过的经历、数字、时间一律不许补；
+            2. JD 取用户这次粘贴的原文，只按这份 JD 的要求比对，JD 里没写的条件不许加戏；
+            3. 结论必须写全五块：匹配度（0-100 并说明主要差距）、维度评分（每项维度名+分数+一句话理由）、
+               命中关键词（逐条对应到简历里的依据）、缺失关键词（说明是完全没有还是写了但不够突出）、
+               差距补齐建议（按优先级排列，末尾给出最该改的三处具体句子；措辞示范写成「如果你确实做过 X，
+               可以这样写」，不许替用户编造简历里没有的数字、指标、项目或时间）；
+            4. 说某个关键词缺失必须真的在简历里找不到依据，不能凭印象下结论；不编造岗位信息、公司信息、
+               薪资数据，不确定就说不确定；不评价用户本人，也不通篇诊断简历；
+            5. 只使用当前登录用户自己的数据，不推测其他用户的信息；
+            6. 给用户的正文只写匹配结论：不写「接下来我将」「已加载」「已读取」这类过程话术，
+               不汇报读了多少字符、分了几段，不提到技能名、工具名或子 Agent。""";
 
     /**
      * Agent 配置，提供提示词文件位置。
@@ -214,6 +240,10 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
         }
         if (AgentFactory.ANSWER_EVALUATOR_AGENT_NAME.equals(agentId)) {
             return DEFAULT_EVALUATOR_PROMPT;
+        }
+        // F3：岗位匹配子 Agent 必须退回自己的兜底提示词，不能落到助手那套角色设定。
+        if (AgentFactory.JOB_MATCH_AGENT_NAME.equals(agentId)) {
+            return DEFAULT_JOB_MATCH_PROMPT;
         }
         return DEFAULT_PROMPT;
     }
