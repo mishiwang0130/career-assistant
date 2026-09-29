@@ -65,10 +65,12 @@ public final class AgentEventMapper {
     /**
      * 判断事件是否由子 Agent 转发而来。
      *
-     * <p>框架在把子 Agent 的事件转发给父 Agent 时，会写入
-     * {@link io.agentscope.core.event.AgentEvent#METADATA_PARENT_SESSION_ID} 元数据。这些事件属于内部过程：
-     * 子 Agent 的正文里常有结构化结论（例如面试评分的 JSON），一旦跟着父 Agent 的流推给前端，
-     * 用户就会在自己的回答里看到它们。因此这类事件一律只留在服务端。
+     * <p>框架把子 Agent 的事件转发给父 Agent 时，会给事件打上来源（实测形如 {@code "<父会话Id>/<子Agent名>"}，
+     * 例如 {@code 40/job-match}），父 Agent 自己产生的事件来源为空；早期版本只在远端/网关路径写入
+     * {@link io.agentscope.core.event.AgentEvent#METADATA_PARENT_SESSION_ID} 元数据，本地同步派发时元数据为空，
+     * 因此两个判据都要看。这些事件属于内部过程：子 Agent 的正文里常有结构化结论（例如面试评分的 JSON），
+     * 而且它的正文会和助手自己写的结论叠在一起，用户就会在自己的回答里看到同一份分析出现两遍。
+     * 因此这类事件一律只留在服务端。
      *
      * @param event AgentScope 事件
      * @return 子 Agent 转发的事件返回 true
@@ -76,6 +78,9 @@ public final class AgentEventMapper {
     public static boolean isSubagentEvent(AgentEvent event) {
         if (event == null) {
             return false;
+        }
+        if (StringUtils.hasText(event.getSource())) {
+            return true;
         }
         Map<String, Object> metadata = event.getMetadata();
         return metadata != null && metadata.containsKey(AgentEvent.METADATA_PARENT_SESSION_ID);
