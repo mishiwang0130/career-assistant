@@ -158,3 +158,77 @@ CREATE TABLE IF NOT EXISTS `user_profile` (
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci
   COMMENT = '求职目标表';
+
+-- ===== F2 简历优化 =====
+
+-- Skill（业务规则）表：由框架 agentscope-extensions-skill-mysql-repository 的 MysqlSkillRepository 管理，
+-- 表结构与该扩展自带建表语句保持一致（框架托管表，不套用项目公共字段约定）。应用启动时会 IF NOT EXISTS 自动建表，
+-- 这里显式建一遍，保证只用本脚本初始化数据库的环境也能直接跑。
+CREATE TABLE IF NOT EXISTS `agentscope_skills` (
+    `id`            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `name`          VARCHAR(255) NOT NULL COMMENT '技能名，唯一',
+    `description`   TEXT         NOT NULL COMMENT '技能描述，注入提示词供模型判断何时加载',
+    `skill_content` LONGTEXT     NOT NULL COMMENT '技能正文（Markdown）',
+    `source`        VARCHAR(255) NOT NULL COMMENT '技能来源标识',
+    `metadata_json` LONGTEXT     DEFAULT NULL COMMENT '扩展元数据 JSON，框架按需读写',
+    `created_at`    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at`    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_agentscope_skills_name` (`name`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_unicode_ci
+  COMMENT = 'AgentScope 技能表';
+
+-- 技能资源表：技能附带的额外文件，当前技能正文自带内容，不写资源行；框架会自动创建，这里保持一致。
+CREATE TABLE IF NOT EXISTS `agentscope_skill_resources` (
+    `id`               BIGINT       NOT NULL COMMENT '技能ID，关联 agentscope_skills.id',
+    `resource_path`    VARCHAR(500) NOT NULL COMMENT '资源相对路径',
+    `resource_content` LONGTEXT     NOT NULL COMMENT '资源内容',
+    `created_at`       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at`       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`, `resource_path`),
+    CONSTRAINT `fk_agentscope_skill_resources_skill_id`
+        FOREIGN KEY (`id`) REFERENCES `agentscope_skills` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_unicode_ci
+  COMMENT = 'AgentScope 技能资源表';
+
+-- 幂等写入 F2 的默认 Skill：resume-analysis（简历分析规范）。
+-- 重复执行不产生重复数据，也不覆盖人工在表里临时调整过的规则（命中唯一键时只做同值更新）。
+INSERT INTO `agentscope_skills` (`name`, `description`, `skill_content`, `source`)
+VALUES ('resume-analysis',
+        '简历分析规范：诊断维度定义、评分口径与输出结构，简历分析子 Agent 用它统一诊断口径',
+        '你正在执行「简历分析规范」。只依据工具读到的简历正文与用户求职目标执行，不脑补用户没写过的经历。
+
+# 一、诊断维度（每次都要给出，至少 4 项）
+1. 结构与排版：模块顺序、信息密度、层级是否一眼看懂，是否能在 10 秒内抓到关键信息。
+2. 内容完整度：教育、工作/实习、项目、技能、求职意向等关键信息是否齐备，时间线是否连续无断档。
+3. 成果与量化：经历描述是否写出动作、对象、结果与影响，是否有可验证的数字或范围。
+4. 表达专业性：动词是否具体、术语使用是否正确、是否有空话套话与重复表述。
+5. 与目标岗位契合度：项目与技能是否围绕目标岗位展开，是否缺该岗位最看重的关键词。
+（可结合简历情况在第 5 项之外自行补充维度，但维度名要具体，不要写成「其他」。）
+
+# 二、评分口径
+1. 每个维度独立打 0-100 的整数分，写明一句话理由，理由必须指向简历里的具体位置。
+2. 综合得分 = 各维度得分按权重加权后四舍五入：结构与排版 15%、内容完整度 25%、成果与量化 30%、
+   表达专业性 15%、与目标岗位契合度 15%；自行补充的维度按剩余权重折算。
+3. 分档参考：90 以上可直接投递；75-89 小改即可；60-74 需要重写关键段落；60 以下建议重做结构。
+
+# 三、输出结构（正文按此顺序，用 Markdown 小标题分隔）
+1. 综合得分：分数 + 一句话说明扣分主要来自哪里。
+2. 维度评分：每项写「维度名 + 分数 + 一句话理由」。
+3. 问题清单：每条写「问题 + 出现在哪里 + 为什么是问题 + 怎么改」，按严重程度从高到低排序。
+4. 亮点：值得保留的写法，说明为什么好。
+5. 优化建议：按优先级排列，能直接照着改。
+6. 优化后的简历正文：保留原有结构与全部真实经历，只改表达与组织方式。
+7. 可能被追问的项目点：3-5 个面试官最可能追问的点。
+
+# 四、底线
+1. 简历里没写过的公司、项目、数字、时间一律不许补；原文缺失但影响判断的信息标注「原文未提及」并说明建议补充什么。
+2. 优化后的正文只能重组、改写、强化已有内容，不得新增经历与成果。
+3. 只评价简历的写法，不评价用户本人。
+4. 结构化结论必须通过 submit_resume_diagnosis 工具提交一次，字段口径与正文保持一致。',
+        'f2-resume-optimize')
+ON DUPLICATE KEY UPDATE `name` = `name`;
