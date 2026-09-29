@@ -174,7 +174,12 @@ export interface ChatMessage {
   role: MessageRole
   /** 消息正文。 */
   content: string
-  /** 思考内容，模型不支持思考时为空。 */
+  /**
+   * 思考内容，模型不支持思考时为空。
+   *
+   * 只在生成期间存在于前端内存：正文开始产出后由消息气泡自动折叠，本轮结束后仍可手动展开；
+   * 不落库，历史消息里恒为空串（见 docs/技术约定.md「SSE 事件协议」展示边界）。
+   */
   thinking: string
   /** 工具调用提示。 */
   tools: ToolTip[]

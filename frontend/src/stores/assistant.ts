@@ -328,7 +328,8 @@ export const useAssistantStore = defineStore('assistant', () => {
         case 'delta':
           message.content += (JSON.parse(data) as AssistantContentEvent).content
           break
-        // 思考内容与工具调用只做记录，不在界面展示（产品要求不向终端用户暴露内部过程）。
+        // 思考内容累积在消息上，供气泡在生成期间直接展示；正文开始产出后由气泡自动折叠。
+        // 它不落库，刷新页面或切换会话后随内存里的消息一起消失。
         case 'thinking':
           message.thinking += (JSON.parse(data) as AssistantContentEvent).content
           break
