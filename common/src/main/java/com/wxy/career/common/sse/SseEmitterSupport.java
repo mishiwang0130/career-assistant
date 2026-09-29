@@ -227,11 +227,44 @@ public class SseEmitterSupport {
                     .data(toPayload(event), PAYLOAD_MEDIA_TYPE));
             return true;
         } catch (Exception exception) {
-            // 客户端断开、连接已结束等场景只记录日志，避免异常冒泡影响主流程。
-            log.warn("SSE 推送失败，事件={}，会话可能已断开", event.getName(), exception);
             close();
+            if (isClientDisconnect(exception)) {
+                // 用户切走会话、关页面、刷新都会走到这里：这是正常的连接结束，不是故障，
+                // 所以只记一行 INFO、不打堆栈，业务侧拿到 false 后继续把本轮跑完。
+                log.info("SSE 连接已被客户端关闭，事件={}，后续事件不再推送", event.getName());
+            } else {
+                // 其它推送失败按异常处理，保留堆栈便于排查。
+                log.warn("SSE 推送失败，事件={}，会话可能已断开", event.getName(), exception);
+            }
             return false;
         }
+    }
+
+    /**
+     * 判断推送失败是否为客户端主动断开连接。
+     *
+     * <p>典型形态是 Tomcat 的 {@code ClientAbortException}（包装 Socket 写失败）与 Spring 的
+     * {@code AsyncRequestNotUsableException}（异步响应已不可用），两者的根因都是 IO 中断。
+     * 这里按类名与 IOException 判断，避免公共模块为了判定一个异常去依赖 Tomcat。
+     *
+     * @param exception 推送失败异常
+     * @return true 表示客户端已断开
+     */
+    private boolean isClientDisconnect(Throwable exception) {
+        Throwable current = exception;
+        while (current != null) {
+            if (current instanceof java.io.IOException) {
+                return true;
+            }
+            String className = current.getClass().getName();
+            if ("org.apache.catalina.connector.ClientAbortException".equals(className)
+                    || "org.springframework.web.context.request.async.AsyncRequestNotUsableException"
+                            .equals(className)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     /**

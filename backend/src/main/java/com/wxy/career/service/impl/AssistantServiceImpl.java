@@ -147,8 +147,7 @@ public class AssistantServiceImpl implements AssistantService {
             // 消息落库后回写会话标题与活跃时间；会话元数据缺失时该方法只记日志，不会影响对话。
             chatSessionService.recordUserMessage(userId, sessionId, content);
 
-            SseEmitterSupport support = new SseEmitterSupport(
-                    objectMapper, sseTaskScheduler, agentProperties.getStreamTimeoutSeconds());
+            SseEmitterSupport support = createEmitterSupport();
             support.sendMeta(
                     SCENE_ASSISTANT, sessionId, agentProperties.getProvider(), UUID.randomUUID().toString());
 
@@ -181,6 +180,19 @@ public class AssistantServiceImpl implements AssistantService {
     }
 
     /**
+     * 创建本次流的 SSE 推送封装。
+     *
+     * <p>抽成方法是为了让单测能注入「推送必然失败」的实现，验证客户端断开后本轮仍会跑完并整体落库；
+     * 生产路径固定使用 {@link SseEmitterSupport}。
+     *
+     * @return SSE 推送封装
+     */
+    SseEmitterSupport createEmitterSupport() {
+        return new SseEmitterSupport(
+                objectMapper, sseTaskScheduler, agentProperties.getStreamTimeoutSeconds());
+    }
+
+    /**
      * 分页查询当前用户指定会话的历史消息。
      *
      * @param sessionId 会话 ID
@@ -201,6 +213,9 @@ public class AssistantServiceImpl implements AssistantService {
     /**
      * 处理单条 AgentScope 事件。
      *
+     * <p>连接断开（用户切走会话、关闭页面、刷新）时只停止推送，**不中断本轮推理**：模型继续把这一轮跑完，
+     * 结束时整体落库，用户回到该会话能看到完整回答。推送失败由 {@code SseEmitterSupport} 兜住并返回 false。
+     *
      * @param state 流式会话状态
      * @param event AgentScope 事件
      */
@@ -208,6 +223,7 @@ public class AssistantServiceImpl implements AssistantService {
         if (state.terminated.get()) {
             return;
         }
+        // 先累计文本：连接断了这一轮也要有完整回复可落库。
         appendReply(state, event);
         SseEvent mapped = AgentEventMapper.map(event);
         if (mapped == null) {
@@ -218,9 +234,14 @@ public class AssistantServiceImpl implements AssistantService {
             finish(state, extractMessage(mapped), true);
             return;
         }
+        if (state.detached) {
+            return;
+        }
         if (!state.support.send(mapped)) {
-            // 连接已断开，停止上游推理并保留已生成内容。
-            finish(state, null, false);
+            // 客户端已断开：只标记不再推送，继续消费上游直到本轮结束，避免半截回答落库。
+            state.detached = true;
+            log.info("SSE 连接已断开，本轮继续执行并在结束后落库，userId={}，sessionId={}",
+                    state.userId, state.sessionId);
         }
     }
 
@@ -261,7 +282,8 @@ public class AssistantServiceImpl implements AssistantService {
         saveAssistantMessage(state);
         dispose(state);
         releaseSessionLock(state.lockKey, state.lockToken);
-        if (!sendTerminalEvent) {
+        // 连接已断开的会话不再推送任何事件（包括结果与 done），但上面的落库照常执行。
+        if (!sendTerminalEvent || state.detached) {
             return;
         }
         if (StringUtils.hasText(errorMessage)) {
@@ -492,6 +514,11 @@ public class AssistantServiceImpl implements AssistantService {
          * 是否已结束，保证结束逻辑只执行一次。
          */
         private final AtomicBoolean terminated = new AtomicBoolean(false);
+
+        /**
+         * 客户端是否已断开：断开后不再推送事件，但本轮继续跑完并落库。
+         */
+        private volatile boolean detached;
 
         /**
          * 上游订阅句柄，结束时可主动释放。
