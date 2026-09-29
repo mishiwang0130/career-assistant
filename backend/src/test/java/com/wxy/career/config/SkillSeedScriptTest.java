@@ -101,7 +101,10 @@ class SkillSeedScriptTest {
 
         // F3 段从自己的分隔注释起，到本段的幂等收尾止：段内只写技能行，不重复建表。
         int sectionStart = script.indexOf("F3 岗位匹配");
-        int sectionEnd = script.lastIndexOf("ON DUPLICATE KEY UPDATE");
+        // F6 起脚本末尾会继续追加后续模块的段，这里把范围收在 F3 段内，避免把 F6 的建表算进来。
+        int nextSectionStart = script.indexOf("F6 面试点评与报告");
+        int sectionEnd = nextSectionStart > sectionStart
+                ? nextSectionStart : script.lastIndexOf("ON DUPLICATE KEY UPDATE");
         assertThat(sectionStart).isGreaterThan(0);
         assertThat(sectionEnd).isGreaterThan(sectionStart);
 
@@ -117,5 +120,45 @@ class SkillSeedScriptTest {
                 // 差距补齐建议最容易滑向「替用户编数字」，这条底线必须写进技能正文。
                 .contains("如果你确实做过");
         assertThat(jobMatchSection.length()).isGreaterThan(500);
+    }
+
+    /**
+     * 验证建库脚本幂等追加了 F6 的两张表与两个技能，并且逐题点评不建独立表。
+     *
+     * <p>真实取数需要 MySQL，因此这里只固定脚本契约：掌握度表与报告表带账号维度索引、
+     * 两个技能写成幂等插入、掌握度口径的具体数值写进技能正文，且脚本里没有 `interview_evaluation` 表
+     * （逐题点评的权威数据仍是 `interview_qa.evaluation_json`）。
+     *
+     * @throws Exception 读取脚本失败
+     */
+    @Test
+    void shouldSeedInterviewReportTablesAndSkillsIdempotently() throws Exception {
+        String script = Files.readString(SCRIPT_PATH, StandardCharsets.UTF_8);
+
+        assertThat(script).contains("CREATE TABLE IF NOT EXISTS `knowledge_mastery`");
+        assertThat(script).contains("uk_knowledge_mastery_user_point");
+        assertThat(script).contains("CREATE TABLE IF NOT EXISTS `interview_report`");
+        assertThat(script).contains("uk_interview_report_user_session");
+        assertThat(script).doesNotContain("CREATE TABLE IF NOT EXISTS `interview_evaluation`");
+
+        int sectionStart = script.indexOf("F6 面试点评与报告");
+        assertThat(sectionStart).isGreaterThan(0);
+
+        int mastery = script.indexOf("'mastery-evaluation'");
+        String masterySection = script.substring(mastery, script.indexOf("ON DUPLICATE KEY UPDATE", mastery));
+        assertThat(masterySection)
+                .contains("90 天")
+                .contains("半衰期")
+                .contains("中性先验")
+                .contains("薄弱");
+
+        int report = script.indexOf("'interview-report'");
+        String reportSection = script.substring(report, script.indexOf("ON DUPLICATE KEY UPDATE", report));
+        assertThat(reportSection)
+                .contains("面试总结")
+                .contains("亮点")
+                .contains("下一步建议")
+                .contains("submit_interview_report");
+        assertThat(reportSection.length()).isGreaterThan(500);
     }
 }

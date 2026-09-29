@@ -12,15 +12,18 @@ import com.wxy.career.common.redis.RedisUtil;
 import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.config.AgentProperties;
 import com.wxy.career.config.InterviewProperties;
+import com.wxy.career.config.MemoryProperties;
 import com.wxy.career.controller.AssistantController;
 import com.wxy.career.mapper.SysUserMapper;
 import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
+import com.wxy.career.middleware.UserLongTermMemoryAdapter;
 import com.wxy.career.po.SysUser;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.ChatSessionService;
 import com.wxy.career.service.InterviewFlowService;
 import com.wxy.career.service.InterviewEvaluationService;
+import com.wxy.career.service.InterviewReviewService;
 import com.wxy.career.service.ResumeDiagnosisService;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.UserProfileService;
@@ -28,8 +31,11 @@ import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
 import com.wxy.career.tool.SubmitAnswerEvaluationTool;
+import com.wxy.career.tool.SubmitInterviewReportTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import com.wxy.career.vo.InterviewStateRespVO;
+import com.wxy.career.vo.InterviewEvaluationRespVO;
+import com.wxy.career.vo.InterviewReportRespVO;
 import com.wxy.career.vo.InterviewResultRespVO;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
@@ -106,6 +112,11 @@ class InterviewStreamTest {
     private InterviewFlowService interviewFlowService;
 
     /**
+     * 面试复盘服务 mock：逐题点评与报告状态由它提供（F6）。
+     */
+    private InterviewReviewService interviewReviewService;
+
+    /**
      * 记录模型收到的消息，用于校验走的是面试 Agent 的提示词。
      */
     private CapturingModel capturingModel;
@@ -171,6 +182,13 @@ class InterviewStreamTest {
         ReflectionTestUtils.setField(
                 agentFactory, "submitAnswerEvaluationTool", new SubmitAnswerEvaluationTool());
         ReflectionTestUtils.setField(agentFactory, "interviewProperties", new InterviewProperties());
+        // F6：长期记忆适配层与报告提交工具同样要装配；测试里关掉记忆读写，避免依赖 Mem0 服务。
+        MemoryProperties memoryProperties = new MemoryProperties();
+        memoryProperties.setEnabled(false);
+        UserLongTermMemoryAdapter userLongTermMemoryAdapter = new UserLongTermMemoryAdapter();
+        ReflectionTestUtils.setField(userLongTermMemoryAdapter, "memoryProperties", memoryProperties);
+        ReflectionTestUtils.setField(agentFactory, "userLongTermMemoryAdapter", userLongTermMemoryAdapter);
+        ReflectionTestUtils.setField(agentFactory, "submitInterviewReportTool", new SubmitInterviewReportTool());
 
         assistantMessageService = mock(AssistantMessageService.class);
         ChatSessionService chatSessionService = mock(ChatSessionService.class);
@@ -180,6 +198,7 @@ class InterviewStreamTest {
         scheduler.initialize();
 
         interviewFlowService = mock(InterviewFlowService.class);
+        interviewReviewService = mock(InterviewReviewService.class);
 
         AssistantServiceImpl assistantService = new AssistantServiceImpl();
         ReflectionTestUtils.setField(assistantService, "agentFactory", agentFactory);
@@ -194,6 +213,7 @@ class InterviewStreamTest {
         ReflectionTestUtils.setField(assistantService, "interviewFlowService", interviewFlowService);
         ReflectionTestUtils.setField(
                 assistantService, "interviewEvaluationService", mock(InterviewEvaluationService.class));
+        ReflectionTestUtils.setField(assistantService, "interviewReviewService", interviewReviewService);
 
         AssistantController assistantController = new AssistantController();
         ReflectionTestUtils.setField(assistantController, "assistantService", assistantService);
@@ -271,6 +291,68 @@ class InterviewStreamTest {
         // 先进度后结果，都在 done 之前。
         assertThat(body.indexOf("interview_progress")).isLessThan(body.indexOf("interview_result"));
         assertThat(body.indexOf("interview_result")).isLessThan(body.indexOf("event:done"));
+    }
+
+    /**
+     * 每答完一题下发逐题点评；结束那一轮再下发报告状态。
+     *
+     * <p>F6 的两条硬约定都在这里固定：点评紧跟落库那一回合（答完一题立即看点评），报告由后台任务生成、
+     * 面板先拿到「生成中」再轮询；四个 result 载荷的顺序固定为点评 → 进度 → 结果 → 报告状态。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldSendEvaluationAndReportState() throws Exception {
+        when(interviewFlowService.prepareTurn(1L, SESSION_ID, "最后一题的回答"))
+                .thenReturn(buildState(8, 4, 1, false));
+        when(interviewFlowService.commitTurn(1L, SESSION_ID)).thenReturn(buildState(8, 4, 1, true));
+        InterviewResultRespVO result = new InterviewResultRespVO();
+        result.setSessionId(SESSION_ID);
+        result.setQuestionCount(8);
+        result.setAnsweredCount(8);
+        result.setFinished(true);
+        result.setItems(List.of());
+        when(interviewFlowService.getResult(1L, SESSION_ID)).thenReturn(result);
+
+        InterviewEvaluationRespVO evaluation = new InterviewEvaluationRespVO();
+        evaluation.setSessionId(SESSION_ID);
+        evaluation.setQuestionIndex(8);
+        evaluation.setRoundNo(1);
+        evaluation.setOutcome("PARTIAL");
+        evaluation.setOutcomeLabel("答得有遗漏");
+        evaluation.setDifficulty(4);
+        evaluation.setScore(70);
+        evaluation.setCorrectPoints(List.of("答到了核心参数"));
+        evaluation.setMissingPoints(List.of("拒绝策略"));
+        evaluation.setEvaluated(true);
+        when(interviewReviewService.latestEvaluation(1L, SESSION_ID)).thenReturn(evaluation);
+
+        InterviewReportRespVO reportState = new InterviewReportRespVO();
+        reportState.setSessionId(SESSION_ID);
+        reportState.setStatus("GENERATING");
+        reportState.setStatusLabel("报告生成中");
+        reportState.setCanRetry(false);
+        when(interviewReviewService.afterTurnCommitted(1L, SESSION_ID, true)).thenReturn(reportState);
+
+        MvcResult mvcResult = mockMvc.perform(post("/api/assistant/chat")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sessionId\":\"" + SESSION_ID + "\",\"content\":\"最后一题的回答\"}"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        String body = awaitStreamBody(mvcResult.getResponse());
+
+        assertThat(body).contains("\"type\":\"interview_evaluation\"");
+        assertThat(body).contains("\"correctPoints\":[\"答到了核心参数\"]");
+        assertThat(body).contains("\"type\":\"interview_report\"");
+        assertThat(body).contains("\"status\":\"GENERATING\"");
+        assertThat(body.indexOf("interview_evaluation")).isLessThan(body.indexOf("interview_progress"));
+        assertThat(body.indexOf("interview_progress")).isLessThan(body.indexOf("interview_result"));
+        assertThat(body.indexOf("interview_result")).isLessThan(body.indexOf("interview_report"));
+        assertThat(body.indexOf("interview_report")).isLessThan(body.indexOf("event:done"));
+        // 掌握度沉淀与报告派发都发生在同一轮里，顺序由复盘服务保证
+        verify(interviewReviewService).afterTurnCommitted(1L, SESSION_ID, true);
     }
 
     /**

@@ -42,7 +42,9 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
             AgentFactory.INTERVIEWER_AGENT_NAME, "classpath:prompts/interviewer.md",
             AgentFactory.ANSWER_EVALUATOR_AGENT_NAME, "classpath:prompts/sub-evaluator.md",
             // F3：岗位匹配子 Agent 与代码一一对应，同样直接在这里登记。
-            AgentFactory.JOB_MATCH_AGENT_NAME, "classpath:prompts/sub-job-match.md");
+            AgentFactory.JOB_MATCH_AGENT_NAME, "classpath:prompts/sub-job-match.md",
+            // F6：报告子 Agent 与代码一一对应，由平台后台派发，同样直接在这里登记。
+            AgentFactory.REPORT_WRITER_AGENT_NAME, "classpath:prompts/sub-report-writer.md");
 
     /**
      * 提示词文件缺失或读取失败时使用的兜底提示词。
@@ -147,6 +149,24 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
                不汇报读了多少字符、分了几段，不提到技能名、工具名或子 Agent。""";
 
     /**
+     * 报告子 Agent 的兜底提示词。
+     *
+     * <p>与 {@code prompts/sub-report-writer.md} 同一套底线：只依据派发材料里的判定、错题与掌握度写作，
+     * 不编造经历与数字，不提内部过程；落到助手提示词会去聊天，因此必须有自己的兜底。
+     */
+    private static final String DEFAULT_REPORT_WRITER_PROMPT = """
+            你是一名面试报告撰写员，只做一件事：把这场模拟面试的表现写成一份报告，使用简体中文。
+            要求：
+            1. 只依据系统给你的材料：逐题判定、一句话点评、错题清单与知识点掌握度，不编造用户没说过的经历、项目与数字；
+            2. 先加载 mastery-evaluation 与 interview-report 技能，按里面的口径解释掌握度、按里面的结构写报告；
+            3. 报告分三块：面试总结（整体表现、主要差距与整体判断）、亮点（2-3 条，指明来自哪道题或哪个知识点）、
+               下一步建议（3-5 条，按优先级，优先覆盖薄弱点清单里最靠前的知识点）；
+            4. 不提分数公式、不贴 JSON、不输出字段清单、不讲内部过程，也不提到工具名、技能名或子角色；
+            5. 理由充分但不啰嗦，对事不对人；
+            6. 结论必须用 submit_interview_report 工具提交一次：sessionId、summary、highlights、suggestions，
+               提交后正文只回一句「报告完成」。""";
+
+    /**
      * Agent 配置，提供提示词文件位置。
      */
     @Resource
@@ -244,6 +264,10 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
         // F3：岗位匹配子 Agent 必须退回自己的兜底提示词，不能落到助手那套角色设定。
         if (AgentFactory.JOB_MATCH_AGENT_NAME.equals(agentId)) {
             return DEFAULT_JOB_MATCH_PROMPT;
+        }
+        // F6：报告子 Agent 必须退回自己的兜底提示词，不能落到助手那套角色设定。
+        if (AgentFactory.REPORT_WRITER_AGENT_NAME.equals(agentId)) {
+            return DEFAULT_REPORT_WRITER_PROMPT;
         }
         return DEFAULT_PROMPT;
     }

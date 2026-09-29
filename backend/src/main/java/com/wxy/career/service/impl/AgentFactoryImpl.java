@@ -6,14 +6,19 @@ import com.wxy.career.config.AgentProperties;
 import com.wxy.career.config.InterviewProperties;
 import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
+import com.wxy.career.middleware.UserLongTermMemoryAdapter;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
 import com.wxy.career.tool.SubmitAnswerEvaluationTool;
+import com.wxy.career.tool.SubmitInterviewReportTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import io.agentscope.core.agent.Agent;
+import io.agentscope.core.ReActAgent;
+import io.agentscope.core.memory.LongTermMemory;
+import io.agentscope.core.memory.LongTermMemoryMode;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
@@ -304,15 +309,15 @@ public class AgentFactoryImpl implements AgentFactory {
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(readResumeTool);
         toolkit.registerTool(submitResumeDiagnosisTool);
-        HarnessAgent agent = HarnessAgent.builder()
+        // 长期记忆只能挂到底层 ReActAgent 上（HarnessAgent.Builder 没有 longTermMemory 入口），
+        // 因此先建 ReActAgent 再用 fromAgent 包成 HarnessAgent，见 docs/技术约定.md「长期记忆（Mem0）」。
+        HarnessAgent agent = HarnessAgent.Builder
+                .fromAgent(buildLongTermReactAgent(agentName, MAIN_AGENT_DESCRIPTION, toolkit,
+                        agentProperties.getMaxIters()))
                 .name(agentName)
                 .description(MAIN_AGENT_DESCRIPTION)
-                .sysPrompt(systemPromptProvider.prompt(agentName))
                 .model(agentModel)
-                .generateOptions(GenerateOptions.builder().temperature(0.6).build())
                 .toolkit(toolkit)
-                .maxIters(agentProperties.getMaxIters())
-                .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
                 .stateStore(agentStateStore)
                 // 技能正文存 MySQL；子 Agent 用声明（下面一行）而不是工作区里的 subagents/*.md。
                 .skillRepository(agentSkillRepository)
@@ -510,6 +515,38 @@ public class AgentFactoryImpl implements AgentFactory {
         return toolsConfig;
     }
 
+    /**
+     * 构建挂了长期记忆的底层 ReActAgent。
+     *
+     * <p>装配方式写死在 {@code docs/技术约定.md}：{@code HarnessAgent.Builder} 没有 {@code longTermMemory(...)}
+     * 入口，必须先用底层 Agent 挂上 {@link UserLongTermMemoryAdapter} 与 {@code BOTH} 模式，
+     * 再用 {@code HarnessAgent.Builder.fromAgent(...)} 包成 HarnessAgent。助手与面试官共用同一份装配，
+     * 因此 F9 的讲解链路也走长期记忆召回，不需要各模块自己写一遍。
+     *
+     * @param agentName Agent 名
+     * @param description Agent 描述
+     * @param toolkit 已注册业务工具的 Toolkit
+     * @param maxIters 步数上限
+     * @return 挂了长期记忆的底层 Agent
+     */
+    private ReActAgent buildLongTermReactAgent(
+            String agentName, String description, Toolkit toolkit, int maxIters) {
+        return ReActAgent.builder()
+                .name(agentName)
+                .description(description)
+                .sysPrompt(systemPromptProvider.prompt(agentName))
+                .model(agentModel)
+                .generateOptions(GenerateOptions.builder().temperature(0.6).build())
+                .toolkit(toolkit)
+                .maxIters(maxIters)
+                .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
+                .stateStore(agentStateStore)
+                // BOTH：召回注入与自动记录都交给框架的长期记忆钩子，适配层负责用户隔离、降级与截断。
+                .longTermMemory((LongTermMemory) userLongTermMemoryAdapter)
+                .longTermMemoryMode(LongTermMemoryMode.BOTH)
+                .build();
+    }
+
     // ==================== F5 模拟面试 ====================
 
     /**
@@ -612,6 +649,12 @@ public class AgentFactoryImpl implements AgentFactory {
     private SubmitAnswerEvaluationTool submitAnswerEvaluationTool;
 
     /**
+     * 长期记忆适配层，F6 第 4 批接入：按用户与会话路由到 Mem0，降级与超时都在它内部兜住。
+     */
+    @Resource
+    private UserLongTermMemoryAdapter userLongTermMemoryAdapter;
+
+    /**
      * 面试配置，提供上下文压缩阈值。
      */
     @Resource
@@ -633,18 +676,20 @@ public class AgentFactoryImpl implements AgentFactory {
         toolkit.registerTool(recordInterviewAnswerTool);
         // 注册给子 Agent 继承（声明里的 tools 从父 Toolkit 取），面试 Agent 自己靠 allow 白名单挡住。
         toolkit.registerTool(submitAnswerEvaluationTool);
-        HarnessAgent agent = HarnessAgent.builder()
+        // F6：报告子 Agent 的提交工具也从父 Toolkit 注册，面试官自己靠 allow 白名单挡住。
+        toolkit.registerTool(submitInterviewReportTool);
+        // 长期记忆同样挂到底层 ReActAgent 上，再包成 HarnessAgent（见 buildLongTermReactAgent）。
+        HarnessAgent agent = HarnessAgent.Builder
+                .fromAgent(buildLongTermReactAgent(AgentFactory.INTERVIEWER_AGENT_NAME,
+                        INTERVIEWER_AGENT_DESCRIPTION, toolkit, INTERVIEWER_MAX_ITERS))
                 .name(AgentFactory.INTERVIEWER_AGENT_NAME)
                 .description(INTERVIEWER_AGENT_DESCRIPTION)
-                .sysPrompt(systemPromptProvider.prompt(AgentFactory.INTERVIEWER_AGENT_NAME))
                 .model(agentModel)
-                .generateOptions(GenerateOptions.builder().temperature(0.6).build())
                 .toolkit(toolkit)
-                .maxIters(INTERVIEWER_MAX_ITERS)
-                .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
                 .stateStore(agentStateStore)
                 .skillRepository(agentSkillRepository)
                 .subagent(buildAnswerEvaluatorDeclaration())
+                .subagent(buildReportWriterDeclaration())
                 // 第 3 批的能力接入项：上下文压缩，阈值见 InterviewProperties 与 docs/技术约定.md。
                 .compaction(buildInterviewCompactionConfig())
                 .toolsConfig(buildInterviewerToolsConfig())
@@ -661,6 +706,8 @@ public class AgentFactoryImpl implements AgentFactory {
                 .disableToolResultEviction()
                 .build();
         narrowSubagentTools(agent, INTERVIEWER_SUBAGENT_ALLOWED_TOOLS);
+        // F6 的报告子 Agent 用独立的收紧方法追加，不改 F5 那段「子 Agent 名 → 允许工具集」映射（只追加）。
+        narrowReportWriterSubagentTools(agent);
         log.info("构建 Agent 完成，agentName={}，tools={}，skills={}",
                 agent.getName(), agent.getToolkit().getToolNames(), agent.getSkillRepositories().size());
         return agent;
@@ -777,5 +824,104 @@ public class AgentFactoryImpl implements AgentFactory {
         log.info("收紧子 Agent 工具白名单完成，agentName={}，tools={}",
                 subagent.getName(), toolkit.getToolNames());
         return subagent;
+    }
+
+    // ==================== F6 面试点评与报告 ====================
+
+    /**
+     * 报告子 Agent 描述，决定平台派发时它承担什么角色。
+     */
+    private static final String REPORT_WRITER_DESCRIPTION =
+            "面试报告撰写员：依据本场面试的逐题判定、错题清单与知识点掌握度，写出一份面试总结、亮点与下一步建议。"
+                    + "报告由后台任务派发，结论只经提交工具落库。";
+
+    /**
+     * 报告子 Agent 的步数上限：读技能 + 提交一次结构化结论，比评分子 Agent 更简单。
+     */
+    private static final int REPORT_WRITER_MAX_ITERS = 8;
+
+    /**
+     * 提交面试报告工具名。只给报告子 Agent 用，面试 Agent 侧靠 allow 白名单挡住。
+     */
+    private static final String SUBMIT_REPORT_TOOL_NAME = "submit_interview_report";
+
+    /**
+     * 报告子 Agent 加载的技能：掌握度判定口径 + 报告写作规范。
+     */
+    private static final List<String> REPORT_WRITER_SKILL_NAMES =
+            List.of("mastery-evaluation", "interview-report");
+
+    /**
+     * 报告子 Agent 最终允许保留的工具：技能加载 + 提交报告结论。
+     *
+     * <p>与评分子 Agent 同理：材料由派发文本给全，它不需要读库、读简历或写任何东西，收窄到这两个工具
+     * 避免框架默认的平台工具混进来（平台工具不受父 Agent 的 ToolsConfig 约束）。
+     */
+    private static final List<String> REPORT_WRITER_ALLOWED_TOOL_NAMES =
+            List.of(SKILL_LOAD_TOOL_NAME, SUBMIT_REPORT_TOOL_NAME);
+
+    /**
+     * 提交报告结论工具，只给报告子 Agent 使用。
+     */
+    @Resource
+    private SubmitInterviewReportTool submitInterviewReportTool;
+
+    /**
+     * 构建「面试报告」子 Agent 声明。
+     *
+     * <p>与评分子 Agent 同一套声明式装配：代码声明、不落工作区文件、不暴露给用户。它与面试官没有工具往来——
+     * 平台用后台模式派发，报告内容只经提交工具落库，因此面试官依旧看不到、也抄不到报告内容。
+     *
+     * @return 子 Agent 声明
+     */
+    SubagentDeclaration buildReportWriterDeclaration() {
+        return SubagentDeclaration.builder()
+                .name(AgentFactory.REPORT_WRITER_AGENT_NAME)
+                .description(REPORT_WRITER_DESCRIPTION)
+                .tools(List.of(SUBMIT_REPORT_TOOL_NAME))
+                .skills(REPORT_WRITER_SKILL_NAMES)
+                .maxIters(REPORT_WRITER_MAX_ITERS)
+                .exposeToUser(false)
+                .build();
+    }
+
+    /**
+     * 收紧报告子 Agent 的工具集。
+     *
+     * <p>与 F5 的收紧方法同理，单独成一个方法：F5 那段「子 Agent 名 → 允许工具集」映射已经固化，
+     * F6 只把自己的子 Agent 再包一层，避免改动 F5 已冻结的代码。
+     *
+     * @param agent 已构建的面试 Agent
+     */
+    private void narrowReportWriterSubagentTools(HarnessAgent agent) {
+        DefaultAgentManager agentManager = agent.getSubagentAgentManager();
+        if (agentManager == null) {
+            log.warn("当前 Agent 没有子 Agent 管理器，跳过报告子 Agent 工具白名单收紧");
+            return;
+        }
+        Map<String, SubagentFactory> factories = agentManager.getAgentFactories();
+        if (!factories.containsKey(AgentFactory.REPORT_WRITER_AGENT_NAME)) {
+            log.warn("未找到报告子 Agent 工厂，子 Agent 工具白名单未收紧，factories={}", factories.keySet());
+            return;
+        }
+        List<SubagentEntry> entries = new ArrayList<>(factories.size());
+        for (Map.Entry<String, SubagentFactory> factoryEntry : factories.entrySet()) {
+            String subagentName = factoryEntry.getKey();
+            SubagentFactory factory = factoryEntry.getValue();
+            SubagentDeclaration declaration = agentManager.getDeclaration(subagentName).orElse(null);
+            if (AgentFactory.REPORT_WRITER_AGENT_NAME.equals(subagentName)) {
+                SubagentFactory narrowed = runtimeContext -> keepTools(
+                        factory.create(runtimeContext), REPORT_WRITER_ALLOWED_TOOL_NAMES);
+                entries.add(new SubagentEntry(
+                        subagentName, REPORT_WRITER_DESCRIPTION, narrowed, declaration));
+            } else {
+                entries.add(new SubagentEntry(
+                        subagentName,
+                        declaration == null ? subagentName : declaration.getDescription(),
+                        factory,
+                        declaration));
+            }
+        }
+        agentManager.replaceAgents(entries);
     }
 }

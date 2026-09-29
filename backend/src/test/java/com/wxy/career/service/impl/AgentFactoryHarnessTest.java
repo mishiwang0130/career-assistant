@@ -4,8 +4,10 @@ import com.wxy.career.common.exception.BizException;
 import com.wxy.career.common.redis.RedisUtil;
 import com.wxy.career.config.AgentProperties;
 import com.wxy.career.config.InterviewProperties;
+import com.wxy.career.config.MemoryProperties;
 import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
+import com.wxy.career.middleware.UserLongTermMemoryAdapter;
 import com.wxy.career.mapper.SysUserMapper;
 import com.wxy.career.po.SysUser;
 import com.wxy.career.service.AgentFactory;
@@ -16,6 +18,7 @@ import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
 import com.wxy.career.tool.SubmitAnswerEvaluationTool;
+import com.wxy.career.tool.SubmitInterviewReportTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
@@ -129,6 +132,13 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(
                 agentFactory, "submitAnswerEvaluationTool", new SubmitAnswerEvaluationTool());
         ReflectionTestUtils.setField(agentFactory, "interviewProperties", new InterviewProperties());
+        // F6：长期记忆适配层与报告提交工具都要装配上，但测试里关掉记忆读写，避免依赖 Mem0 服务。
+        MemoryProperties memoryProperties = new MemoryProperties();
+        memoryProperties.setEnabled(false);
+        UserLongTermMemoryAdapter userLongTermMemoryAdapter = new UserLongTermMemoryAdapter();
+        ReflectionTestUtils.setField(userLongTermMemoryAdapter, "memoryProperties", memoryProperties);
+        ReflectionTestUtils.setField(agentFactory, "userLongTermMemoryAdapter", userLongTermMemoryAdapter);
+        ReflectionTestUtils.setField(agentFactory, "submitInterviewReportTool", new SubmitInterviewReportTool());
     }
 
     /**
@@ -417,6 +427,60 @@ class AgentFactoryHarnessTest {
         assertThat(systemPrompt).contains("测试系统提示词:" + AgentFactory.JOB_MATCH_AGENT_NAME);
         assertThat(systemPrompt).contains("目标岗位「后端开发」");
         assertThat(systemPrompt).contains("当前对话用户昵称：Alice");
+    }
+
+    /**
+     * 验证报告子 Agent 的声明：技能为掌握度口径与报告规范，工具只有提交报告结论，不暴露给用户。
+     */
+    @Test
+    void shouldDeclareReportWriterSubagent() {
+        SubagentDeclaration declaration = agentFactory.buildReportWriterDeclaration();
+
+        assertThat(declaration.getName()).isEqualTo(AgentFactory.REPORT_WRITER_AGENT_NAME);
+        assertThat(declaration.getTools()).containsExactly("submit_interview_report");
+        assertThat(declaration.getSkills()).containsExactly("mastery-evaluation", "interview-report");
+        assertThat(declaration.getExposeToUser()).isFalse();
+    }
+
+    /**
+     * 验证报告子 Agent 的工具集被收窄到「技能加载 + 提交报告」，框架默认平台工具混不进来。
+     */
+    @Test
+    void shouldNarrowReportWriterTools() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.INTERVIEWER_AGENT_NAME);
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId("1").sessionId("12").build();
+
+        var subagent = agent.getSubagentAgentManager()
+                .createAgentIfPresent(AgentFactory.REPORT_WRITER_AGENT_NAME, runtimeContext);
+
+        assertThat(subagent).isPresent();
+        Set<String> subagentTools = subagent.get().getToolkit().getToolNames();
+        assertThat(subagentTools)
+                .containsExactlyInAnyOrder("load_skill_through_path", "submit_interview_report");
+        // 报告由平台后台派发，子 Agent 不需要任务平台工具，也不需要读库工具
+        assertThat(subagentTools).doesNotContain(
+                "task_output", "task_list", "task_cancel", "agent_spawn", "read_resume",
+                "web_search", "web_fetch", "wait_async_results");
+    }
+
+    /**
+     * 验证任务平台工具本批仍然全员 deny：报告状态由 interview_report 表承载，没有 Agent 需要它们。
+     *
+     * <p>放开范围必须随代码固定下来：面试官看不到 task_output / task_list / task_cancel 与
+     * agent_spawn 系工具，报告只由平台派发；助手侧同样看不到任务工具。
+     */
+    @Test
+    void shouldKeepTaskPlatformToolsDenied() {
+        Set<String> interviewerTools =
+                agentFactory.getAgent(AgentFactory.INTERVIEWER_AGENT_NAME).getToolkit().getToolNames();
+        Set<String> assistantTools =
+                agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME).getToolkit().getToolNames();
+
+        assertThat(interviewerTools).doesNotContain(
+                "task_output", "task_list", "task_cancel", "agent_spawn", "agent_send", "agent_list");
+        assertThat(assistantTools).doesNotContain("task_output", "task_list", "task_cancel");
+        // 报告提交工具只属于报告子 Agent，面试官自己看不到
+        assertThat(interviewerTools).doesNotContain("submit_interview_report");
     }
 
     /**

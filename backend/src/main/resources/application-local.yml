@@ -30,4 +30,13 @@ app:
     compaction:
       trigger-messages: 40
       keep-messages: 16
+  # 长期记忆（F6）：本地不部署 Mem0，用 localhost 占位 + 环境变量；服务没起时主流程照常可用（降级）。
+  memory:
+    enabled: ${MEM0_ENABLED:true}
+    recall-timeout-ms: ${MEM0_RECALL_TIMEOUT_MS:3000}
+    mem0:
+      base-url: ${MEM0_BASE_URL:http://localhost:8000}
+      api-key: ${MEM0_API_KEY:}
+      api-type: ${MEM0_API_TYPE:SELF_HOSTED}
+      timeout-ms: ${MEM0_TIMEOUT_MS:60000}
 

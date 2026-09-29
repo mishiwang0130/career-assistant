@@ -50,6 +50,14 @@ public interface AgentFactory {
     String JOB_MATCH_AGENT_NAME = "job-match";
 
     /**
+     * 报告子 Agent 名，F6 冻结。
+     *
+     * <p>由平台用框架的后台模式派发（{@code timeout_seconds=0}），不作为独立入口，也不通过
+     * {@link #getAgent(String)} 获取：报告内容只经提交工具落库，正文一律丢弃。
+     */
+    String REPORT_WRITER_AGENT_NAME = "report-writer";
+
+    /**
      * 按名字获取 Agent。
      *
      * @param agentName Agent 名

@@ -9,18 +9,22 @@ import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.common.sse.SseEmitterSupport;
 import com.wxy.career.common.sse.SseEvent;
 import com.wxy.career.config.AgentProperties;
+import com.wxy.career.middleware.UserLongTermMemoryAdapter;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.AssistantService;
 import com.wxy.career.service.ChatSessionService;
 import com.wxy.career.service.InterviewFlowService;
 import com.wxy.career.service.InterviewEvaluationService;
+import com.wxy.career.service.InterviewReviewService;
 import com.wxy.career.service.ResumeDiagnosisService;
 import com.wxy.career.util.AgentEventMapper;
 import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.InterviewProgressResultVO;
+import com.wxy.career.vo.InterviewEvaluationRespVO;
+import com.wxy.career.vo.InterviewReportRespVO;
 import com.wxy.career.vo.InterviewResultRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
 import com.wxy.career.vo.PageRespVO;
@@ -42,6 +46,7 @@ import reactor.core.Disposable;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.UUID;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -178,6 +183,11 @@ public class AssistantServiceImpl implements AssistantService {
                     .name(USER_MESSAGE_NAME)
                     .role(MsgRole.USER)
                     .textContent(content)
+                    // 长期记忆适配层按这两个元数据解析用户与会话（Mem0 实例绑定 userId/runName），
+                    // 因此必须在用户消息上带上它们；模型看不到元数据，也不参与身份判定。
+                    .metadata(Map.of(
+                            UserLongTermMemoryAdapter.METADATA_USER_ID, String.valueOf(userId),
+                            UserLongTermMemoryAdapter.METADATA_SESSION_ID, sessionId))
                     .build();
 
             // 流式推理是阻塞型 IO，放到弹性线程池执行，避免占用 MVC 请求线程。
@@ -607,6 +617,12 @@ public class AssistantServiceImpl implements AssistantService {
     private InterviewEvaluationService interviewEvaluationService;
 
     /**
+     * 面试复盘服务（F6）：每回合下发逐题点评、沉淀掌握度，结束时启动报告生成。
+     */
+    @Resource
+    private InterviewReviewService interviewReviewService;
+
+    /**
      * 落库本回合的面试问答并下发最新进度与难度。
      *
      * <p>下发时机与简历诊断结论一致：流正常结束前、{@code done} 之前。开场那一轮只提问、没有待落库
@@ -625,6 +641,11 @@ public class AssistantServiceImpl implements AssistantService {
         if (progress == null) {
             return;
         }
+        // F6：先下发本回合的逐题点评（答完一题立即看点评），内容就是 F5 刚落库的那份评分结论，不重新评分。
+        sendInterviewEvaluation(state);
+        // F6：每回合沉淀掌握度与薄弱点；面试结束的那一轮同时用后台子 Agent 启动报告生成。
+        InterviewReportRespVO reportState = interviewReviewService.afterTurnCommitted(
+                state.userId, state.sessionId, Boolean.TRUE.equals(progress.getFinished()));
         if (!state.support.send(SseEvent.result(InterviewProgressResultVO.from(progress)))) {
             log.warn("面试进度下发失败，连接可能已断开，sessionId={}", state.sessionId);
         }
@@ -640,6 +661,33 @@ public class AssistantServiceImpl implements AssistantService {
                 log.error("面试结果组装失败，userId={}，sessionId={}",
                         state.userId, state.sessionId, exception);
             }
+            // F6：再下发一次报告状态（生成中或派发失败），界面据此显示「报告生成中」或失败重试入口。
+            if (reportState != null && !state.support.send(SseEvent.result(reportState))) {
+                log.warn("面试报告状态下发失败，连接可能已断开，sessionId={}", state.sessionId);
+            }
+        }
+    }
+
+    /**
+     * 下发本回合的逐题点评。
+     *
+     * <p>点评来自刚落库的 {@code interview_qa.evaluation_json}（F5 的评分结论），失败只记日志：
+     * 点评属于补充信息，不影响进度下发与界面可用性。
+     *
+     * @param state 流式会话状态
+     */
+    private void sendInterviewEvaluation(StreamState state) {
+        try {
+            InterviewEvaluationRespVO evaluation =
+                    interviewReviewService.latestEvaluation(state.userId, state.sessionId);
+            if (evaluation == null) {
+                return;
+            }
+            if (!state.support.send(SseEvent.result(evaluation))) {
+                log.warn("逐题点评下发失败，连接可能已断开，sessionId={}", state.sessionId);
+            }
+        } catch (Exception exception) {
+            log.error("逐题点评组装失败，userId={}，sessionId={}", state.userId, state.sessionId, exception);
         }
     }
 }

@@ -104,6 +104,11 @@
             <groupId>io.agentscope</groupId>
             <artifactId>agentscope-extensions-skill-mysql-repository</artifactId>
         </dependency>
+        <!-- 长期记忆走 Mem0：F6 第 4 批引入，装配集中在 AgentFactoryImpl -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-mem0</artifactId>
+        </dependency>
 
         <!-- 接口文档 -->
         <dependency>

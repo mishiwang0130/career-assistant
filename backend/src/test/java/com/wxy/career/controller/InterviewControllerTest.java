@@ -9,7 +9,9 @@ import com.wxy.career.common.exception.BizException;
 import com.wxy.career.common.exception.GlobalExceptionHandler;
 import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.service.InterviewFlowService;
+import com.wxy.career.service.InterviewReportService;
 import com.wxy.career.vo.AssistantChatReqVO;
+import com.wxy.career.vo.InterviewReportRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
 import com.wxy.career.vo.InterviewResultItemVO;
 import com.wxy.career.vo.InterviewResultRespVO;
@@ -28,6 +30,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -53,6 +56,11 @@ class InterviewControllerTest {
     private InterviewFlowService interviewFlowService;
 
     /**
+     * 面试报告服务 mock（F6）。
+     */
+    private InterviewReportService interviewReportService;
+
+    /**
      * JWT 服务。
      */
     private JwtService jwtService;
@@ -63,8 +71,10 @@ class InterviewControllerTest {
     @BeforeEach
     void setUp() {
         interviewFlowService = mock(InterviewFlowService.class);
+        interviewReportService = mock(InterviewReportService.class);
         InterviewController controller = new InterviewController();
         ReflectionTestUtils.setField(controller, "interviewFlowService", interviewFlowService);
+        ReflectionTestUtils.setField(controller, "interviewReportService", interviewReportService);
 
         jwtService = buildJwtService();
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
@@ -164,6 +174,85 @@ class InterviewControllerTest {
 
         assertThat(pattern).isNotNull();
         assertThat(pattern.regexp()).isEqualTo(AssistantChatReqVO.SESSION_ID_REGEXP);
+    }
+
+    /**
+     * 读取面试报告：三态由 status 表达，前端据此显示「报告生成中」或渲染完整报告。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldReturnInterviewReport() throws Exception {
+        InterviewReportRespVO report = new InterviewReportRespVO();
+        report.setSessionId("12");
+        report.setStatus("SUCCEEDED");
+        report.setStatusLabel("已完成");
+        report.setSummary("整体答得稳");
+        report.setWrongItems(List.of());
+        report.setWeaknesses(List.of());
+        report.setMastery(List.of());
+        report.setHighlights(List.of());
+        report.setSuggestions(List.of());
+        report.setCanRetry(false);
+        when(interviewReportService.getReport(1L, "12")).thenReturn(report);
+
+        mockMvc.perform(get("/api/interviews/12/report")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.type").value("interview_report"))
+                .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.data.summary").value("整体答得稳"));
+    }
+
+    /**
+     * 面试未结束请求报告：返回 1601，报告只在面试走到结束条件后才有。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldReturnReportNotReady() throws Exception {
+        when(interviewReportService.getReport(1L, "12"))
+                .thenThrow(new BizException(ErrorConstant.INTERVIEW_REPORT_NOT_READY));
+
+        mockMvc.perform(get("/api/interviews/12/report")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1601))
+                .andExpect(jsonPath("$.msg").value("面试尚未结束，报告暂不可用"));
+    }
+
+    /**
+     * 生成中重复重试：返回 1602，提示稍后再试。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldReturnReportGeneratingOnRetry() throws Exception {
+        when(interviewReportService.retry(1L, "12"))
+                .thenThrow(new BizException(ErrorConstant.INTERVIEW_REPORT_GENERATING));
+
+        mockMvc.perform(post("/api/interviews/12/report/retry")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1602))
+                .andExpect(jsonPath("$.msg").value("报告正在生成中，请稍后再试"));
+    }
+
+    /**
+     * 跨账号取报告：统一返回 1051，不暴露资源是否存在。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldReturnSessionNotFoundForReport() throws Exception {
+        when(interviewReportService.getReport(1L, "99"))
+                .thenThrow(new BizException(ErrorConstant.CHAT_SESSION_NOT_FOUND));
+
+        mockMvc.perform(get("/api/interviews/99/report")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1051));
     }
 
     /**

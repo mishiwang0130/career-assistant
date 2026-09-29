@@ -138,6 +138,21 @@ public final class ErrorConstant {
     public static final ErrorCode INTERVIEW_SCENE_MISMATCH = new ErrorCode(1502, "该会话不是模拟面试");
 
     /**
+     * 面试尚未结束，报告暂不可用。
+     *
+     * <p>F6 面试点评与报告引入（1600-1699 段）：报告只在面试走到结束条件后才生成，没结束就请求报告或
+     * 重试时按本码拒绝。
+     */
+    public static final ErrorCode INTERVIEW_REPORT_NOT_READY = new ErrorCode(1601, "面试尚未结束，报告暂不可用");
+
+    /**
+     * 报告正在生成中。
+     *
+     * <p>F6 面试点评与报告引入：后台子 Agent 正在生成报告，重复点重试时按本码提示稍后再试。
+     */
+    public static final ErrorCode INTERVIEW_REPORT_GENERATING = new ErrorCode(1602, "报告正在生成中，请稍后再试");
+
+    /**
      * 工具类禁止实例化。
      */
     private ErrorConstant() {
