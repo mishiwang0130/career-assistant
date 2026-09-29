@@ -7,8 +7,6 @@ import com.wxy.career.middleware.MetricsMiddleware;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
-import com.wxy.career.tool.GetUserProfileTool;
-import com.wxy.career.tool.UpdateUserProfileTool;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.tool.Toolkit;
@@ -39,22 +37,15 @@ public class AgentFactoryImpl implements AgentFactory {
     private static final String MAIN_AGENT_DESCRIPTION = "求职智能助手主 Agent";
 
     /**
-     * 需要显式 deny 的框架平台工具：异步结果等待工具。
+     * 需要显式 deny 的框架平台工具。
      *
-     * <p>ToolsConfig 的 allow 白名单对框架「平台工具」不生效（ToolFilter 只会通过 deny 移除它们），
-     * 而 HarnessAgent 默认会注册 {@code wait_async_results}。本模块没有任何异步工具，
-     * 等待异步结果没有意义，因此显式禁用；后续如引入平台工具，需要同步维护该列表。
+     * <p>本 Agent 不向模型暴露任何工具：用户背景（昵称、求职目标）由系统提示词注入。但 HarnessAgent
+     * 默认会注册若干平台工具（异步结果等待、联网检索与抓取），而 ToolsConfig 的 allow 白名单对平台工具
+     * 不生效——ToolFilter 只会通过 deny 移除它们，因此这里逐个显式禁用；后续启用新的框架能力时，
+     * 若该能力会注册平台工具，需要把工具名同步补进本列表。
      */
-    private static final List<String> DENIED_PLATFORM_TOOL_NAMES = List.of("wait_async_results");
-
-    /**
-     * 本 Agent 的工具白名单：只放求职目标的两个工具。
-     *
-     * <p>白名单显式声明而不是从 Toolkit 推导，保证「注册进 Toolkit 的工具」与「暴露给模型的工具」
-     * 不会因为后续误注册而自动放开；框架平台工具不受 allow 约束，仍需 deny。
-     */
-    private static final List<String> ALLOWED_TOOL_NAMES =
-            List.of(GetUserProfileTool.TOOL_NAME, UpdateUserProfileTool.TOOL_NAME);
+    private static final List<String> DENIED_PLATFORM_TOOL_NAMES =
+            List.of("wait_async_results", "web_search", "web_fetch");
 
     /**
      * Agent 实例缓存，按 Agent 名缓存，会话隔离由运行时上下文与共享会话存储负责。
@@ -96,18 +87,6 @@ public class AgentFactoryImpl implements AgentFactory {
      */
     @Resource
     private MetricsMiddleware metricsMiddleware;
-
-    /**
-     * 求职目标查询工具。
-     */
-    @Resource
-    private GetUserProfileTool getUserProfileTool;
-
-    /**
-     * 求职目标保存工具。
-     */
-    @Resource
-    private UpdateUserProfileTool updateUserProfileTool;
 
     /**
      * 按名字获取 Agent。
@@ -164,10 +143,9 @@ public class AgentFactoryImpl implements AgentFactory {
      * @return Agent 实例
      */
     private HarnessAgent buildAgent(String agentName) {
+        // 当前不注册任何业务工具：用户背景（昵称、求职目标）由 SystemPromptMiddleware 注入提示词，
+        // 档案的修改只由用户在「求职目标」页完成。后续模块新增工具时必须显式写进 ToolsConfig.allow。
         Toolkit toolkit = new Toolkit();
-        // 每个 Agent 注册自己的工具白名单，不做全局共享。
-        toolkit.registerAgentTool(getUserProfileTool);
-        toolkit.registerAgentTool(updateUserProfileTool);
         HarnessAgent agent = HarnessAgent.builder()
                 .name(agentName)
                 .description(MAIN_AGENT_DESCRIPTION)
@@ -177,7 +155,7 @@ public class AgentFactoryImpl implements AgentFactory {
                 .maxIters(agentProperties.getMaxIters())
                 .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
                 .stateStore(agentStateStore)
-                // allow 显式声明本 Agent 暴露的工具；平台工具不受 allow 约束，需要 deny。
+                // 空 Toolkit 下只靠 deny 兜底剔除框架平台工具，模型侧不会拿到任何工具。
                 .toolsConfig(buildToolsConfig())
                 .disableFilesystemTools()
                 .disableShellTool()
@@ -198,13 +176,13 @@ public class AgentFactoryImpl implements AgentFactory {
     /**
      * 构建工具白名单配置。
      *
-     * <p>allow 是暴露给模型的工具清单，deny 用于剔除框架自动注册且对白名单不敏感的平台工具。
+     * <p>当前不注册业务工具，allow 留空（框架把空列表视同未设置）；deny 用于剔除框架自动注册、
+     * 且不受 allow 约束的平台工具。后续模块注册工具时必须同时把工具名写进 allow，避免误注册即暴露。
      *
      * @return 工具白名单配置
      */
     private ToolsConfig buildToolsConfig() {
         ToolsConfig toolsConfig = new ToolsConfig();
-        toolsConfig.setAllow(ALLOWED_TOOL_NAMES);
         toolsConfig.setDeny(DENIED_PLATFORM_TOOL_NAMES);
         return toolsConfig;
     }

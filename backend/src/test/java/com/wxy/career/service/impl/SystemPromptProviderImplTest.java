@@ -33,6 +33,7 @@ class SystemPromptProviderImplTest {
     private static final List<String> REQUIRED_RULE_SNIPPETS = List.of(
             "「理由：」",
             "必须先调用工具",
+            "系统会在本提示词末尾给出当前用户的昵称与求职目标",
             "不编造",
             "如实说明没有查到",
             "超出求职范围");
