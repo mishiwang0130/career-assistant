@@ -79,7 +79,9 @@ class SkillSeedScriptTest {
                 .contains("缺失关键词")
                 .contains("匹配度")
                 .contains("输出结构")
-                .contains("底线");
+                .contains("底线")
+                // 差距补齐建议最容易滑向「替用户编数字」，这条底线必须写进技能正文。
+                .contains("如果你确实做过");
         assertThat(jobMatchSection.length()).isGreaterThan(500);
     }
 }

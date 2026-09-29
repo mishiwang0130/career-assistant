@@ -35,8 +35,10 @@ class JobMatchPromptContractTest {
             "命中关键词",
             "缺失关键词",
             "差距补齐建议",
+            "如果你确实做过",
             "不编造",
             "不通篇诊断简历",
+            "不许替用户编造简历里没有的数字",
             "不写「接下来我将」「已加载」「已读取」",
             "不提到技能名、工具名或子 Agent");
 
@@ -46,7 +48,9 @@ class JobMatchPromptContractTest {
     private static final List<String> ASSISTANT_REQUIRED_SNIPPETS = List.of(
             "五块内容",
             "JD 原文",
-            "同时派发简历诊断与岗位匹配");
+            "timeout_seconds 设为 180",
+            "两项分析一次只派一个",
+            "不许替用户编造简历里没有的数字");
 
     /**
      * 校验岗位匹配子 Agent 提示词的内容契约。
