@@ -11,6 +11,8 @@ import io.agentscope.core.event.ToolCallEndEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
 import org.springframework.util.StringUtils;
 
+import java.util.Map;
+
 /**
  * AgentScope 事件到 SSE 事件的映射。
  *
@@ -58,6 +60,25 @@ public final class AgentEventMapper {
             default:
                 return null;
         }
+    }
+
+    /**
+     * 判断事件是否由子 Agent 转发而来。
+     *
+     * <p>框架在把子 Agent 的事件转发给父 Agent 时，会写入
+     * {@link io.agentscope.core.event.AgentEvent#METADATA_PARENT_SESSION_ID} 元数据。这些事件属于内部过程：
+     * 子 Agent 的正文里常有结构化结论（例如面试评分的 JSON），一旦跟着父 Agent 的流推给前端，
+     * 用户就会在自己的回答里看到它们。因此这类事件一律只留在服务端。
+     *
+     * @param event AgentScope 事件
+     * @return 子 Agent 转发的事件返回 true
+     */
+    public static boolean isSubagentEvent(AgentEvent event) {
+        if (event == null) {
+            return false;
+        }
+        Map<String, Object> metadata = event.getMetadata();
+        return metadata != null && metadata.containsKey(AgentEvent.METADATA_PARENT_SESSION_ID);
     }
 
     /**

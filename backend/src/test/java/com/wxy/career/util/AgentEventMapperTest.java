@@ -87,6 +87,23 @@ class AgentEventMapperTest {
     }
 
     /**
+     * 验证子 Agent 转发的事件能被识别出来。
+     *
+     * <p>框架把子 Agent 的事件转发给父 Agent 时写入 parentSessionId 元数据；这些事件属于内部过程
+     * （子 Agent 的正文里可能有结构化评分），必须挡在推送与落库之外，否则会出现在用户看到的回答里。
+     */
+    @Test
+    void shouldDetectForwardedSubagentEvent() {
+        AgentEvent subagentEvent = new TextBlockDeltaEvent("reply-1", "block-1", "评分 JSON")
+                .withMetadataEntry(AgentEvent.METADATA_PARENT_SESSION_ID, "12");
+        AgentEvent ownEvent = new TextBlockDeltaEvent("reply-2", "block-2", "第 2 题");
+
+        assertThat(AgentEventMapper.isSubagentEvent(subagentEvent)).isTrue();
+        assertThat(AgentEventMapper.isSubagentEvent(ownEvent)).isFalse();
+        assertThat(AgentEventMapper.isSubagentEvent(null)).isFalse();
+    }
+
+    /**
      * 验证纯文本场景不发 result 事件。
      *
      * <p>{@code result} 承载的是结构化产物（F2 起的简历诊断结论等），由业务侧在流结束时下发；

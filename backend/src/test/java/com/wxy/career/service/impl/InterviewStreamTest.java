@@ -20,12 +20,14 @@ import com.wxy.career.po.SysUser;
 import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.ChatSessionService;
 import com.wxy.career.service.InterviewFlowService;
+import com.wxy.career.service.InterviewEvaluationService;
 import com.wxy.career.service.ResumeDiagnosisService;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.UserProfileService;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
+import com.wxy.career.tool.SubmitAnswerEvaluationTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import com.wxy.career.vo.InterviewStateRespVO;
 import io.agentscope.core.message.Msg;
@@ -165,6 +167,8 @@ class InterviewStreamTest {
         ReflectionTestUtils.setField(agentFactory, "getInterviewStateTool", new GetInterviewStateTool());
         ReflectionTestUtils.setField(
                 agentFactory, "recordInterviewAnswerTool", new RecordInterviewAnswerTool());
+        ReflectionTestUtils.setField(
+                agentFactory, "submitAnswerEvaluationTool", new SubmitAnswerEvaluationTool());
         ReflectionTestUtils.setField(agentFactory, "interviewProperties", new InterviewProperties());
 
         assistantMessageService = mock(AssistantMessageService.class);
@@ -187,6 +191,8 @@ class InterviewStreamTest {
         ReflectionTestUtils.setField(
                 assistantService, "resumeDiagnosisService", mock(ResumeDiagnosisService.class));
         ReflectionTestUtils.setField(assistantService, "interviewFlowService", interviewFlowService);
+        ReflectionTestUtils.setField(
+                assistantService, "interviewEvaluationService", mock(InterviewEvaluationService.class));
 
         AssistantController assistantController = new AssistantController();
         ReflectionTestUtils.setField(assistantController, "assistantService", assistantService);

@@ -11,6 +11,7 @@ import com.wxy.career.mapper.InterviewQaMapper;
 import com.wxy.career.po.ChatSession;
 import com.wxy.career.po.InterviewQa;
 import com.wxy.career.service.UserProfileService;
+import com.wxy.career.vo.AnswerEvaluationSubmitVO;
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
 import com.wxy.career.vo.InterviewStateRespVO;
@@ -28,6 +29,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -263,6 +265,20 @@ class InterviewFlowServiceImplTest {
     }
 
     /**
+     * 模型没走完本回合（只记了用户回答、没有评分与判定）时不落库：进度停在原处，也不写半截数据。
+     *
+     * <p>真实环境出现过模型把工具调用写成 JSON 文本、导致评分结论没提交、最后把一个只有 answer 的占位
+     * 记录写库并撞上非空约束的情况，这里把它固定成「不落库、不推进」。
+     */
+    @Test
+    void shouldSkipCommitWhenTurnIncomplete() {
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+
+        assertThat(interviewFlowService.commitTurn(USER_ID, SESSION_ID)).isNull();
+        verify(interviewQaMapper, never()).insert(any(InterviewQa.class));
+    }
+
+    /**
      * 走一次完整的「记回答 → 提交判定」。
      *
      * @param question 题目正文
@@ -274,13 +290,124 @@ class InterviewFlowServiceImplTest {
     private InterviewAnswerResultVO recordTurn(
             String question, String questionType, String outcome, boolean endNow) {
         interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+        // 判定结果由评分子 Agent 先用提交工具交上来：面试官不再转述评分内容。
+        AnswerEvaluationSubmitVO evaluation = new AnswerEvaluationSubmitVO();
+        evaluation.setOutcome(outcome);
+        evaluation.setScore(80);
+        evaluation.setComment("判定要点");
+        interviewFlowService.submitEvaluation(USER_ID, SESSION_ID, evaluation);
         InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
         submitVO.setQuestion(question);
         submitVO.setQuestionType(questionType);
-        submitVO.setOutcome(outcome);
-        submitVO.setJudgement("判定要点");
         submitVO.setEndNow(endNow);
         return interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO);
+    }
+
+    /**
+     * 评分不可用时按「答得有遗漏」保守继续：面试不会因为一次评分故障卡住，判定要点写明原因。
+     */
+    @Test
+    void shouldFallBackWhenEvaluationMissing() {
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+        InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
+        submitVO.setQuestion("讲讲 JVM 内存结构");
+        submitVO.setQuestionType("BASIC");
+
+        InterviewAnswerResultVO result = interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO);
+
+        assertThat(result.getAction()).isEqualTo(InterviewActionEnum.FOLLOW_UP.getValue());
+        InterviewQa row = commitAndCaptureRow();
+        assertThat(row.getOutcome()).isEqualTo(InterviewOutcomeEnum.PARTIAL.getValue());
+        assertThat(row.getJudgement()).contains("评分不可用");
+    }
+
+    /**
+     * 评分结论不合法时不接受；本回合没有可用结论时按保守口径继续。
+     */
+    @Test
+    void shouldRejectInvalidEvaluation() {
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+        AnswerEvaluationSubmitVO invalid = new AnswerEvaluationSubmitVO();
+        invalid.setOutcome("UNKNOWN");
+        invalid.setScore(120);
+        assertThatThrownBy(() -> interviewFlowService.submitEvaluation(USER_ID, SESSION_ID, invalid))
+                .isInstanceOf(BizException.class);
+
+        InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
+        submitVO.setQuestion("讲讲 JVM 内存结构");
+        submitVO.setQuestionType("BASIC");
+        assertThat(interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO).getAction())
+                .isEqualTo(InterviewActionEnum.FOLLOW_UP.getValue());
+    }
+
+    /**
+     * 判定结果取自评分子 Agent 提交的结论：outcome 与判定要点按它落库，面试官不参与判定。
+     */
+    @Test
+    void shouldRecordUsingSubmittedEvaluation() {
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+        AnswerEvaluationSubmitVO evaluation = new AnswerEvaluationSubmitVO();
+        evaluation.setOutcome("CORRECT");
+        evaluation.setScore(90);
+        evaluation.setComment("答到要点");
+        interviewFlowService.submitEvaluation(USER_ID, SESSION_ID, evaluation);
+
+        InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
+        submitVO.setQuestion("讲讲 JVM 内存结构");
+        submitVO.setQuestionType("BASIC");
+        InterviewAnswerResultVO result = interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO);
+
+        assertThat(result.getAction()).isEqualTo(InterviewActionEnum.FOLLOW_UP.getValue());
+        InterviewQa row = commitAndCaptureRow();
+        assertThat(row.getOutcome()).isEqualTo(InterviewOutcomeEnum.CORRECT.getValue());
+        assertThat(row.getJudgement()).isEqualTo("答到要点");
+    }
+
+    /**
+     * 新回合开始会作废上一回合的结论：本轮没有新结论时按评分不可用保守处理，避免评分串题。
+     */
+    @Test
+    void shouldResetEvaluationBetweenTurns() {
+        recordTurn("讲讲 JVM 内存结构", "BASIC", "CORRECT", false);
+        InterviewQa firstRow = commitAndCaptureRow();
+
+        // 第二回合是追问轮：上一回合的结论已作废，本轮没有新结论 → 按有遗漏处理，换下一题。
+        when(interviewQaMapper.selectBySession(USER_ID, 12L)).thenReturn(List.of(firstRow));
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "第二题的回答");
+        InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
+        submitVO.setQuestion("讲讲你负责的模块");
+        submitVO.setQuestionType("PROJECT");
+        assertThat(interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO).getAction())
+                .isEqualTo(InterviewActionEnum.NEXT_QUESTION.getValue());
+        assertThat(commitAndCaptureRow().getJudgement()).contains("评分不可用");
+    }
+
+    /**
+     * 模型重复调用记录工具时是幂等的：返回上一次的指令，既不会被回退判定覆盖，也不会写第二条记录。
+     */
+    @Test
+    void shouldBeIdempotentWhenRecordedTwice() {
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+        AnswerEvaluationSubmitVO evaluation = new AnswerEvaluationSubmitVO();
+        evaluation.setOutcome("CORRECT");
+        evaluation.setScore(90);
+        evaluation.setComment("答到要点");
+        interviewFlowService.submitEvaluation(USER_ID, SESSION_ID, evaluation);
+        InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
+        submitVO.setQuestion("讲讲 JVM 内存结构");
+        submitVO.setQuestionType("BASIC");
+
+        InterviewAnswerResultVO first = interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO);
+        // 同一回合内重复调用：评分结论已被取走，若不幂等就会退化成「评分不可用」。
+        InterviewAnswerResultVO second = interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO);
+
+        assertThat(first.getAction()).isEqualTo(InterviewActionEnum.FOLLOW_UP.getValue());
+        assertThat(second.getAction()).isEqualTo(InterviewActionEnum.FOLLOW_UP.getValue());
+        assertThat(second.getDifficulty()).isEqualTo(first.getDifficulty());
+        // 只落一条记录，判定仍是真实的评分结论，没有被回退值覆盖。
+        InterviewQa row = commitAndCaptureRow();
+        assertThat(row.getOutcome()).isEqualTo(InterviewOutcomeEnum.CORRECT.getValue());
+        assertThat(row.getJudgement()).isEqualTo("答到要点");
     }
 
     /**

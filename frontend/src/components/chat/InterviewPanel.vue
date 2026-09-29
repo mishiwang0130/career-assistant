@@ -48,7 +48,8 @@
         maxlength="4000"
         show-word-limit
         resize="none"
-        placeholder="输入你的回答，Enter 提交，Shift + Enter 换行"
+        :disabled="assistantStore.streaming"
+        :placeholder="inputPlaceholder"
         @keydown.enter.exact.prevent="handleSend"
       />
       <div v-else class="interview__finished">
@@ -58,7 +59,7 @@
         v-if="!finished"
         type="primary"
         :loading="assistantStore.streaming"
-        :disabled="!draft.trim()"
+        :disabled="!draft.trim() || assistantStore.streaming"
         @click="handleSend"
       >
         提交回答
@@ -144,6 +145,13 @@ const roundNo = computed(() => active.value?.roundNo ?? 1)
 
 /** 本场是否已结束：结束后输入区只读，只能回看或再开一场。 */
 const finished = computed(() => active.value?.finished === true)
+
+/** 输入框提示：生成期间明确告诉用户在等结果，避免以为还能继续输入。 */
+const inputPlaceholder = computed(() =>
+  assistantStore.streaming
+    ? '正在处理本题，请稍候…'
+    : '输入你的回答，Enter 提交，Shift + Enter 换行',
+)
 
 // 路由参数是切换会话的唯一入口：新建面试、点侧栏历史会话、刷新页面都走这里。
 watch(
@@ -236,31 +244,35 @@ async function sendKickoffIfPending(): Promise<void> {
 
 /**
  * 提交回答。
+ *
+ * 回答一交给后端就立刻清空输入框：内容已经作为用户消息发出，输入框里再留一份可编辑的副本没有意义，
+ * 也容易让人以为还没发出去；生成期间输入框置灰，避免用户以为能继续输入。发送失败时把内容放回去，
+ * 用户不用重新打一遍。
  */
 async function handleSend(): Promise<void> {
   const content = draft.value.trim()
-  if (!content || finished.value) {
+  if (!content || finished.value || assistantStore.streaming) {
     return
   }
-  await sendContent(content, () => {
-    draft.value = ''
-  })
+  draft.value = ''
+  const sent = await sendContent(content)
+  if (!sent) {
+    draft.value = content
+  }
 }
 
 /**
- * 统一的发送链路：发送成功后清空输入框，失败按业务码分流。
+ * 统一的发送链路，失败按业务码分流。
  *
  * @param content 待发送内容
- * @param afterSent 发送成功后的回调，例如清空输入框
  * @returns 是否成功发出
  */
-async function sendContent(content: string, afterSent?: () => void): Promise<boolean> {
+async function sendContent(content: string): Promise<boolean> {
   if (!content || assistantStore.streaming) {
     return false
   }
   try {
     await assistantStore.sendMessage(content)
-    afterSent?.()
     return true
   } catch (error) {
     await handleSendError(error)

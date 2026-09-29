@@ -15,6 +15,7 @@ import com.wxy.career.vo.UserProfileRespVO;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
+import com.wxy.career.tool.SubmitAnswerEvaluationTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
@@ -119,6 +120,8 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(agentFactory, "getInterviewStateTool", new GetInterviewStateTool());
         ReflectionTestUtils.setField(
                 agentFactory, "recordInterviewAnswerTool", new RecordInterviewAnswerTool());
+        ReflectionTestUtils.setField(
+                agentFactory, "submitAnswerEvaluationTool", new SubmitAnswerEvaluationTool());
         ReflectionTestUtils.setField(agentFactory, "interviewProperties", new InterviewProperties());
     }
 
@@ -267,12 +270,14 @@ class AgentFactoryHarnessTest {
                 "read_resume",
                 "get_interview_state",
                 "record_interview_answer",
-                "load_skill_through_path",
-                "agent_spawn",
-                "agent_send",
-                "agent_list");
+                "load_skill_through_path");
         // 面试不写库：提交简历诊断结论这类工具不能出现在面试 Agent 上。
         assertThat(agent.getToolkit().getToolNames()).doesNotContain("submit_resume_diagnosis");
+        // 评分结论只能由评分子 Agent 提交，面试官自己看不到这个工具。
+        assertThat(agent.getToolkit().getToolNames()).doesNotContain("submit_answer_evaluation");
+        // 评分由平台编排：面试官连派发子 Agent 的工具都没有，不存在把子 Agent 输出抄进回答的可能。
+        assertThat(agent.getToolkit().getToolNames())
+                .doesNotContain("agent_spawn", "agent_send", "agent_list");
     }
 
     /**
@@ -285,7 +290,7 @@ class AgentFactoryHarnessTest {
         assertThat(declaration.getName()).isEqualTo(AgentFactory.ANSWER_EVALUATOR_AGENT_NAME);
         assertThat(declaration.getSkills()).containsExactly("answer-evaluation");
         assertThat(declaration.getExposeToUser()).isFalse();
-        assertThat(declaration.getTools()).isNullOrEmpty();
+        assertThat(declaration.getTools()).containsExactly("submit_answer_evaluation");
     }
 
     /**
@@ -301,7 +306,8 @@ class AgentFactoryHarnessTest {
 
         assertThat(subagent).isPresent();
         Set<String> subagentTools = subagent.get().getToolkit().getToolNames();
-        assertThat(subagentTools).containsExactly("load_skill_through_path");
+        assertThat(subagentTools)
+                .containsExactlyInAnyOrder("load_skill_through_path", "submit_answer_evaluation");
         assertThat(subagentTools).doesNotContain("read_resume", "web_search", "web_fetch", "wait_async_results");
     }
 

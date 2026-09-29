@@ -11,6 +11,7 @@ import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
+import com.wxy.career.tool.SubmitAnswerEvaluationTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.model.GenerateOptions;
@@ -419,19 +420,17 @@ public class AgentFactoryImpl implements AgentFactory {
     private static final String INTERVIEW_ANSWER_TOOL_NAME = "record_interview_answer";
 
     /**
-     * 面试 Agent 可见的工具白名单：读简历定项目题 + 面试流程两个工具 + 框架的子 Agent 派发工具。
+     * 面试 Agent 可见的工具白名单：读简历定项目题 + 面试流程两个工具 + 技能加载。
      *
-     * <p>写库、改档、文件与 Shell 一概不在其中；评分子 Agent 的结论通过派发回报，
-     * 本 Agent 不直接读写评分数据。
+     * <p>写库、改档、文件与 Shell 一概不在其中；也**不给子 Agent 派发工具**：评分由平台在面试官开流前
+     * 直接调评分子 Agent 完成（见 {@code InterviewEvaluationService}），面试官看不到评分内容，
+     * 也就无法把它抄进用户可见的回答里——这是实测下来的结论，靠提示词约束不可靠。
      */
     private static final List<String> INTERVIEWER_ALLOWED_TOOL_NAMES = List.of(
             READ_RESUME_TOOL_NAME,
             INTERVIEW_STATE_TOOL_NAME,
             INTERVIEW_ANSWER_TOOL_NAME,
-            SKILL_LOAD_TOOL_NAME,
-            SUBAGENT_SPAWN_TOOL_NAME,
-            SUBAGENT_SEND_TOOL_NAME,
-            SUBAGENT_LIST_TOOL_NAME);
+            SKILL_LOAD_TOOL_NAME);
 
     /**
      * 评分子 Agent 描述，决定面试 Agent 在什么场景下把它派出去。
@@ -446,18 +445,36 @@ public class AgentFactoryImpl implements AgentFactory {
     private static final String ANSWER_EVALUATION_SKILL_NAME = "answer-evaluation";
 
     /**
-     * 评分子 Agent 允许保留的工具：只有技能加载工具，不给任何业务工具。
+     * 提交评分结论工具名。只给评分子 Agent 用，面试 Agent 侧靠 allow 白名单挡住。
+     */
+    private static final String SUBMIT_EVALUATION_TOOL_NAME = "submit_answer_evaluation";
+
+    /**
+     * 评分子 Agent 允许保留的工具：技能加载 + 提交评分结论，不给其它业务工具。
      *
      * <p>评分的输入（题目、回答、岗位与年限）由派发消息给全，因此它不需要读库、读简历或写任何东西；
-     * 收窄到只剩技能加载工具，避免框架默认的平台工具混进来。
+     * 提交工具是只读语义（只暂存到运行态缓冲），收窄到这两个工具避免框架默认的平台工具混进来。
      */
-    private static final List<String> ANSWER_EVALUATOR_ALLOWED_TOOL_NAMES = List.of(SKILL_LOAD_TOOL_NAME);
+    private static final List<String> ANSWER_EVALUATOR_ALLOWED_TOOL_NAMES =
+            List.of(SKILL_LOAD_TOOL_NAME, SUBMIT_EVALUATION_TOOL_NAME);
 
     /**
      * 面试 Agent 的子 Agent 白名单：按子 Agent 名收窄工具集，未列出的子 Agent 保持框架默认。
      */
     private static final Map<String, List<String>> INTERVIEWER_SUBAGENT_ALLOWED_TOOLS =
             Map.of(AgentFactory.ANSWER_EVALUATOR_AGENT_NAME, ANSWER_EVALUATOR_ALLOWED_TOOL_NAMES);
+
+    /**
+     * 面试 Agent 需要显式 deny 的平台工具。
+     *
+     * <p>平台工具不受 {@code ToolsConfig.allow} 约束，只能按 deny 移除（实测：不在 allow 里也照样出现在
+     * 工具集里）。除了通用平台工具，这里还禁掉子 Agent 派发工具：评分由平台编排（见
+     * {@code InterviewEvaluationService}），面试官不需要、也不允许自己派子 Agent，这样就不可能把子 Agent
+     * 的输出抄进用户可见的回答里。
+     */
+    private static final List<String> INTERVIEWER_DENIED_TOOL_NAMES = List.of(
+            "wait_async_results", "web_search", "web_fetch", "task_output", "task_list", "task_cancel",
+            SUBAGENT_SPAWN_TOOL_NAME, SUBAGENT_SEND_TOOL_NAME, SUBAGENT_LIST_TOOL_NAME);
 
     /**
      * 读面试状态工具。
@@ -470,6 +487,12 @@ public class AgentFactoryImpl implements AgentFactory {
      */
     @Resource
     private RecordInterviewAnswerTool recordInterviewAnswerTool;
+
+    /**
+     * 提交评分结论工具，只给评分子 Agent 使用。
+     */
+    @Resource
+    private SubmitAnswerEvaluationTool submitAnswerEvaluationTool;
 
     /**
      * 面试配置，提供上下文压缩阈值。
@@ -491,6 +514,8 @@ public class AgentFactoryImpl implements AgentFactory {
         toolkit.registerTool(readResumeTool);
         toolkit.registerTool(getInterviewStateTool);
         toolkit.registerTool(recordInterviewAnswerTool);
+        // 注册给子 Agent 继承（声明里的 tools 从父 Toolkit 取），面试 Agent 自己靠 allow 白名单挡住。
+        toolkit.registerTool(submitAnswerEvaluationTool);
         HarnessAgent agent = HarnessAgent.builder()
                 .name(AgentFactory.INTERVIEWER_AGENT_NAME)
                 .description(INTERVIEWER_AGENT_DESCRIPTION)
@@ -536,6 +561,7 @@ public class AgentFactoryImpl implements AgentFactory {
         return SubagentDeclaration.builder()
                 .name(AgentFactory.ANSWER_EVALUATOR_AGENT_NAME)
                 .description(ANSWER_EVALUATOR_DESCRIPTION)
+                .tools(List.of(SUBMIT_EVALUATION_TOOL_NAME))
                 .skills(List.of(ANSWER_EVALUATION_SKILL_NAME))
                 .maxIters(RESUME_ANALYST_MAX_ITERS)
                 .exposeToUser(false)
@@ -569,7 +595,7 @@ public class AgentFactoryImpl implements AgentFactory {
     ToolsConfig buildInterviewerToolsConfig() {
         ToolsConfig toolsConfig = new ToolsConfig();
         toolsConfig.setAllow(INTERVIEWER_ALLOWED_TOOL_NAMES);
-        toolsConfig.setDeny(DENIED_PLATFORM_TOOL_NAMES);
+        toolsConfig.setDeny(INTERVIEWER_DENIED_TOOL_NAMES);
         return toolsConfig;
     }
 
@@ -629,6 +655,10 @@ public class AgentFactoryImpl implements AgentFactory {
                 log.debug("移除子 Agent 的框架默认工具，agentName={}，tool={}", subagent.getName(), toolName);
             }
         }
+        // 子 Agent 的工具集决定模型能不能调用工具（曾经出现过模型把工具调用写成 JSON 文本的情况），
+        // 因此把最终集合打进日志，便于对账。
+        log.info("收紧子 Agent 工具白名单完成，agentName={}，tools={}",
+                subagent.getName(), toolkit.getToolNames());
         return subagent;
     }
 }

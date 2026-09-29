@@ -325,8 +325,10 @@ VALUES ('answer-evaluation',
    不要写成「后端基础」这种过粗的粒度。
 3. 同一知识点累计答错时掌握度下调，答对时缓慢回升，结合近期多次证据综合判定。
 
-# 四、输出结构
-严格按系统要求的 JSON 结构输出，字段齐全，不要包裹解释性文字。
+# 四、提交方式（本批只落判定结果，掌握度由后续批次统计）
+1. 把上面各项结论用 submit_answer_evaluation 工具提交一次：outcome、score、correctPoints、missingPoints、
+   wrongPoints、expressionIssues、suggestions、knowledgePoints、comment，字段齐全。
+2. 提交后正文只回一句「评分完成」：结论属于内部信息，不要输出 JSON、字段清单、分数或点评正文。
 
 # 五、底线
 1. 只依据题目与用户这道题的回答，用户没说的内容不算说过，也不脑补「他可能懂」。
