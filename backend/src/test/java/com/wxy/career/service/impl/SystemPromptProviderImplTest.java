@@ -37,6 +37,8 @@ class SystemPromptProviderImplTest {
             "必须先调用工具",
             "系统会在本提示词末尾给出当前用户的昵称与求职目标",
             "不要先反问",
+            "不写「接下来我将」「已加载」「已读取」",
+            "不提到技能名、工具名或子 Agent",
             "不编造",
             "如实说明没有查到",
             "超出求职范围");
@@ -59,6 +61,8 @@ class SystemPromptProviderImplTest {
             "submit_resume_diagnosis",
             "segment",
             "不要先反问",
+            "不写「接下来我将」「已加载」「已读取」",
+            "不提到技能名、工具名或子 Agent",
             "优化后的简历正文",
             "不写库、不改简历");
 
