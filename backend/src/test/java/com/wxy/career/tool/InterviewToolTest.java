@@ -5,6 +5,7 @@ import com.wxy.career.common.enums.InterviewQuestionTypeEnum;
 import com.wxy.career.common.exception.BizException;
 import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.service.InterviewFlowService;
+import com.wxy.career.vo.AnswerEvaluationSubmitVO;
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
 import com.wxy.career.vo.InterviewStateRespVO;
@@ -17,7 +18,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -47,6 +50,11 @@ class InterviewToolTest {
     private GetInterviewStateTool stateTool;
 
     /**
+     * 被测的评分提交工具。
+     */
+    private SubmitAnswerEvaluationTool evaluationTool;
+
+    /**
      * 初始化工具与依赖。
      */
     @BeforeEach
@@ -54,8 +62,10 @@ class InterviewToolTest {
         interviewFlowService = mock(InterviewFlowService.class);
         recordTool = new RecordInterviewAnswerTool();
         stateTool = new GetInterviewStateTool();
+        evaluationTool = new SubmitAnswerEvaluationTool();
         ReflectionTestUtils.setField(recordTool, "interviewFlowService", interviewFlowService);
         ReflectionTestUtils.setField(stateTool, "interviewFlowService", interviewFlowService);
+        ReflectionTestUtils.setField(evaluationTool, "interviewFlowService", interviewFlowService);
     }
 
     /**
@@ -68,7 +78,7 @@ class InterviewToolTest {
                         InterviewQuestionTypeEnum.BASIC, false));
 
         String instruction = recordTool.recordInterviewAnswer(
-                "讲讲 Redis 分布式锁", "BASIC", "CORRECT", "答到了 setnx 与过期时间", null, runtimeContext());
+                "讲讲 Redis 分布式锁", "BASIC", null, runtimeContext());
 
         assertThat(instruction).contains("追问一层").contains("第 3 题 / 共 8 题").contains("L3");
         // 用户回答不由模型回填：工具入参里没有 answer，服务从对话通道记下的内容里取。
@@ -76,7 +86,7 @@ class InterviewToolTest {
         org.mockito.Mockito.verify(interviewFlowService)
                 .recordAnswer(eq(1L), eq("12"), captor.capture());
         assertThat(captor.getValue().getQuestionType()).isEqualTo("BASIC");
-        assertThat(captor.getValue().getOutcome()).isEqualTo("CORRECT");
+        assertThat(captor.getValue().getEndNow()).isNull();
     }
 
     /**
@@ -89,7 +99,7 @@ class InterviewToolTest {
                         InterviewQuestionTypeEnum.PROJECT, false));
 
         String instruction = recordTool.recordInterviewAnswer(
-                "讲讲你的限流方案", "COMPREHENSIVE", "WRONG", "没做过", Boolean.FALSE, runtimeContext());
+                "讲讲你的限流方案", "COMPREHENSIVE", Boolean.FALSE, runtimeContext());
 
         assertThat(instruction).contains("换一道新题").contains("不要再围绕").contains("第 4 题 / 共 8 题");
         assertThat(instruction).contains("项目");
@@ -104,7 +114,7 @@ class InterviewToolTest {
                 .thenReturn(buildResult(InterviewActionEnum.FINISHED, 8, 8, 4, null, true));
 
         String instruction = recordTool.recordInterviewAnswer(
-                "最后一个问题", "BASIC", "CORRECT", null, Boolean.TRUE, runtimeContext());
+                "最后一个问题", "BASIC", Boolean.TRUE, runtimeContext());
 
         assertThat(instruction).contains("面试结束").contains("不要再出新题");
     }
@@ -118,9 +128,40 @@ class InterviewToolTest {
                 .thenThrow(new BizException(ErrorConstant.PARAM_ERROR));
 
         String instruction = recordTool.recordInterviewAnswer(
-                "题目", "UNKNOWN_TYPE", "CORRECT", null, null, runtimeContext());
+                "题目", "UNKNOWN_TYPE", null, runtimeContext());
 
         assertThat(instruction).startsWith("提交失败").contains("参数错误").contains("BASIC");
+    }
+
+    /**
+     * 评分结论提交成功：只回一句「评分完成」，不给模型输出结论内容的机会。
+     */
+    @Test
+    void shouldSubmitEvaluationAndKeepAnswerClean() {
+        AnswerEvaluationSubmitVO evaluation = new AnswerEvaluationSubmitVO();
+        evaluation.setOutcome("PARTIAL");
+        evaluation.setScore(55);
+        evaluation.setComment("方向正确但关键机制缺失");
+
+        String message = evaluationTool.submitAnswerEvaluation(evaluation, runtimeContext());
+
+        assertThat(message).contains("评分完成").doesNotContain("PARTIAL");
+        verify(interviewFlowService).submitEvaluation(eq(1L), eq("12"), eq(evaluation));
+    }
+
+    /**
+     * 评分结论不合法：返回可读的字段口径提示，不抛异常给模型。
+     */
+    @Test
+    void shouldReturnReadableHintWhenEvaluationRejected() {
+        AnswerEvaluationSubmitVO evaluation = new AnswerEvaluationSubmitVO();
+        evaluation.setOutcome("UNKNOWN");
+        doThrow(new BizException(ErrorConstant.PARAM_ERROR))
+                .when(interviewFlowService).submitEvaluation(eq(1L), eq("12"), any());
+
+        String message = evaluationTool.submitAnswerEvaluation(evaluation, runtimeContext());
+
+        assertThat(message).startsWith("提交失败").contains("outcome").contains("comment");
     }
 
     /**

@@ -17,6 +17,7 @@ import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
 import com.wxy.career.vo.InterviewStateRespVO;
+import com.wxy.career.vo.AnswerEvaluationSubmitVO;
 import com.wxy.career.vo.UserProfileRespVO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -81,6 +82,16 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
     private static final long TURN_BUFFER_TTL_MILLIS = 30L * 60L * 1000L;
 
     /**
+     * 参考得分下限。
+     */
+    private static final int SCORE_MIN = 0;
+
+    /**
+     * 参考得分上限。
+     */
+    private static final int SCORE_MAX = 100;
+
+    /**
      * 面试问答 Mapper。
      */
     @Resource
@@ -108,6 +119,18 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
      * 本回合的运行态缓冲：键为 {@code userId/sessionId}，值为待落库的问答记录与写入时间。
      */
     private final Map<String, BufferedTurn> turnBuffer = new ConcurrentHashMap<>();
+
+    /**
+     * 本回合的评分结论缓冲：键与回合缓冲相同，值为评分子 Agent 提交的结构化结论。
+     *
+     * <p>回合开始时清空、记录回合时取走，保证上一道题的评分不会落到下一题上。
+     */
+    private final Map<String, BufferedEvaluation> evaluationBuffer = new ConcurrentHashMap<>();
+
+    /**
+     * 评分不可用时的判定要点：写明原因，便于 F6 复盘时识别这一题没有真实评分。
+     */
+    private static final String FALLBACK_JUDGEMENT = "评分不可用，本回合按答得有遗漏处理";
 
     /**
      * 面试回合准入校验并记下本回合的用户回答。
@@ -139,8 +162,28 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         pending.setAnswer(answer);
         long now = System.currentTimeMillis();
         purgeExpired(now);
+        // 新回合开始：上一回合的评分结论作废，避免旧结论被用在这一题上。
+        evaluationBuffer.remove(bufferKey(userId, sessionId));
         turnBuffer.put(bufferKey(userId, sessionId), new BufferedTurn(pending, now));
         return state;
+    }
+
+    /**
+     * 暂存评分子 Agent 提交的单题评分结论。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID；平台用面试会话的上下文调评分子 Agent，因此这里就是面试会话 ID
+     * @param submitVO 评分结论
+     */
+    @Override
+    public void submitEvaluation(Long userId, String sessionId, AnswerEvaluationSubmitVO submitVO) {
+        requireInterviewSession(userId, sessionId);
+        validateEvaluation(submitVO);
+        long now = System.currentTimeMillis();
+        purgeExpired(now);
+        evaluationBuffer.put(bufferKey(userId, sessionId), new BufferedEvaluation(submitVO, now));
+        log.info("评分结论已提交，userId={}，sessionId={}，outcome={}，score={}",
+                userId, sessionId, submitVO.getOutcome(), submitVO.getScore());
     }
 
     /**
@@ -185,11 +228,32 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
             Long userId, String sessionId, InterviewAnswerSubmitVO submitVO) {
         Long sessionIdValue = requireInterviewSession(userId, sessionId);
         validateSubmit(submitVO);
-        InterviewOutcomeEnum outcome = InterviewOutcomeEnum.find(submitVO.getOutcome());
         InterviewQuestionTypeEnum questionType = InterviewQuestionTypeEnum.find(submitVO.getQuestionType());
-        if (outcome == null || questionType == null) {
-            // 判定取值非法时按参数错误抛出，由工具转成可读提示让模型改正后重试。
+        if (questionType == null) {
+            // 题型取值非法时按参数错误抛出，由工具转成可读提示让模型改正后重试。
             throw new BizException(ErrorConstant.PARAM_ERROR);
+        }
+        // 本回合已经记录过（模型重复调用同一个工具）：直接返回上一次的结论，既不改判定也不写第二条。
+        BufferedTurn recorded = turnBuffer.get(bufferKey(userId, sessionId));
+        if (recorded != null && recorded.row().getNextAction() != null) {
+            log.info("面试回合已记录，返回上一次指令，userId={}，sessionId={}", userId, sessionId);
+            int startDifficulty = resolveStartDifficulty(loadWorkYears(userId));
+            InterviewStateRespVO recordedState = deriveState(
+                    sessionId, interviewProperties.getQuestionCount(), startDifficulty, List.of(recorded.row()));
+            return toResult(sessionId, InterviewActionEnum.find(recorded.row().getNextAction()), recordedState);
+        }
+        // 判定结果只认评分子 Agent 提交的结论：面试官不转述评分，用户可见的回答里就不会出现评分内容。
+        // 评分不可用（子 Agent 没提交或执行失败）时按「答得有遗漏」保守继续，保证面试不被一次故障卡住。
+        BufferedEvaluation evaluation = evaluationBuffer.get(bufferKey(userId, sessionId));
+        InterviewOutcomeEnum outcome = evaluation == null
+                ? InterviewOutcomeEnum.PARTIAL
+                : InterviewOutcomeEnum.find(evaluation.payload().getOutcome());
+        if (outcome == null) {
+            outcome = InterviewOutcomeEnum.PARTIAL;
+        }
+        String judgement = evaluation == null ? FALLBACK_JUDGEMENT : evaluation.payload().getComment();
+        if (evaluation == null) {
+            log.warn("面试回合缺少评分结论，按有遗漏继续，userId={}，sessionId={}", userId, sessionId);
         }
         InterviewStateRespVO current = loadState(userId, sessionId, sessionIdValue);
         if (Boolean.TRUE.equals(current.getFinished())) {
@@ -201,10 +265,13 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
                 current.getQuestionCount(),
                 outcome,
                 Boolean.TRUE.equals(submitVO.getEndNow()));
-        InterviewQa row = buildRow(userId, sessionId, sessionIdValue, current, submitVO, outcome, questionType, action);
+        InterviewQa row = buildRow(userId, sessionId, sessionIdValue, current, submitVO.getQuestion(),
+                questionType, outcome, judgement, action);
         long now = System.currentTimeMillis();
         purgeExpired(now);
         turnBuffer.put(bufferKey(userId, sessionId), new BufferedTurn(row, now));
+        // 结论只服务本回合：记录成功后立即取走，模型重复调用时不会再落一条重复记录。
+        evaluationBuffer.remove(bufferKey(userId, sessionId));
         // 下一步状态与落库后的回放结果同源：同一份规则、同一条记录，实时与回放不会走偏。
         InterviewStateRespVO next = deriveState(
                 sessionId, current.getQuestionCount(), current.getStartDifficulty(), List.of(row));
@@ -230,6 +297,12 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
             return null;
         }
         InterviewQa row = buffered.row();
+        if (row.getNextAction() == null || row.getOutcome() == null || row.getQuestion() == null) {
+            // 只填了用户回答的占位记录说明模型没走完本回合（例如评分结论一直没提交上来）：
+            // 宁可这一轮不推进，也不能把半截数据写进表里。
+            log.warn("面试回合记录不完整，跳过落库，userId={}，sessionId={}", userId, sessionId);
+            return null;
+        }
         interviewQaMapper.insert(row);
         // 以落库后的完整记录回放状态，界面拿到的进度就是下一次出题时的真实进度。
         List<InterviewQa> rows = interviewQaMapper.selectBySession(userId, row.getSessionId());
@@ -445,9 +518,10 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
      * @param sessionId 会话 ID 字符串，与运行态缓冲的键保持一致
      * @param sessionIdValue 会话 ID
      * @param current 答题时的面试状态
-     * @param submitVO 模型提交的判定结果
-     * @param outcome 判定结果枚举
+     * @param question 本次提问的题目正文
      * @param questionType 题型枚举
+     * @param outcome 判定结果枚举
+     * @param judgement 判定要点，来自评分子 Agent 的结论
      * @param action 本回合之后的流程动作
      * @return 待落库的问答记录
      */
@@ -456,9 +530,10 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
             String sessionId,
             Long sessionIdValue,
             InterviewStateRespVO current,
-            InterviewAnswerSubmitVO submitVO,
-            InterviewOutcomeEnum outcome,
+            String question,
             InterviewQuestionTypeEnum questionType,
+            InterviewOutcomeEnum outcome,
+            String judgement,
             InterviewActionEnum action) {
         BufferedTurn buffered = turnBuffer.get(bufferKey(userId, sessionId));
         String answer = buffered == null || buffered.row() == null ? null : buffered.row().getAnswer();
@@ -474,10 +549,10 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         row.setRoundNo(current.getRoundNo());
         row.setQuestionType(questionType.getValue());
         row.setDifficulty(current.getDifficulty());
-        row.setQuestion(submitVO.getQuestion().trim());
+        row.setQuestion(question.trim());
         row.setAnswer(answer);
         row.setOutcome(outcome.getValue());
-        row.setJudgement(truncate(submitVO.getJudgement(), InterviewQa.JUDGEMENT_MAX_LENGTH));
+        row.setJudgement(truncate(judgement, InterviewQa.JUDGEMENT_MAX_LENGTH));
         row.setNextAction(action.getValue());
         // 流式回落在异步线程执行，审计字段显式写入。
         row.setCreateBy(userId);
@@ -515,7 +590,24 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         if (submitVO == null || !StringUtils.hasText(submitVO.getQuestion())) {
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
-        if (!StringUtils.hasText(submitVO.getQuestionType()) || !StringUtils.hasText(submitVO.getOutcome())) {
+        if (!StringUtils.hasText(submitVO.getQuestionType())) {
+            throw new BizException(ErrorConstant.PARAM_ERROR);
+        }
+    }
+
+    /**
+     * 校验评分结论：三档判定之一、参考得分 0-100、一句话点评非空。
+     *
+     * @param submitVO 评分结论
+     */
+    private void validateEvaluation(AnswerEvaluationSubmitVO submitVO) {
+        if (submitVO == null || InterviewOutcomeEnum.find(submitVO.getOutcome()) == null) {
+            throw new BizException(ErrorConstant.PARAM_ERROR);
+        }
+        if (submitVO.getScore() == null
+                || submitVO.getScore() < SCORE_MIN
+                || submitVO.getScore() > SCORE_MAX
+                || !StringUtils.hasText(submitVO.getComment())) {
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
     }
@@ -632,6 +724,15 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
                 turnBuffer.remove(key, buffered);
             }
         }
+        Collection<String> evaluationKeys = evaluationBuffer.keySet();
+        Iterator<String> evaluationIterator = evaluationKeys.iterator();
+        while (evaluationIterator.hasNext()) {
+            String key = evaluationIterator.next();
+            BufferedEvaluation buffered = evaluationBuffer.get(key);
+            if (buffered != null && now - buffered.createdAt() > TURN_BUFFER_TTL_MILLIS) {
+                evaluationBuffer.remove(key, buffered);
+            }
+        }
     }
 
     /**
@@ -654,5 +755,16 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
      * @date 2026-09-29
      */
     private record BufferedTurn(InterviewQa row, long createdAt) {
+    }
+
+    /**
+     * 暂存的评分结论。
+     *
+     * @param payload 评分子 Agent 提交的结构化结论
+     * @param createdAt 写入时间戳，用于过期兜底清理
+     * @author wxy
+     * @date 2026-09-29
+     */
+    private record BufferedEvaluation(AnswerEvaluationSubmitVO payload, long createdAt) {
     }
 }

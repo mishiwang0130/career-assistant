@@ -161,8 +161,14 @@ class SystemPromptProviderImplTest {
         assertTrue(interviewerPrompt.contains("record_interview_answer"), "面试提示词要写明记录工具");
         assertTrue(interviewerPrompt.contains("interview-questioning"), "出题规则必须走技能，不在提示词里重写");
         assertTrue(interviewerPrompt.contains("不要再围绕刚才的知识点"), "错题不纠缠要写进提示词");
+        assertTrue(interviewerPrompt.contains("评分内容属于内部信息"), "提示词要禁止把评分内容写进回答");
+        assertTrue(interviewerPrompt.contains("评分由系统"), "评分由平台完成，面试官不参与评分");
+        assertTrue(interviewerPrompt.contains("调用文本"), "提示词要禁止把工具调用写成文本");
         assertTrue(evaluatorPrompt.contains("answer-evaluation"), "评分口径以技能为准");
         assertTrue(evaluatorPrompt.contains("WRONG"), "评分提示词要写明三档判定");
+        assertTrue(evaluatorPrompt.contains("submit_answer_evaluation"), "子 Agent 要用工具提交结论");
+        assertTrue(evaluatorPrompt.contains("评分完成"), "子 Agent 提交后正文只回一句「评分完成」");
+        assertTrue(evaluatorPrompt.contains("function call"), "子 Agent 必须真正发起工具调用，而不是写文本");
 
         SystemPromptProviderImpl fallbackProvider = newProvider("classpath:prompts/not-exists.md");
         String fallbackInterviewer = fallbackProvider.prompt(AgentFactory.INTERVIEWER_AGENT_NAME);

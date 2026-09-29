@@ -3,6 +3,7 @@ package com.wxy.career.service;
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
 import com.wxy.career.vo.InterviewStateRespVO;
+import com.wxy.career.vo.AnswerEvaluationSubmitVO;
 
 /**
  * 模拟面试流程服务。
@@ -50,11 +51,25 @@ public interface InterviewFlowService {
     InterviewStateRespVO getCurrentUserState(String sessionId);
 
     /**
-     * 记录本回合的判定结果并算出下一步指令。
+     * 暂存评分子 Agent 提交的单题评分结论。
+     *
+     * <p>结论按 {@code userId/sessionId} 暂存，只在本回合内有效：回合开始（{@link #prepareTurn}）会清空上一回合的
+     * 结论，记录回合时取走，避免上一题的评分被用到下一题上。
      *
      * @param userId 用户 ID
      * @param sessionId 会话 ID
-     * @param submitVO 模型提交的判定结果
+     * @param submitVO 评分结论
+     */
+    void submitEvaluation(Long userId, String sessionId, AnswerEvaluationSubmitVO submitVO);
+
+    /**
+     * 记录本回合的判定结果并算出下一步指令。
+     *
+     * <p>判定结果取自评分子 Agent 已提交的评分结论：没有结论时按参数错误抛出，由工具提示模型先派发评分。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @param submitVO 模型提交的题目与题型
      * @return 下一步指令
      */
     InterviewAnswerResultVO recordAnswer(Long userId, String sessionId, InterviewAnswerSubmitVO submitVO);

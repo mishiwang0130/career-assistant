@@ -14,6 +14,7 @@ import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.AssistantService;
 import com.wxy.career.service.ChatSessionService;
 import com.wxy.career.service.InterviewFlowService;
+import com.wxy.career.service.InterviewEvaluationService;
 import com.wxy.career.service.ResumeDiagnosisService;
 import com.wxy.career.util.AgentEventMapper;
 import com.wxy.career.util.AgentScopeStateKeyUtil;
@@ -161,6 +162,11 @@ public class AssistantServiceImpl implements AssistantService {
             StreamState state = new StreamState(support, userId, sessionId, sessionIdValue, lockKey, lockToken);
             // 面试会话走专属 Agent：自己的提示词、工具白名单与评分子 Agent。
             state.interview = interviewState != null;
+            if (state.interview) {
+                // 评分由平台编排：先让评分子 Agent 完成本题评分（结论只进运行态缓冲，正文丢弃），
+                // 面试官随后按 record_interview_answer 的指令出题，既看不到也抄不到评分内容。
+                interviewEvaluationService.evaluate(userId, sessionId, content);
+            }
             HarnessAgent agent = agentFactory.getAgent(interviewState == null
                     ? AgentFactory.MAIN_AGENT_NAME : AgentFactory.INTERVIEWER_AGENT_NAME);
             RuntimeContext runtimeContext = RuntimeContext.builder()
@@ -231,6 +237,12 @@ public class AssistantServiceImpl implements AssistantService {
      */
     private void onNext(StreamState state, AgentEvent event) {
         if (state.terminated.get()) {
+            return;
+        }
+        // 子 Agent 的事件（含它输出的评分 JSON）会被框架转发到父 Agent 的同一事件流里，
+        // 这类内部过程即不推送也不落库，避免出现在用户看到的回答里。
+        if (AgentEventMapper.isSubagentEvent(event)) {
+            log.debug("跳过子 Agent 转发事件，eventType={}，source={}", event.getType(), event.getSource());
             return;
         }
         // 先累计文本：连接断了这一轮也要有完整回复可落库。
@@ -586,6 +598,12 @@ public class AssistantServiceImpl implements AssistantService {
      */
     @Resource
     private InterviewFlowService interviewFlowService;
+
+    /**
+     * 面试评分服务：面试官开流前先把本题评分交给评分子 Agent 完成。
+     */
+    @Resource
+    private InterviewEvaluationService interviewEvaluationService;
 
     /**
      * 落库本回合的面试问答并下发最新进度与难度。
