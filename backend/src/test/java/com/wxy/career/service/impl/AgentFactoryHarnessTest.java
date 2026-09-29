@@ -138,10 +138,10 @@ class AgentFactoryHarnessTest {
 
         Set<String> toolNames = agent.getToolkit().getToolNames();
         System.out.println("ASSISTANT_TOOLS=" + new ArrayList<>(toolNames));
-        assertThat(toolNames).contains("read_resume");
+        // 白名单是精确集合：只多一个框架默认工具或业务工具都说明 allow / deny 没配好。
+        assertThat(toolNames).containsExactlyInAnyOrder(
+                "read_resume", "agent_spawn", "agent_send", "agent_list");
         assertThat(toolNames).doesNotContain("submit_resume_diagnosis");
-        assertThat(toolNames).doesNotContain("web_search", "web_fetch", "wait_async_results");
-        assertThat(toolNames).doesNotContain("read_file", "write_file", "execute_shell", "bash");
     }
 
     /**

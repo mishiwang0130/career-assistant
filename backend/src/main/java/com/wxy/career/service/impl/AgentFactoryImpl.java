@@ -68,10 +68,19 @@ public class AgentFactoryImpl implements AgentFactory {
     private static final String SUBMIT_DIAGNOSIS_TOOL_NAME = "submit_resume_diagnosis";
 
     /**
-     * 框架子 Agent 派发工具名：派发、追加消息、列出子 Agent。
+     * 框架的「派发子 Agent」工具名：助手靠它把一次性分析任务交给子 Agent。
      */
-    private static final List<String> SUBAGENT_DISPATCH_TOOL_NAMES =
-            List.of("agent_spawn", "agent_send", "agent_list");
+    private static final String SUBAGENT_SPAWN_TOOL_NAME = "agent_spawn";
+
+    /**
+     * 框架的「给子 Agent 追加消息」工具名。
+     */
+    private static final String SUBAGENT_SEND_TOOL_NAME = "agent_send";
+
+    /**
+     * 框架的「列出子 Agent」工具名。
+     */
+    private static final String SUBAGENT_LIST_TOOL_NAME = "agent_list";
 
     /**
      * 简历分析子 Agent 的工具白名单：只读简历 + 提交结构化诊断结论。
@@ -110,9 +119,9 @@ public class AgentFactoryImpl implements AgentFactory {
      */
     private static final List<String> ASSISTANT_ALLOWED_TOOL_NAMES = List.of(
             READ_RESUME_TOOL_NAME,
-            SUBAGENT_DISPATCH_TOOL_NAMES.get(0),
-            SUBAGENT_DISPATCH_TOOL_NAMES.get(1),
-            SUBAGENT_DISPATCH_TOOL_NAMES.get(2));
+            SUBAGENT_SPAWN_TOOL_NAME,
+            SUBAGENT_SEND_TOOL_NAME,
+            SUBAGENT_LIST_TOOL_NAME);
 
     /**
      * 需要显式 deny 的框架平台工具。
