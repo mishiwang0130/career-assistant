@@ -76,6 +76,7 @@ public class AgentScopeConfiguration {
         return DashScopeChatModel.builder()
                 .apiKey(agentProperties.getApiKey())
                 .modelName(agentProperties.getModel())
+                .enableThinking(true)
                 .stream(true)
                 .build();
     }

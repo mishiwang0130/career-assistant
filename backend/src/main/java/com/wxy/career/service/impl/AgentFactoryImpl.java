@@ -10,6 +10,7 @@ import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import io.agentscope.core.agent.Agent;
+import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.AgentStateStore;
@@ -257,6 +258,7 @@ public class AgentFactoryImpl implements AgentFactory {
                 .description(MAIN_AGENT_DESCRIPTION)
                 .sysPrompt(systemPromptProvider.prompt(agentName))
                 .model(agentModel)
+                .generateOptions(GenerateOptions.builder().temperature(0.6).build())
                 .toolkit(toolkit)
                 .maxIters(agentProperties.getMaxIters())
                 .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
