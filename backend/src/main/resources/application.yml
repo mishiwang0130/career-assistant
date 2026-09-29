@@ -46,7 +46,7 @@ app:
   agent:
     provider: dashscope
     api-key: ${DASHSCOPE_API_KEY:}
-    model: qwen-plus
+    model: qwen3.7-plus
     long-context-model: qwen-max
     max-iters: 12
     stream-timeout-seconds: 300
