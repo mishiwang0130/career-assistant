@@ -48,4 +48,38 @@ class SkillSeedScriptTest {
         assertThat(skillSection).contains("submit_resume_diagnosis");
         assertThat(skillSection.length()).isGreaterThan(500);
     }
+
+    /**
+     * 验证建库脚本幂等追加了 F3 的 job-match 技能，并且没有重复建表。
+     *
+     * <p>F3 复用 F2 建好的技能表，脚本里只允许出现一行技能写入：表结构重复建会掩盖框架托管表的
+     * 真实结构，写入不幂等则每次执行都会多出一条规则。
+     *
+     * @throws Exception 读取脚本失败
+     */
+    @Test
+    void shouldSeedJobMatchSkillIdempotently() throws Exception {
+        String script = Files.readString(SCRIPT_PATH, StandardCharsets.UTF_8);
+
+        assertThat(script).contains("'job-match'");
+        assertThat(script).contains("'f3-job-match'");
+        assertThat(script).contains("ON DUPLICATE KEY UPDATE");
+
+        // F3 段从自己的分隔注释起，到本段的幂等收尾止：段内只写技能行，不重复建表。
+        int sectionStart = script.indexOf("F3 岗位匹配");
+        int sectionEnd = script.lastIndexOf("ON DUPLICATE KEY UPDATE");
+        assertThat(sectionStart).isGreaterThan(0);
+        assertThat(sectionEnd).isGreaterThan(sectionStart);
+
+        String jobMatchSection = script.substring(sectionStart, sectionEnd);
+        assertThat(jobMatchSection).doesNotContain("CREATE TABLE");
+        assertThat(jobMatchSection)
+                .contains("匹配维度")
+                .contains("命中关键词")
+                .contains("缺失关键词")
+                .contains("匹配度")
+                .contains("输出结构")
+                .contains("底线");
+        assertThat(jobMatchSection.length()).isGreaterThan(500);
+    }
 }
