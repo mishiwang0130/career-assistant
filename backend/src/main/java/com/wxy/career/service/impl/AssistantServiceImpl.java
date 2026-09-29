@@ -21,6 +21,7 @@ import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.InterviewProgressResultVO;
+import com.wxy.career.vo.InterviewResultRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
 import com.wxy.career.vo.PageRespVO;
 import com.wxy.career.vo.ResumeDiagnosisResultVO;
@@ -626,6 +627,19 @@ public class AssistantServiceImpl implements AssistantService {
         }
         if (!state.support.send(SseEvent.result(InterviewProgressResultVO.from(progress)))) {
             log.warn("面试进度下发失败，连接可能已断开，sessionId={}", state.sessionId);
+        }
+        if (Boolean.TRUE.equals(progress.getFinished())) {
+            // 面试结束：同一轮里再下发逐题结果（哪里答得不好 + 标准答案），界面据此渲染结果卡片。
+            try {
+                InterviewResultRespVO interviewResult =
+                        interviewFlowService.getResult(state.userId, state.sessionId);
+                if (!state.support.send(SseEvent.result(interviewResult))) {
+                    log.warn("面试结果下发失败，连接可能已断开，sessionId={}", state.sessionId);
+                }
+            } catch (Exception exception) {
+                log.error("面试结果组装失败，userId={}，sessionId={}",
+                        state.userId, state.sessionId, exception);
+            }
         }
     }
 }

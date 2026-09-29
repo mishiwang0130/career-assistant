@@ -16,9 +16,13 @@ import com.wxy.career.service.InterviewFlowService;
 import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
+import com.wxy.career.vo.InterviewResultItemVO;
+import com.wxy.career.vo.InterviewResultRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
 import com.wxy.career.vo.AnswerEvaluationSubmitVO;
 import com.wxy.career.vo.UserProfileRespVO;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -26,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.Collection;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
@@ -114,6 +119,12 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
      */
     @Resource
     private InterviewProperties interviewProperties;
+
+    /**
+     * JSON 序列化组件，用于把评分结论存成 interview_qa.evaluation_json 并回放。
+     */
+    @Resource
+    private ObjectMapper objectMapper;
 
     /**
      * 本回合的运行态缓冲：键为 {@code userId/sessionId}，值为待落库的问答记录与写入时间。
@@ -265,8 +276,9 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
                 current.getQuestionCount(),
                 outcome,
                 Boolean.TRUE.equals(submitVO.getEndNow()));
+        String evaluationJson = evaluation == null ? null : writeEvaluation(evaluation.payload());
         InterviewQa row = buildRow(userId, sessionId, sessionIdValue, current, submitVO.getQuestion(),
-                questionType, outcome, judgement, action);
+                questionType, outcome, judgement, evaluationJson, action);
         long now = System.currentTimeMillis();
         purgeExpired(now);
         turnBuffer.put(bufferKey(userId, sessionId), new BufferedTurn(row, now));
@@ -322,6 +334,142 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
             return;
         }
         turnBuffer.remove(bufferKey(userId, sessionId));
+    }
+
+    /**
+     * 组装面试结果：逐题明细（答得不好的地方、标准答案等）与整体统计。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @return 面试结果
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public InterviewResultRespVO getResult(Long userId, String sessionId) {
+        Long sessionIdValue = requireInterviewSession(userId, sessionId);
+        InterviewStateRespVO state = loadState(userId, sessionId, sessionIdValue);
+        List<InterviewQa> rows = interviewQaMapper.selectBySession(userId, sessionIdValue);
+        List<InterviewResultItemVO> items = new ArrayList<>(rows.size());
+        int correctCount = 0;
+        int partialCount = 0;
+        int wrongCount = 0;
+        int scoreSum = 0;
+        int scoreCount = 0;
+        for (InterviewQa row : rows) {
+            InterviewResultItemVO item = toResultItem(row);
+            items.add(item);
+            InterviewOutcomeEnum outcome = InterviewOutcomeEnum.find(row.getOutcome());
+            if (outcome == InterviewOutcomeEnum.CORRECT) {
+                correctCount++;
+            } else if (outcome == InterviewOutcomeEnum.PARTIAL) {
+                partialCount++;
+            } else if (outcome == InterviewOutcomeEnum.WRONG) {
+                wrongCount++;
+            }
+            if (item.getScore() != null) {
+                scoreSum += item.getScore();
+                scoreCount++;
+            }
+        }
+        InterviewResultRespVO result = new InterviewResultRespVO();
+        result.setSessionId(sessionId);
+        result.setQuestionCount(state.getQuestionCount());
+        result.setFinished(state.getFinished());
+        result.setAnsweredCount(items.size());
+        result.setCorrectCount(correctCount);
+        result.setPartialCount(partialCount);
+        result.setWrongCount(wrongCount);
+        result.setAverageScore(scoreCount == 0 ? null : Math.round((float) scoreSum / scoreCount));
+        result.setItems(items);
+        return result;
+    }
+
+    /**
+     * 读取当前登录用户指定会话的面试结果。
+     *
+     * @param sessionId 会话 ID
+     * @return 面试结果
+     */
+    @Override
+    public InterviewResultRespVO getCurrentUserResult(String sessionId) {
+        Long userId = LoginUserHolder.getUserId();
+        if (userId == null) {
+            throw new BizException(ErrorConstant.UNAUTHORIZED);
+        }
+        return getResult(userId, sessionId);
+    }
+
+    /**
+     * 把一条问答记录转成结果明细：有评分结论时回放完整明细，评分不可用时只回放判定与判定要点。
+     *
+     * @param row 问答记录
+     * @return 结果明细
+     */
+    private InterviewResultItemVO toResultItem(InterviewQa row) {
+        InterviewOutcomeEnum outcome = InterviewOutcomeEnum.find(row.getOutcome());
+        AnswerEvaluationSubmitVO evaluation = readEvaluation(row.getEvaluationJson());
+        InterviewResultItemVO item = new InterviewResultItemVO();
+        item.setQuestionIndex(row.getQuestionIndex());
+        item.setRoundNo(row.getRoundNo());
+        item.setQuestion(row.getQuestion());
+        item.setAnswer(row.getAnswer());
+        item.setOutcome(row.getOutcome());
+        item.setOutcomeLabel(outcome == null ? null : outcome.getLabel());
+        item.setDifficulty(row.getDifficulty());
+        item.setEvaluated(evaluation != null);
+        item.setComment(evaluation == null ? row.getJudgement() : evaluation.getComment());
+        item.setMissingPoints(nullToEmpty(evaluation == null ? null : evaluation.getMissingPoints()));
+        item.setWrongPoints(nullToEmpty(evaluation == null ? null : evaluation.getWrongPoints()));
+        item.setExpressionIssues(nullToEmpty(evaluation == null ? null : evaluation.getExpressionIssues()));
+        item.setSuggestions(nullToEmpty(evaluation == null ? null : evaluation.getSuggestions()));
+        item.setKnowledgePoints(nullToEmpty(evaluation == null ? null : evaluation.getKnowledgePoints()));
+        item.setScore(evaluation == null ? null : evaluation.getScore());
+        item.setReferenceAnswer(evaluation == null ? null : evaluation.getReferenceAnswer());
+        return item;
+    }
+
+    /**
+     * 空清单归一化为空列表，避免前端为 null 做额外判空。
+     *
+     * @param source 原清单
+     * @param <T> 元素类型
+     * @return 非空清单
+     */
+    private <T> List<T> nullToEmpty(List<T> source) {
+        return source == null ? List.of() : source;
+    }
+
+    /**
+     * 把评分结论序列化进 interview_qa.evaluation_json。
+     *
+     * @param evaluation 评分结论
+     * @return JSON 字符串，序列化失败时返回 null（不影响本回合流程与判定）
+     */
+    private String writeEvaluation(AnswerEvaluationSubmitVO evaluation) {
+        try {
+            return objectMapper.writeValueAsString(evaluation);
+        } catch (JsonProcessingException exception) {
+            log.warn("评分结论序列化失败，本回合只落判定要点", exception);
+            return null;
+        }
+    }
+
+    /**
+     * 回放评分结论。
+     *
+     * @param evaluationJson 评分结论 JSON
+     * @return 评分结论，缺失或解析失败时返回 null（按评分不可用回放）
+     */
+    private AnswerEvaluationSubmitVO readEvaluation(String evaluationJson) {
+        if (!StringUtils.hasText(evaluationJson)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(evaluationJson, AnswerEvaluationSubmitVO.class);
+        } catch (JsonProcessingException exception) {
+            log.warn("评分结论解析失败，按评分不可用回放", exception);
+            return null;
+        }
     }
 
     /**
@@ -522,6 +670,7 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
      * @param questionType 题型枚举
      * @param outcome 判定结果枚举
      * @param judgement 判定要点，来自评分子 Agent 的结论
+     * @param evaluationJson 评分子 Agent 的结构化结论 JSON，评分不可用时为 null
      * @param action 本回合之后的流程动作
      * @return 待落库的问答记录
      */
@@ -534,6 +683,7 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
             InterviewQuestionTypeEnum questionType,
             InterviewOutcomeEnum outcome,
             String judgement,
+            String evaluationJson,
             InterviewActionEnum action) {
         BufferedTurn buffered = turnBuffer.get(bufferKey(userId, sessionId));
         String answer = buffered == null || buffered.row() == null ? null : buffered.row().getAnswer();
@@ -553,6 +703,7 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         row.setAnswer(answer);
         row.setOutcome(outcome.getValue());
         row.setJudgement(truncate(judgement, InterviewQa.JUDGEMENT_MAX_LENGTH));
+        row.setEvaluationJson(evaluationJson);
         row.setNextAction(action.getValue());
         // 流式回落在异步线程执行，审计字段显式写入。
         row.setCreateBy(userId);
@@ -607,7 +758,8 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         if (submitVO.getScore() == null
                 || submitVO.getScore() < SCORE_MIN
                 || submitVO.getScore() > SCORE_MAX
-                || !StringUtils.hasText(submitVO.getComment())) {
+                || !StringUtils.hasText(submitVO.getComment())
+                || !StringUtils.hasText(submitVO.getReferenceAnswer())) {
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
     }

@@ -2,6 +2,7 @@ package com.wxy.career.service;
 
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
+import com.wxy.career.vo.InterviewResultRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
 import com.wxy.career.vo.AnswerEvaluationSubmitVO;
 
@@ -82,6 +83,25 @@ public interface InterviewFlowService {
      * @return 最新面试状态；本回合没有待落库记录时返回 null
      */
     InterviewStateRespVO commitTurn(Long userId, String sessionId);
+
+    /**
+     * 组装面试结果：逐题明细（答得不好的地方、标准答案等）与整体统计。
+     *
+     * <p>面试结束时随 SSE {@code result} 事件下发一次；刷新页面或回看历史会话时用面试结果接口取同一份数据。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @return 面试结果
+     */
+    InterviewResultRespVO getResult(Long userId, String sessionId);
+
+    /**
+     * 读取当前登录用户指定会话的面试结果，供面试结果接口使用。
+     *
+     * @param sessionId 会话 ID
+     * @return 面试结果
+     */
+    InterviewResultRespVO getCurrentUserResult(String sessionId);
 
     /**
      * 丢弃本回合的运行态缓冲，流异常结束或删除会话时调用。
