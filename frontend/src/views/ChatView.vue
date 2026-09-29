@@ -70,13 +70,20 @@ watch(
 /**
  * 切换当前会话：先中断旧会话的流式渲染，再按新会话拉取最新一页历史。
  *
+ * 切换不会中断旧会话在途的那一轮：每个会话的消息区各自缓存，后端也会把这一轮跑完并落库，
+ * 用户切回来（或在生成过程中切回来）都能看到完整回答。
+ *
  * @param target 目标会话 ID，null 表示草稿态
  */
 async function openSession(target: string | null): Promise<void> {
-  assistantStore.abortStreaming()
-  assistantStore.resetMessages()
   sessionStore.setCurrentSession(target)
   if (!target) {
+    // 草稿态消息区只服务当前这一轮新会话，进入草稿态时清空。
+    assistantStore.resetDraft()
+    return
+  }
+  if (assistantStore.isStreaming(target)) {
+    // 该会话正在生成：内存里已经有完整消息（含正在流式接收的回复），不能再拉历史把它冲掉。
     return
   }
   try {

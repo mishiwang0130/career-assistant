@@ -146,8 +146,8 @@ onMounted(async () => {
  */
 async function handleCreateSession(): Promise<void> {
   emit('navigate')
-  assistantStore.abortStreaming()
-  assistantStore.resetMessages()
+  // 只是回到草稿态：其它会话在途的那一轮继续跑完并落库，不在这里中断。
+  assistantStore.resetDraft()
   sessionStore.startDraft()
   if (route.name !== 'ChatView') {
     await router.push({ name: 'ChatView' })
@@ -229,14 +229,11 @@ async function handleDelete(session: ChatSessionRespVO): Promise<void> {
     return
   }
   const isCurrent = session.sessionId === sessionStore.currentSessionId
-  // 先中断当前会话的在途流式，避免删除后旧回复继续渲染。
-  if (isCurrent) {
-    assistantStore.abortStreaming()
-  }
+  // 先中断并丢弃该会话的本地消息区：会话都要删了，没必要继续接收它的回复。
+  assistantStore.releaseSession(session.sessionId)
   try {
     await sessionStore.deleteSession(session.sessionId)
     if (isCurrent) {
-      assistantStore.resetMessages()
       if (route.name !== 'ChatView') {
         await router.push({ name: 'ChatView' })
       }

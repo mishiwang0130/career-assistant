@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import * as assistantApi from '@/api/assistant'
@@ -15,11 +15,32 @@ import type {
 /** 消息分页每页条数，与后端默认值保持一致。 */
 const MESSAGE_PAGE_SIZE = 20
 
+/** 单个会话的消息区状态。 */
+interface SessionChatState {
+  /** 消息区展示的消息，按时间正序（最新在最下）。 */
+  messages: ChatMessage[]
+  /** 该会话是否有在途的流式请求。 */
+  streaming: boolean
+  /** 首屏历史加载中。 */
+  loading: boolean
+  /** 更早的历史加载中。 */
+  loadingMoreHistory: boolean
+  /** 已加载到第几页历史，0 表示还没加载过。 */
+  loadedPageNum: number
+  /** 服务端返回的历史消息总数。 */
+  total: number
+  /** 该会话自己的错误提示。 */
+  errorMessage: string
+}
+
 /**
  * 通用助手对话状态。
  *
  * 会话 ID 取自 session store（草稿态为 null，由页面先创建会话再发消息）；消息接口按 ID 倒序分页，
  * 第 1 页就是最新的若干条，这里统一反转为「旧在上、新在下」，向上滚动时向前追加更早的消息。
+ *
+ * 消息区按会话分别缓存：用户切到别的会话时，原来那一轮继续流式接收（不中断后端推理），
+ * 切回来还能看到正在生成或刚生成完的内容，也不会把旧会话的增量渲染到当前会话里。
  */
 export const useAssistantStore = defineStore('assistant', () => {
   const sessionStore = useSessionStore()
@@ -27,38 +48,66 @@ export const useAssistantStore = defineStore('assistant', () => {
   /** 当前会话 ID，草稿态为 null。 */
   const sessionId = computed(() => sessionStore.currentSessionId)
 
-  /** 消息区展示的消息，按时间正序（最新在最下）。 */
-  const messages = ref<ChatMessage[]>([])
+  /** 各会话的消息区状态。 */
+  const states = reactive<Record<string, SessionChatState>>({})
 
-  /** 是否正在流式接收回复。 */
-  const streaming = ref(false)
+  /** 草稿态（尚未创建会话）的临时消息区。 */
+  const draftState = reactive<SessionChatState>(createEmptyState())
 
-  /** 首屏历史加载中。 */
-  const loading = ref(false)
+  /** 会话状态缺失时的占位，避免在 computed 里写响应式对象。 */
+  const emptyState = createEmptyState()
 
-  /** 更早的历史加载中。 */
-  const loadingMoreHistory = ref(false)
+  /** 各会话在途的流式请求句柄：只有退出登录、删除会话时才主动中断。 */
+  const controllers = new Map<string, AbortController>()
 
-  /** 已加载到第几页历史，0 表示还没加载过。 */
-  const loadedMessagePageNum = ref(0)
-
-  /** 服务端返回的历史消息总数。 */
-  const messageTotal = ref(0)
-
-  /** 错误提示。 */
-  const errorMessage = ref('')
+  /**
+   * 取（必要时创建）指定会话的消息区状态。
+   *
+   * @param targetSessionId 会话 ID
+   * @returns 该会话的消息区状态
+   */
+  function stateOf(targetSessionId: string): SessionChatState {
+    if (!states[targetSessionId]) {
+      states[targetSessionId] = createEmptyState()
+    }
+    return states[targetSessionId]
+  }
 
   /** 从其它页面带过来的待发指令（例如简历列表的「诊断」按钮）。 */
   const pendingCommand = ref<string | null>(null)
 
-  /** 是否还有更早的历史消息。 */
+  // 会话切换后立刻建立它自己的状态对象，后续读写都不会落到草稿态上。
+  watch(sessionId, (current) => {
+    if (current) {
+      stateOf(current)
+    }
+  }, { immediate: true })
+
+  /** 当前会话的状态对象。 */
+  const currentState = computed(() =>
+    sessionId.value ? states[sessionId.value] ?? emptyState : draftState,
+  )
+
+  /** 当前会话的消息区展示的消息。 */
+  const messages = computed(() => currentState.value.messages)
+
+  /** 当前会话是否正在流式接收回复。 */
+  const streaming = computed(() => currentState.value.streaming)
+
+  /** 当前会话首屏历史加载中。 */
+  const loading = computed(() => currentState.value.loading)
+
+  /** 当前会话更早的历史加载中。 */
+  const loadingMoreHistory = computed(() => currentState.value.loadingMoreHistory)
+
+  /** 当前会话服务端返回的历史消息总数。 */
+  const messageTotal = computed(() => currentState.value.total)
+
+  /** 当前会话的错误提示。 */
+  const errorMessage = computed(() => currentState.value.errorMessage)
+
+  /** 当前会话是否还有更早的历史消息。 */
   const hasMoreMessages = computed(() => messages.value.length < messageTotal.value)
-
-  /** 在途流式请求的取消句柄。 */
-  let abortController: AbortController | null = null
-
-  /** 在途流式请求所属的会话 ID，用于丢弃切换会话后到达的增量。 */
-  let streamingSessionId: string | null = null
 
   /**
    * 加载当前会话最新一页消息。
@@ -66,19 +115,23 @@ export const useAssistantStore = defineStore('assistant', () => {
   async function loadHistory(): Promise<void> {
     const currentSessionId = sessionId.value
     if (!currentSessionId) {
-      resetMessages()
+      resetDraft()
       return
     }
-    loading.value = true
-    errorMessage.value = ''
+    const state = stateOf(currentSessionId)
+    state.loading = true
+    state.errorMessage = ''
     try {
       const page = await assistantApi.listMessages(currentSessionId, 1, MESSAGE_PAGE_SIZE)
-      // 接口按消息 ID 倒序返回，反转后最新的消息落在最下方。
-      messages.value = toChatMessages(page.records).reverse()
-      loadedMessagePageNum.value = 1
-      messageTotal.value = page.total
+      // 加载期间该会话可能已经开始新一轮流式（例如用户切回来时刚好在生成），此时不能冲掉内存里的消息。
+      if (!state.streaming) {
+        // 接口按消息 ID 倒序返回，反转后最新的消息落在最下方。
+        state.messages = toChatMessages(page.records).reverse()
+        state.loadedPageNum = 1
+      }
+      state.total = page.total
     } finally {
-      loading.value = false
+      state.loading = false
     }
   }
 
@@ -87,19 +140,23 @@ export const useAssistantStore = defineStore('assistant', () => {
    */
   async function loadOlderMessages(): Promise<void> {
     const currentSessionId = sessionId.value
-    if (!currentSessionId || loading.value || loadingMoreHistory.value || !hasMoreMessages.value) {
+    if (!currentSessionId) {
       return
     }
-    loadingMoreHistory.value = true
+    const state = stateOf(currentSessionId)
+    if (state.loading || state.loadingMoreHistory || state.messages.length >= state.total) {
+      return
+    }
+    state.loadingMoreHistory = true
     try {
-      const nextPageNum = loadedMessagePageNum.value + 1
+      const nextPageNum = state.loadedPageNum + 1
       const page = await assistantApi.listMessages(currentSessionId, nextPageNum, MESSAGE_PAGE_SIZE)
       const older = toChatMessages(page.records).reverse()
-      messages.value = dedupeMessages([...older, ...messages.value])
-      loadedMessagePageNum.value = nextPageNum
-      messageTotal.value = page.total
+      state.messages = dedupeMessages([...older, ...state.messages])
+      state.loadedPageNum = nextPageNum
+      state.total = page.total
     } finally {
-      loadingMoreHistory.value = false
+      state.loadingMoreHistory = false
     }
   }
 
@@ -111,11 +168,15 @@ export const useAssistantStore = defineStore('assistant', () => {
   async function sendMessage(content: string): Promise<void> {
     const text = content.trim()
     const currentSessionId = sessionId.value
-    if (!text || streaming.value || !currentSessionId) {
+    if (!text || !currentSessionId) {
       return
     }
-    errorMessage.value = ''
-    messages.value.push({
+    const state = stateOf(currentSessionId)
+    if (state.streaming) {
+      return
+    }
+    state.errorMessage = ''
+    state.messages.push({
       id: createMessageId(),
       role: 'USER',
       content: text,
@@ -135,23 +196,18 @@ export const useAssistantStore = defineStore('assistant', () => {
       failed: false,
       result: null,
     }
-    messages.value.push(reply)
+    state.messages.push(reply)
     // 必须取回数组中的响应式代理再写入：直接改 push 进去的原始对象不会触发 Vue 更新，
     // 会导致流式增量不渲染、界面上看不到任何结果。
-    const replyRef = messages.value[messages.value.length - 1]
-    streaming.value = true
-    streamingSessionId = currentSessionId
-    abortController = new AbortController()
-    const controller = abortController
+    const replyRef = state.messages[state.messages.length - 1]
+    state.streaming = true
+    const controller = new AbortController()
+    controllers.set(currentSessionId, controller)
     let terminated = false
     try {
       await assistantApi.chat(
         { sessionId: currentSessionId, content: text },
         (event, data) => {
-          // 切换或删除会话后到达的事件必须丢弃，否则消息会串到别的会话。
-          if (streamingSessionId !== currentSessionId) {
-            return
-          }
           if (event === 'meta') {
             // meta 到达说明用户消息已落库，此时左侧标题已按首条消息改写。
             void sessionStore.refreshSession(currentSessionId)
@@ -159,57 +215,74 @@ export const useAssistantStore = defineStore('assistant', () => {
           if (event === 'done' || event === 'error') {
             terminated = true
           }
-          applyEvent(replyRef, event, data)
+          // 事件写进该会话自己的消息区：即使用户已经切走，这一轮也会继续接收完。
+          applyEvent(state, replyRef, event, data)
         },
         controller.signal,
       )
     } catch (error) {
-      replyRef.failed = true
-      if (streamingSessionId === currentSessionId) {
-        errorMessage.value = controller.signal.aborted
-          ? '已中断当前回复'
-          : error instanceof Error
-            ? error.message
-            : '对话失败'
+      if (!controller.signal.aborted) {
+        replyRef.failed = true
+        state.errorMessage = error instanceof Error ? error.message : '对话失败'
+        throw error
       }
-      throw error
+      // 主动中断（退出登录、删除会话）不算失败：已经收到的内容留在该会话的消息区里。
     } finally {
       replyRef.streaming = false
-      streaming.value = false
-      abortController = null
-      if (streamingSessionId === currentSessionId && !terminated && !replyRef.failed) {
+      state.streaming = false
+      if (controllers.get(currentSessionId) === controller) {
+        controllers.delete(currentSessionId)
+      }
+      if (!terminated && !replyRef.failed && !controller.signal.aborted) {
         // 服务端没有给出 done / error 事件就断开，明确提示而不是让界面看起来"没有结果"。
         replyRef.failed = true
-        errorMessage.value = '连接意外中断，请重试'
+        state.errorMessage = '连接意外中断，请重试'
       }
-      streamingSessionId = null
     }
   }
 
   /**
    * 中断在途流式请求。
    *
-   * 切换会话、删除会话或退出登录前调用，避免旧会话的增量继续渲染到新会话里。
+   * 只在退出登录（全部中断）或删除某个会话（按会话中断）时调用；普通切换会话不中断，
+   * 让原来那一轮继续跑完并落库，切回去还能看到完整回答。
+   *
+   * @param targetSessionId 指定会话 ID，不传表示中断全部在途请求
    */
-  function abortStreaming(): void {
-    if (abortController) {
-      abortController.abort()
-      abortController = null
+  function abortStreaming(targetSessionId?: string): void {
+    if (targetSessionId) {
+      controllers.get(targetSessionId)?.abort()
+      controllers.delete(targetSessionId)
+      return
     }
-    streaming.value = false
-    streamingSessionId = null
+    controllers.forEach((controller) => controller.abort())
+    controllers.clear()
   }
 
   /**
-   * 清空消息区与分页状态。
+   * 判断指定会话是否有在途的流式请求。
+   *
+   * @param targetSessionId 会话 ID
    */
-  function resetMessages(): void {
-    messages.value = []
-    errorMessage.value = ''
-    loading.value = false
-    loadingMoreHistory.value = false
-    loadedMessagePageNum.value = 0
-    messageTotal.value = 0
+  function isStreaming(targetSessionId: string): boolean {
+    return states[targetSessionId]?.streaming === true
+  }
+
+  /**
+   * 丢弃某个会话的本地缓存（删除会话时调用）。
+   *
+   * @param targetSessionId 会话 ID
+   */
+  function releaseSession(targetSessionId: string): void {
+    abortStreaming(targetSessionId)
+    delete states[targetSessionId]
+  }
+
+  /**
+   * 清空草稿态消息区。
+   */
+  function resetDraft(): void {
+    Object.assign(draftState, createEmptyState())
   }
 
   /**
@@ -217,7 +290,8 @@ export const useAssistantStore = defineStore('assistant', () => {
    */
   function reset(): void {
     abortStreaming()
-    resetMessages()
+    Object.keys(states).forEach((key) => delete states[key])
+    resetDraft()
     clearPendingCommand()
   }
 
@@ -243,11 +317,12 @@ export const useAssistantStore = defineStore('assistant', () => {
   /**
    * 按事件名把 SSE 事件应用到当前回复消息上。
    *
+   * @param state 该回复所属会话的消息区状态
    * @param message 当前回复消息
    * @param event 事件名
    * @param data 事件数据
    */
-  function applyEvent(message: ChatMessage, event: string, data: string): void {
+  function applyEvent(state: SessionChatState, message: ChatMessage, event: string, data: string): void {
     try {
       switch (event) {
         case 'delta':
@@ -280,7 +355,7 @@ export const useAssistantStore = defineStore('assistant', () => {
         case 'error': {
           const errorEvent = JSON.parse(data) as AssistantErrorEvent
           message.failed = true
-          errorMessage.value = errorEvent.message
+          state.errorMessage = errorEvent.message
           break
         }
         default:
@@ -288,7 +363,7 @@ export const useAssistantStore = defineStore('assistant', () => {
           break
       }
     } catch {
-      errorMessage.value = '解析流式响应失败'
+      state.errorMessage = '解析流式响应失败'
       message.failed = true
     }
   }
@@ -303,13 +378,15 @@ export const useAssistantStore = defineStore('assistant', () => {
     errorMessage,
     pendingCommand,
     hasMoreMessages,
+    isStreaming,
     loadHistory,
     loadOlderMessages,
     sendMessage,
     queuePendingCommand,
     clearPendingCommand,
     abortStreaming,
-    resetMessages,
+    releaseSession,
+    resetDraft,
     reset,
   }
 })
@@ -367,4 +444,21 @@ function dedupeMessages(records: ChatMessage[]): ChatMessage[] {
     seen.add(item.id)
     return true
   })
+}
+
+/**
+ * 创建空的会话消息区状态。
+ *
+ * @returns 空的会话消息区状态
+ */
+function createEmptyState(): SessionChatState {
+  return {
+    messages: [],
+    streaming: false,
+    loading: false,
+    loadingMoreHistory: false,
+    loadedPageNum: 0,
+    total: 0,
+    errorMessage: '',
+  }
 }
