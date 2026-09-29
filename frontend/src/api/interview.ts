@@ -1,5 +1,5 @@
 import { get } from '@/api/request'
-import type { InterviewStateRespVO } from '@/types/interview'
+import type { InterviewResult, InterviewStateRespVO } from '@/types/interview'
 
 /**
  * 读取面试进度与当前难度。
@@ -11,4 +11,15 @@ import type { InterviewStateRespVO } from '@/types/interview'
  */
 export function getInterviewState(sessionId: string): Promise<InterviewStateRespVO> {
   return get<InterviewStateRespVO>(`/interviews/${sessionId}`)
+}
+
+/**
+ * 读取面试结果：逐题明细（哪里答得不好、标准答案）与整体统计。
+ *
+ * 面试结束时也会通过 SSE 的 result 事件下发同一份数据，这条接口用于刷新页面与回看历史面试。
+ *
+ * @param sessionId 面试会话 ID
+ */
+export function getInterviewResult(sessionId: string): Promise<InterviewResult> {
+  return get<InterviewResult>(`/interviews/${sessionId}/result`)
 }
