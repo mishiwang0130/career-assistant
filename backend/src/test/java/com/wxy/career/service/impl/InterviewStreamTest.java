@@ -30,6 +30,7 @@ import com.wxy.career.tool.RecordInterviewAnswerTool;
 import com.wxy.career.tool.SubmitAnswerEvaluationTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import com.wxy.career.vo.InterviewStateRespVO;
+import com.wxy.career.vo.InterviewResultRespVO;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
@@ -236,6 +237,40 @@ class InterviewStreamTest {
         assertThat(body.indexOf("event:result")).isLessThan(body.indexOf("event:done"));
         verify(interviewFlowService).commitTurn(1L, SESSION_ID);
         verify(assistantMessageService).saveMessage(1L, 12L, MessageRoleEnum.USER, "开始面试");
+    }
+
+    /**
+     * 面试结束：同一轮里先下发进度、再下发逐题结果（哪里答得不好 + 标准答案），界面据此渲染结果卡片。
+     *
+     * @throws Exception 请求执行异常
+     */
+    @Test
+    void shouldSendInterviewResultWhenFinished() throws Exception {
+        when(interviewFlowService.prepareTurn(1L, SESSION_ID, "最后一题的回答"))
+                .thenReturn(buildState(8, 4, 1, false));
+        when(interviewFlowService.commitTurn(1L, SESSION_ID)).thenReturn(buildState(8, 4, 1, true));
+        InterviewResultRespVO result = new InterviewResultRespVO();
+        result.setSessionId(SESSION_ID);
+        result.setQuestionCount(8);
+        result.setAnsweredCount(8);
+        result.setFinished(true);
+        result.setItems(List.of());
+        when(interviewFlowService.getResult(1L, SESSION_ID)).thenReturn(result);
+
+        MvcResult mvcResult = mockMvc.perform(post("/api/assistant/chat")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sessionId\":\"" + SESSION_ID + "\",\"content\":\"最后一题的回答\"}"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        String body = awaitStreamBody(mvcResult.getResponse());
+
+        assertThat(body).contains("\"type\":\"interview_progress\"");
+        assertThat(body).contains("\"type\":\"interview_result\"");
+        // 先进度后结果，都在 done 之前。
+        assertThat(body.indexOf("interview_progress")).isLessThan(body.indexOf("interview_result"));
+        assertThat(body.indexOf("interview_result")).isLessThan(body.indexOf("event:done"));
     }
 
     /**

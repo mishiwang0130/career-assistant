@@ -14,7 +14,10 @@ import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.AnswerEvaluationSubmitVO;
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
+import com.wxy.career.vo.InterviewResultItemVO;
+import com.wxy.career.vo.InterviewResultRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.vo.UserProfileRespVO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -92,6 +95,7 @@ class InterviewFlowServiceImplTest {
         ReflectionTestUtils.setField(interviewFlowService, "chatSessionMapper", chatSessionMapper);
         ReflectionTestUtils.setField(interviewFlowService, "userProfileService", userProfileService);
         ReflectionTestUtils.setField(interviewFlowService, "interviewProperties", interviewProperties);
+        ReflectionTestUtils.setField(interviewFlowService, "objectMapper", new ObjectMapper());
 
         when(chatSessionMapper.selectByIdAndUserId(anyLong(), anyLong()))
                 .thenReturn(interviewSession());
@@ -295,6 +299,8 @@ class InterviewFlowServiceImplTest {
         evaluation.setOutcome(outcome);
         evaluation.setScore(80);
         evaluation.setComment("判定要点");
+        evaluation.setMissingPoints(List.of("漏掉的点"));
+        evaluation.setReferenceAnswer("标准答案：要点一、要点二");
         interviewFlowService.submitEvaluation(USER_ID, SESSION_ID, evaluation);
         InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
         submitVO.setQuestion(question);
@@ -350,6 +356,7 @@ class InterviewFlowServiceImplTest {
         evaluation.setOutcome("CORRECT");
         evaluation.setScore(90);
         evaluation.setComment("答到要点");
+        evaluation.setReferenceAnswer("标准答案：先讲结构，再讲扩容与树化条件");
         interviewFlowService.submitEvaluation(USER_ID, SESSION_ID, evaluation);
 
         InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
@@ -361,6 +368,57 @@ class InterviewFlowServiceImplTest {
         InterviewQa row = commitAndCaptureRow();
         assertThat(row.getOutcome()).isEqualTo(InterviewOutcomeEnum.CORRECT.getValue());
         assertThat(row.getJudgement()).isEqualTo("答到要点");
+    }
+
+    /**
+     * 面试结果：逐题明细带上「哪里答得不好」与标准答案，整体统计按判定分档。
+     */
+    @Test
+    void shouldAssembleInterviewResult() {
+        recordTurn("讲讲 HashMap", "BASIC", "PARTIAL", false);
+        InterviewQa row = commitAndCaptureRow();
+        when(interviewQaMapper.selectBySession(USER_ID, 12L)).thenReturn(List.of(row));
+
+        InterviewResultRespVO result = interviewFlowService.getResult(USER_ID, SESSION_ID);
+
+        assertThat(result.getType()).isEqualTo(InterviewResultRespVO.TYPE_INTERVIEW_RESULT);
+        assertThat(result.getSessionId()).isEqualTo(SESSION_ID);
+        assertThat(result.getQuestionCount()).isEqualTo(8);
+        assertThat(result.getAnsweredCount()).isEqualTo(1);
+        assertThat(result.getPartialCount()).isEqualTo(1);
+        assertThat(result.getCorrectCount()).isZero();
+        assertThat(result.getAverageScore()).isEqualTo(80);
+        assertThat(result.getItems()).hasSize(1);
+
+        InterviewResultItemVO item = result.getItems().get(0);
+        assertThat(item.getQuestion()).isEqualTo("讲讲 HashMap");
+        assertThat(item.getAnswer()).isEqualTo("我的回答");
+        assertThat(item.getOutcomeLabel()).isEqualTo("答得有遗漏");
+        assertThat(item.getEvaluated()).isTrue();
+        assertThat(item.getScore()).isEqualTo(80);
+        assertThat(item.getMissingPoints()).containsExactly("漏掉的点");
+        assertThat(item.getReferenceAnswer()).contains("标准答案");
+    }
+
+    /**
+     * 评分不可用的回合也能进结果：只回放判定与判定要点，并标记没有评分结论。
+     */
+    @Test
+    void shouldAssembleResultWithoutEvaluation() {
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+        InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
+        submitVO.setQuestion("讲讲 HashMap");
+        submitVO.setQuestionType("BASIC");
+        interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO);
+        InterviewQa row = commitAndCaptureRow();
+        when(interviewQaMapper.selectBySession(USER_ID, 12L)).thenReturn(List.of(row));
+
+        InterviewResultItemVO item = interviewFlowService.getResult(USER_ID, SESSION_ID).getItems().get(0);
+
+        assertThat(item.getEvaluated()).isFalse();
+        assertThat(item.getScore()).isNull();
+        assertThat(item.getReferenceAnswer()).isNull();
+        assertThat(item.getComment()).contains("评分不可用");
     }
 
     /**
@@ -392,6 +450,7 @@ class InterviewFlowServiceImplTest {
         evaluation.setOutcome("CORRECT");
         evaluation.setScore(90);
         evaluation.setComment("答到要点");
+        evaluation.setReferenceAnswer("标准答案：先讲结构，再讲扩容与树化条件");
         interviewFlowService.submitEvaluation(USER_ID, SESSION_ID, evaluation);
         InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
         submitVO.setQuestion("讲讲 JVM 内存结构");
