@@ -2,6 +2,7 @@ package com.wxy.career.service;
 
 import com.wxy.career.po.InterviewQa;
 import com.wxy.career.po.KnowledgeMastery;
+import com.wxy.career.vo.WeakPointsResultVO;
 
 import java.util.Collection;
 import java.util.List;
@@ -54,4 +55,19 @@ public interface KnowledgeMasteryService {
      * @return 知识点列表
      */
     List<String> knowledgePointsOf(List<InterviewQa> rows);
+
+    /**
+     * 读取指定用户用于专项辅导的薄弱点。
+     *
+     * <p>F9 专项辅导的读取入口：数据源就是本服务背后的 {@code knowledge_mastery}（掌握度与薄弱点是权威数据，
+     * 不写记忆库）。不传关键词时只返回标记为薄弱的知识点；传关键词时按知识点名称模糊匹配该用户的全部掌握度
+     * 记录，命中但不是薄弱点的知识点也会带上它当前的分数与等级，避免用户问到的知识点「查不到」。
+     * 返回条数按配置项上限截断，空状态（没有面试记录、没有薄弱点、关键词没匹配到）写在返回结构的
+     * {@code message} 里，由模型照实转述，本方法不抛业务异常。
+     *
+     * @param userId 用户 ID
+     * @param keyword 知识点关键词，可为空
+     * @return 薄弱点查询结果
+     */
+    WeakPointsResultVO listWeakPoints(Long userId, String keyword);
 }

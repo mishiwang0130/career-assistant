@@ -40,3 +40,6 @@ app:
       api-key: ${MEM0_API_KEY}
       api-type: ${MEM0_API_TYPE:SELF_HOSTED}
       timeout-ms: ${MEM0_TIMEOUT_MS:60000}
+  # 专项辅导（F9）：读薄弱点工具单次返回的条数上限，非敏感，生产同样允许按需覆盖。
+  tutoring:
+    max-weak-points: 20

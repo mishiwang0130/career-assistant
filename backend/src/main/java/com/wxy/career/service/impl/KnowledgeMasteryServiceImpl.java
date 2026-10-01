@@ -2,6 +2,7 @@ package com.wxy.career.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wxy.career.config.TutoringProperties;
 import com.wxy.career.common.enums.InterviewOutcomeEnum;
 import com.wxy.career.mapper.InterviewQaMapper;
 import com.wxy.career.mapper.KnowledgeMasteryMapper;
@@ -11,6 +12,8 @@ import com.wxy.career.service.KnowledgeMasteryService;
 import com.wxy.career.util.InterviewEvaluationParser;
 import com.wxy.career.util.MasteryCalculator;
 import com.wxy.career.vo.AnswerEvaluationSubmitVO;
+import com.wxy.career.vo.WeakPointVO;
+import com.wxy.career.vo.WeakPointsResultVO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -20,6 +23,7 @@ import org.springframework.util.StringUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -50,6 +54,34 @@ public class KnowledgeMasteryServiceImpl implements KnowledgeMasteryService {
      */
     private static final int EVIDENCE_ROW_LIMIT = 1000;
 
+    // ==================== F9 专项辅导 ====================
+
+    /**
+     * 没有任何掌握度记录时的空状态说明，让模型如实告诉用户先去练一场。
+     */
+    private static final String NO_DATA_MESSAGE =
+            "还没有面试记录，暂时没有薄弱点数据，建议先完成一场模拟面试再来复盘。";
+
+    /**
+     * 有掌握度记录、但没有一条被标记为薄弱时的说明。
+     */
+    private static final String NO_WEAK_MESSAGE = "目前没有标记为薄弱的知识点。";
+
+    /**
+     * 关键词没有匹配到任何知识点时的说明，占位符是用户问到的关键词。
+     */
+    private static final String KEYWORD_MISS_MESSAGE_FORMAT = "没有找到与「%s」相关的知识点记录。";
+
+    /**
+     * 结果被上限截断时的说明，两个占位符分别是匹配总数与本次生效的上限。
+     */
+    private static final String TRUNCATED_MESSAGE_FORMAT = "共匹配到 %d 个知识点，这里只返回最需要补的前 %d 个。";
+
+    /**
+     * 关键词的最大长度，与知识点名称字段的粒度对齐，避免异常输入撑大返回内容。
+     */
+    private static final int KEYWORD_MAX_LENGTH = 50;
+
     /**
      * 掌握度 Mapper。
      */
@@ -67,6 +99,12 @@ public class KnowledgeMasteryServiceImpl implements KnowledgeMasteryService {
      */
     @Resource
     private ObjectMapper objectMapper;
+
+    /**
+     * 专项辅导配置，提供读薄弱点工具的返回条数上限。
+     */
+    @Resource
+    private TutoringProperties tutoringProperties;
 
     /**
      * 按本回合的问答记录重算涉及的知识点，并把薄弱点同步到长期记忆。
@@ -226,5 +264,90 @@ public class KnowledgeMasteryServiceImpl implements KnowledgeMasteryService {
         } else {
             knowledgeMasteryMapper.updateById(record);
         }
+    }
+
+    /**
+     * 读取指定用户用于专项辅导的薄弱点。
+     *
+     * <p>数据源就是本服务背后的 {@code knowledge_mastery}（权威数据，不写记忆库）。过滤与排序都在这里定死，
+     * 不依赖上层查询的排序：薄弱在前、掌握度低的在前、同分按主键稳定；没给关键词时只留薄弱点，
+     * 给了关键词时连命中但不是薄弱点的知识点也一并返回（用户问到的知识点不该「查不到」）。
+     *
+     * @param userId 用户 ID
+     * @param keyword 知识点关键词，可为空
+     * @return 薄弱点查询结果
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public WeakPointsResultVO listWeakPoints(Long userId, String keyword) {
+        WeakPointsResultVO result = new WeakPointsResultVO();
+        // 上限兜住 1：配置校验之外再保一层，避免异常配置导致「返回 0 条」这种自相矛盾的行为。
+        int limit = Math.max(1, tutoringProperties.getMaxWeakPoints());
+        result.setLimit(limit);
+        if (userId == null) {
+            // 未登录由运行时上下文工具兜住并抛 401，这里只防御性地按空状态返回。
+            result.setMessage(NO_DATA_MESSAGE);
+            return result;
+        }
+        List<KnowledgeMastery> rows = knowledgeMasteryMapper.selectByUser(userId);
+        if (rows == null || rows.isEmpty()) {
+            result.setMessage(NO_DATA_MESSAGE);
+            return result;
+        }
+        result.setHasData(true);
+        String normalizedKeyword = normalizeKeyword(keyword);
+        List<KnowledgeMastery> matched = new ArrayList<>();
+        for (KnowledgeMastery row : rows) {
+            if (StringUtils.hasText(normalizedKeyword)) {
+                // 关键词匹配忽略大小写：用户常写 redis，表里存的是 Redis。
+                String point = row.getKnowledgePoint();
+                if (point == null || !point.toLowerCase().contains(normalizedKeyword.toLowerCase())) {
+                    continue;
+                }
+            } else if (!Integer.valueOf(1).equals(row.getWeak())) {
+                // 没给关键词时只讲薄弱点：已掌握的知识点铺给模型只会稀释注意力。
+                continue;
+            }
+            matched.add(row);
+        }
+        matched.sort(Comparator
+                .comparing((KnowledgeMastery row) -> Integer.valueOf(1).equals(row.getWeak()) ? 0 : 1)
+                .thenComparing(row -> row.getMasteryScore() == null ? Integer.MAX_VALUE : row.getMasteryScore())
+                .thenComparing(row -> row.getId() == null ? Long.MAX_VALUE : row.getId()));
+        List<WeakPointVO> points = new ArrayList<>();
+        for (KnowledgeMastery row : matched) {
+            if (points.size() >= limit) {
+                break;
+            }
+            points.add(WeakPointVO.from(row));
+        }
+        result.setPoints(points);
+        result.setCount(points.size());
+        if (points.isEmpty()) {
+            result.setMessage(StringUtils.hasText(normalizedKeyword)
+                    ? String.format(KEYWORD_MISS_MESSAGE_FORMAT, normalizedKeyword)
+                    : NO_WEAK_MESSAGE);
+        } else if (matched.size() > limit) {
+            result.setMessage(String.format(TRUNCATED_MESSAGE_FORMAT, matched.size(), limit));
+        }
+        return result;
+    }
+
+    /**
+     * 归一化关键词：折叠连续空白并截断长度。
+     *
+     * <p>关键词会被拼进返回给模型的说明文本，因此先折叠换行与连续空白、再截断长度，避免异常输入
+     * 伪造出新的指令段落或撑大返回内容。
+     *
+     * @param keyword 原始关键词
+     * @return 归一化后的关键词，为空时返回 null
+     */
+    private String normalizeKeyword(String keyword) {
+        if (!StringUtils.hasText(keyword)) {
+            return null;
+        }
+        String normalized = keyword.replaceAll("\\s+", " ").trim();
+        return normalized.length() > KEYWORD_MAX_LENGTH
+                ? normalized.substring(0, KEYWORD_MAX_LENGTH) : normalized;
     }
 }
