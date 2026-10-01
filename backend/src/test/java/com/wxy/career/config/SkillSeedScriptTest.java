@@ -44,6 +44,14 @@ class SkillSeedScriptTest {
         assertThat(script).contains("uk_training_reminder_user_date");
         // 计划页的未读角标按 (user_id, read_flag) 统计。
         assertThat(script).contains("idx_training_reminder_user_read");
+        // 三张表都要带项目公共字段：Mapper 的审计填充与逻辑删除都依赖它们。
+        for (String table : new String[]{"training_plan", "training_task", "training_reminder"}) {
+            int start = script.indexOf("CREATE TABLE IF NOT EXISTS `" + table + "`");
+            assertThat(start).isGreaterThan(0);
+            String tableDdl = script.substring(start, script.indexOf(") ENGINE", start));
+            assertThat(tableDdl).contains(
+                    "`create_time`", "`create_by`", "`update_time`", "`update_by`", "`is_delete`");
+        }
 
         // Quartz 托管表一次建全 11 张，供会话归档总结复用；脚本可重复执行，不带 DROP。
         for (String table : new String[]{

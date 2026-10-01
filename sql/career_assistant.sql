@@ -574,7 +574,11 @@ CREATE TABLE IF NOT EXISTS `training_plan` (
     `plan_summary`      TEXT         DEFAULT NULL COMMENT '计划概要：总体思路与取舍说明',
     `adjustment_reason` VARCHAR(500) DEFAULT NULL COMMENT '调整原因，重新规划时写清依据；首次生成为空',
     `generated_at`      DATETIME     DEFAULT NULL COMMENT '生成时间',
-    -- 其余为公共字段：create_time / create_by / update_time / update_by / is_delete
+    `create_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`         BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`         BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`         TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
     PRIMARY KEY (`id`),
     KEY `idx_training_plan_user_status` (`user_id`, `status`),
     KEY `idx_training_plan_user_start` (`user_id`, `start_date`),
@@ -599,7 +603,11 @@ CREATE TABLE IF NOT EXISTS `training_task` (
     `sort_order`       INT          NOT NULL DEFAULT 1 COMMENT '同一天内的排序号',
     `finished`         TINYINT      NOT NULL DEFAULT 0 COMMENT '是否完成：0-未完成，1-已完成',
     `finish_time`      DATETIME     DEFAULT NULL COMMENT '完成时间，未完成时为空',
-    -- 其余为公共字段：create_time / create_by / update_time / update_by / is_delete
+    `create_time`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`        BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`        BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`        TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
     PRIMARY KEY (`id`),
     KEY `idx_training_task_user_plan_day` (`user_id`, `plan_id`, `day_index`),
     KEY `idx_training_task_user_date` (`user_id`, `task_date`)
@@ -617,7 +625,11 @@ CREATE TABLE IF NOT EXISTS `training_reminder` (
     `content`       VARCHAR(200) NOT NULL COMMENT '提醒正文，整条不超过 60 字',
     `read_flag`     TINYINT      NOT NULL DEFAULT 0 COMMENT '是否已读：0-未读，1-已读',
     `read_time`     DATETIME     DEFAULT NULL COMMENT '已读时间，未读时为空',
-    -- 其余为公共字段：create_time / create_by / update_time / update_by / is_delete
+    `create_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`     BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`     BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`     TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_training_reminder_user_date` (`user_id`, `reminder_date`),
     KEY `idx_training_reminder_user_read` (`user_id`, `read_flag`)
