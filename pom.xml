@@ -114,6 +114,22 @@
                 <version>${agentscope.version}</version>
             </dependency>
 
+            <!-- F7 训练计划：定时任务调度扩展（Quartz JDBC 存储），会话归档总结复用同一套装配 -->
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-extensions-scheduler-quartz</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
+            <!--
+              F7：调度扩展的公共构件。agentscope-extensions-scheduler-quartz 把它声明为 provided + optional，
+              Maven 不会传递，因此必须显式声明；两者同属一个扩展，算作同一项能力接入。
+            -->
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-extensions-scheduler-common</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
+
             <!-- Redisson：AgentScope Redis 会话状态存储使用，版本与 AgentScope 对齐 -->
             <dependency>
                 <groupId>org.redisson</groupId>

@@ -31,6 +31,11 @@ public final class RedisKeyConstants {
     public static final String AGENT = PREFIX + "agent:";
 
     /**
+     * 训练计划模块 Redis key 前缀，用于承载「覆盖已有计划」的待确认状态等短生命周期数据。
+     */
+    public static final String PLAN = PREFIX + "plan:";
+
+    /**
      * 工具类禁止实例化。
      */
     private RedisKeyConstants() {

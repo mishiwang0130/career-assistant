@@ -1,0 +1,69 @@
+package com.wxy.career.tool;
+
+import com.wxy.career.common.exception.BizException;
+import com.wxy.career.service.TrainingPlanService;
+import com.wxy.career.util.RuntimeContextUserUtil;
+import com.wxy.career.vo.TrainingPlanSubmitVO;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.tool.Tool;
+import io.agentscope.core.tool.ToolParam;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+/**
+ * 提交训练计划工具（计划 Agent 唯一的写工具）。
+ *
+ * <p>计划正文不落工作区文件：模型把整份按天任务清单通过本工具一次提交，服务端校验后写 MySQL。工具标注为非只读，
+ * 因此受框架权限管控：调用前会触发人工确认（HITL），**没有确认就不会写库，已有计划也不会被覆盖**。
+ *
+ * <p>校验失败时返回可读提示而不是抛异常，让模型能立刻修正后重新提交。
+ *
+ * @author wxy
+ * @date 2026-10-01
+ */
+@Slf4j
+@Component
+public class SubmitTrainingPlanTool {
+
+    /**
+     * 校验失败时补充的字段口径提示，避免模型反复提交同一份不完整结论。
+     */
+    private static final String FIELD_HINT =
+            "请检查：days 与 daily_minutes 与本次输入一致；每天至少要有一条任务；同一天任务时长合计不超过每日时长；"
+                    + "day_index 从 1 开始且不超过总天数；difficulty 取值 1-5；topic 与 question_type 非空。";
+
+    /**
+     * 训练计划服务。
+     */
+    @Resource
+    private TrainingPlanService trainingPlanService;
+
+    /**
+     * 提交训练计划结论。
+     *
+     * @param plan 计划结论
+     * @param runtimeContext 运行时上下文，由框架注入
+     * @return 提交结果说明，失败时给出可读原因
+     */
+    @Tool(name = "submit_training_plan",
+            description = "提交本次生成的训练计划（按天任务清单）。只提交一次；提交成功后只简要说明取舍，"
+                    + "不要重复整份计划。",
+            readOnly = false)
+    public String submitTrainingPlan(
+            @ToolParam(name = "plan", required = true,
+                    description = "计划结论：days、daily_minutes、summary、adjustment_reason（重新规划时必填）、"
+                            + "tasks（每条含 day_index、topic、question_type、difficulty、duration_minutes、"
+                            + "knowledge_point）")
+            TrainingPlanSubmitVO plan,
+            RuntimeContext runtimeContext) {
+        Long userId = RuntimeContextUserUtil.requireUserId(runtimeContext);
+        try {
+            trainingPlanService.submitPlan(userId, runtimeContext.getSessionId(), plan);
+            return "训练计划已保存，请用一两句话说明本次的取舍或调整依据。";
+        } catch (BizException exception) {
+            log.info("提交训练计划失败，userId={}，code={}", userId, exception.getErrorCode().getCode());
+            return "提交失败：" + exception.getErrorCode().getMsg() + "。" + FIELD_HINT;
+        }
+    }
+}
