@@ -48,6 +48,10 @@ import io.agentscope.core.state.InMemoryAgentStateStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
+import org.redisson.api.RFuture;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.redisson.misc.CompletableFutureWrapper;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -61,6 +65,7 @@ import reactor.core.publisher.Flux;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -158,10 +163,13 @@ class InterviewStreamTest {
 
         RedisUtil redisUtil = mock(RedisUtil.class);
         when(redisUtil.getHash(anyString(), anyString(), eq(Long.class))).thenReturn(null);
-        when(redisUtil.setIfAbsent(anyString(), ArgumentMatchers.any(), ArgumentMatchers.anyLong(),
-                ArgumentMatchers.any())).thenReturn(true);
         MetricsMiddleware metricsMiddleware = new MetricsMiddleware();
         ReflectionTestUtils.setField(metricsMiddleware, "redisUtil", redisUtil);
+
+        // 会话锁可获取：Redisson 锁桩返回抢占成功，释放时按持有者标识解锁。
+        RLock sessionLock = acquiredLock();
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        when(redissonClient.getLock(anyString())).thenReturn(sessionLock);
 
         capturingModel = new CapturingModel();
         AgentFactoryImpl agentFactory = new AgentFactoryImpl();
@@ -206,7 +214,7 @@ class InterviewStreamTest {
         ReflectionTestUtils.setField(assistantService, "chatSessionService", chatSessionService);
         ReflectionTestUtils.setField(assistantService, "objectMapper", objectMapper);
         ReflectionTestUtils.setField(assistantService, "sseTaskScheduler", scheduler);
-        ReflectionTestUtils.setField(assistantService, "redisUtil", redisUtil);
+        ReflectionTestUtils.setField(assistantService, "redissonClient", redissonClient);
         ReflectionTestUtils.setField(
                 assistantService, "resumeDiagnosisService", mock(ResumeDiagnosisService.class));
         ReflectionTestUtils.setField(assistantService, "interviewFlowService", interviewFlowService);
@@ -395,6 +403,30 @@ class InterviewStreamTest {
         state.setFinished(finished);
         state.setStartDifficulty(3);
         return state;
+    }
+
+    /**
+     * 构造一把「抢占成功」的 Redisson 锁桩。
+     *
+     * @return 锁桩
+     */
+    private static RLock acquiredLock() {
+        RLock lock = mock(RLock.class);
+        when(lock.tryLockAsync(ArgumentMatchers.anyLong())).thenReturn(completedFuture(Boolean.TRUE));
+        when(lock.unlockAsync(ArgumentMatchers.anyLong())).thenReturn(completedFuture(null));
+        return lock;
+    }
+
+    /**
+     * 构造已完成的 Redisson 异步结果桩。
+     *
+     * @param value 结果值
+     * @param <T> 结果类型
+     * @return 已完成的异步结果
+     */
+    private static <T> RFuture<T> completedFuture(T value) {
+        CompletableFuture<T> future = CompletableFuture.completedFuture(value);
+        return new CompletableFutureWrapper<T>(future);
     }
 
     /**

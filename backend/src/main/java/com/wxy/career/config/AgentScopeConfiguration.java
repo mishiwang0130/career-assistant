@@ -59,6 +59,15 @@ public class AgentScopeConfiguration {
     private static final int REDIS_MIN_IDLE_SIZE = 1;
 
     /**
+     * 锁看门狗超时，单位毫秒。
+     *
+     * <p>会话并发锁交给 Redisson 托管后不设固定租约：拿到锁的一方由看门狗按此超时的三分之一周期
+     * 续期，持有进程只要还活着，流跑多久锁就续多久，不会中途被第二个请求插队；持有者退出或续期
+     * 停摆时，锁最多在此超时后自动过期，会话不会被永久占住。
+     */
+    private static final long LOCK_WATCHDOG_TIMEOUT_MILLIS = 30000L;
+
+    /**
      * SSE 心跳调度线程数。
      */
     private static final int SSE_SCHEDULER_POOL_SIZE = 2;
@@ -82,7 +91,7 @@ public class AgentScopeConfiguration {
     }
 
     /**
-     * 装配 Redisson 客户端，用于 AgentScope 的 Redis 会话状态存储。
+     * 装配 Redisson 客户端，用于 AgentScope 的 Redis 会话状态存储与对话会话并发锁。
      *
      * <p>连接参数复用 Spring 的 {@code spring.data.redis.*} 配置，避免出现两套 Redis 地址来源。
      *
@@ -92,6 +101,8 @@ public class AgentScopeConfiguration {
     @Bean(destroyMethod = "shutdown")
     public RedissonClient redissonClient(RedisProperties redisProperties) {
         Config config = new Config();
+        // 看门狗只管原样续期，锁的过期时间由它自己维护，这里显式声明便于与文档对照。
+        config.setLockWatchdogTimeout(LOCK_WATCHDOG_TIMEOUT_MILLIS);
         SingleServerConfig serverConfig = config.useSingleServer()
                 .setAddress(REDIS_ADDRESS_PREFIX + redisProperties.getHost() + ":" + redisProperties.getPort())
                 .setDatabase(redisProperties.getDatabase())

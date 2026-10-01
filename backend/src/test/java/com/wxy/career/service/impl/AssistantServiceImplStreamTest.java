@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.common.auth.LoginUser;
 import com.wxy.career.common.auth.LoginUserHolder;
 import com.wxy.career.common.enums.MessageRoleEnum;
-import com.wxy.career.common.redis.RedisUtil;
 import com.wxy.career.common.sse.SseEmitterSupport;
 import com.wxy.career.config.AgentProperties;
 import com.wxy.career.service.AgentFactory;
@@ -21,9 +20,14 @@ import io.agentscope.harness.agent.HarnessAgent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RFuture;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.redisson.misc.CompletableFutureWrapper;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -92,10 +96,10 @@ class AssistantServiceImplStreamTest {
         agentProperties.setApiKey("test-key");
         agentProperties.setStreamTimeoutSeconds(60L);
 
-        RedisUtil redisUtil = mock(RedisUtil.class);
-        // 会话锁可获取，且释放时令牌匹配。
-        when(redisUtil.setIfAbsent(anyString(), any(), anyLong(), any())).thenReturn(true);
-        when(redisUtil.get(anyString(), eq(String.class))).thenReturn(null);
+        // 会话锁可获取：Redisson 锁桩返回抢占成功，释放时按持有者标识解锁。
+        RLock sessionLock = acquiredLock();
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        when(redissonClient.getLock(anyString())).thenReturn(sessionLock);
 
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);
@@ -110,7 +114,7 @@ class AssistantServiceImplStreamTest {
         ReflectionTestUtils.setField(assistantService, "chatSessionService", mock(ChatSessionService.class));
         ReflectionTestUtils.setField(assistantService, "objectMapper", new ObjectMapper());
         ReflectionTestUtils.setField(assistantService, "sseTaskScheduler", scheduler);
-        ReflectionTestUtils.setField(assistantService, "redisUtil", redisUtil);
+        ReflectionTestUtils.setField(assistantService, "redissonClient", redissonClient);
         ReflectionTestUtils.setField(assistantService, "resumeDiagnosisService", mock(ResumeDiagnosisService.class));
         // F5：助手会话不是面试会话，面试流程服务返回 null，本轮仍走原对话链路。
         ReflectionTestUtils.setField(assistantService, "interviewFlowService", mock(InterviewFlowService.class));
@@ -155,6 +159,30 @@ class AssistantServiceImplStreamTest {
                         eq(MessageRoleEnum.ASSISTANT), eq("第一段第二段第三段"));
         // 连接已断：不再向前端推送结束事件。
         verify(support, never()).sendDone();
+    }
+
+    /**
+     * 构造一把「抢占成功」的 Redisson 锁桩。
+     *
+     * @return 锁桩
+     */
+    private static RLock acquiredLock() {
+        RLock lock = mock(RLock.class);
+        when(lock.tryLockAsync(anyLong())).thenReturn(completedFuture(Boolean.TRUE));
+        when(lock.unlockAsync(anyLong())).thenReturn(completedFuture(null));
+        return lock;
+    }
+
+    /**
+     * 构造已完成的 Redisson 异步结果桩。
+     *
+     * @param value 结果值
+     * @param <T> 结果类型
+     * @return 已完成的异步结果
+     */
+    private static <T> RFuture<T> completedFuture(T value) {
+        CompletableFuture<T> future = CompletableFuture.completedFuture(value);
+        return new CompletableFutureWrapper<T>(future);
     }
 
     /**

@@ -35,6 +35,10 @@ import io.agentscope.core.state.InMemoryAgentStateStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
+import org.redisson.api.RFuture;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.redisson.misc.CompletableFutureWrapper;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -47,6 +51,7 @@ import reactor.core.publisher.Flux;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -102,9 +107,14 @@ class AssistantControllerSseTest {
     private JwtService jwtService;
 
     /**
-     * Redis 操作工具 mock，用于会话并发锁与埋点。
+     * Redis 操作工具 mock，用于埋点计数。
      */
     private RedisUtil redisUtil;
+
+    /**
+     * 会话并发锁桩，用于断言同一会话的并发请求被拒绝。
+     */
+    private RLock sessionLock;
 
     /**
      * 简历诊断服务 mock，用于验证流结束前的结构化结果下发。
@@ -135,11 +145,15 @@ class AssistantControllerSseTest {
 
         redisUtil = mock(RedisUtil.class);
         when(redisUtil.getHash(anyString(), anyString(), eq(Long.class))).thenReturn(null);
-        // 默认会话锁可获取，并发拒绝场景在用例内重新打桩。
-        when(redisUtil.setIfAbsent(anyString(), ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.any()))
-                .thenReturn(true);
         MetricsMiddleware metricsMiddleware = new MetricsMiddleware();
         ReflectionTestUtils.setField(metricsMiddleware, "redisUtil", redisUtil);
+
+        // 默认会话锁可获取，并发拒绝场景在用例内重新打桩。
+        sessionLock = mock(RLock.class);
+        when(sessionLock.tryLockAsync(ArgumentMatchers.anyLong())).thenReturn(completedFuture(Boolean.TRUE));
+        when(sessionLock.unlockAsync(ArgumentMatchers.anyLong())).thenReturn(completedFuture(null));
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        when(redissonClient.getLock(anyString())).thenReturn(sessionLock);
 
         AgentFactoryImpl agentFactory = new AgentFactoryImpl();
         ReflectionTestUtils.setField(agentFactory, "agentModel", new StubChatModel());
@@ -167,7 +181,7 @@ class AssistantControllerSseTest {
         ReflectionTestUtils.setField(assistantService, "chatSessionService", chatSessionService);
         ReflectionTestUtils.setField(assistantService, "objectMapper", objectMapper);
         ReflectionTestUtils.setField(assistantService, "sseTaskScheduler", scheduler);
-        ReflectionTestUtils.setField(assistantService, "redisUtil", redisUtil);
+        ReflectionTestUtils.setField(assistantService, "redissonClient", redissonClient);
         resumeDiagnosisService = mock(ResumeDiagnosisService.class);
         ReflectionTestUtils.setField(assistantService, "resumeDiagnosisService", resumeDiagnosisService);
         // F5：助手会话不是面试会话，面试流程服务返回 null，本轮仍走原对话链路。
@@ -316,9 +330,8 @@ class AssistantControllerSseTest {
      */
     @Test
     void shouldRejectConcurrentRequestOnSameSession() throws Exception {
-        when(redisUtil.setIfAbsent(
-                anyString(), ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.any()))
-                .thenReturn(false);
+        // 锁被占用：Redisson 抢占失败，直接以 1050 拒绝，不排队等待。
+        when(sessionLock.tryLockAsync(ArgumentMatchers.anyLong())).thenReturn(completedFuture(Boolean.FALSE));
 
         mockMvc.perform(post("/api/assistant/chat")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken())
@@ -326,6 +339,18 @@ class AssistantControllerSseTest {
                         .content("{\"sessionId\":\"1\",\"content\":\"你好\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1050));
+    }
+
+    /**
+     * 构造已完成的 Redisson 异步结果桩。
+     *
+     * @param value 结果值
+     * @param <T> 结果类型
+     * @return 已完成的异步结果
+     */
+    private static <T> RFuture<T> completedFuture(T value) {
+        CompletableFuture<T> future = CompletableFuture.completedFuture(value);
+        return new CompletableFutureWrapper<T>(future);
     }
 
     /**

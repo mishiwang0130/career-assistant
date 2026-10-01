@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.common.auth.LoginUserHolder;
 import com.wxy.career.common.enums.MessageRoleEnum;
 import com.wxy.career.common.exception.BizException;
-import com.wxy.career.common.redis.RedisUtil;
 import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.common.sse.SseEmitterSupport;
 import com.wxy.career.common.sse.SseEvent;
@@ -37,6 +36,10 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.harness.agent.HarnessAgent;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RFuture;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.redisson.client.RedisException;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -44,10 +47,11 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
 import reactor.core.scheduler.Schedulers;
 
-import java.util.UUID;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -79,11 +83,13 @@ public class AssistantServiceImpl implements AssistantService {
     private static final String STREAM_ERROR_MESSAGE = "对话服务暂时不可用，请稍后重试";
 
     /**
-     * 会话锁租约在流超时时间之上的冗余，单位为秒。
+     * 会话并发锁持有者标识序号。
      *
-     * <p>流在异常路径下可能走不到释放逻辑，留出冗余保证锁最终一定自动过期。
+     * <p>锁的持有者标识由每次请求自增生成，与线程无关：Redisson 用「客户端 ID:持有者标识」记录锁
+     * 归属并据此判断重入，如果用线程 ID，请求线程被复用后同一会话的下一个请求会被判成「同线程
+     * 重入」而直接拿到锁，互斥形同虚设。
      */
-    private static final long SESSION_LOCK_LEASE_EXTRA_SECONDS = 60L;
+    private static final AtomicLong LOCK_OWNER_SEQUENCE = new AtomicLong();
 
     /**
      * Agent 工厂。
@@ -122,10 +128,10 @@ public class AssistantServiceImpl implements AssistantService {
     private ThreadPoolTaskScheduler sseTaskScheduler;
 
     /**
-     * Redis 操作工具，用于会话并发锁。
+     * Redisson 客户端，用于会话并发锁（与 AgentScope 会话状态存储共用同一个客户端）。
      */
     @Resource
-    private RedisUtil redisUtil;
+    private RedissonClient redissonClient;
 
     /**
      * 简历诊断服务，用于在流结束时下发结构化诊断结论。
@@ -149,7 +155,7 @@ public class AssistantServiceImpl implements AssistantService {
 
         // 同一会话必须串行：并发请求会交错读写同一份 Agent 状态，抢不到锁直接拒绝而不是排队等待。
         String lockKey = AgentScopeStateKeyUtil.sessionLockKey(String.valueOf(userId), sessionId);
-        String lockToken = acquireSessionLock(lockKey);
+        SessionLock sessionLock = acquireSessionLock(lockKey);
         try {
             // F5 模拟面试：面试会话在进流前完成准入校验（求职目标必填、未结束）并记下本回合的回答；
             // 助手会话返回 null，后面按原链路走。
@@ -164,7 +170,7 @@ public class AssistantServiceImpl implements AssistantService {
                     interviewState == null ? SCENE_ASSISTANT : SCENE_INTERVIEW,
                     sessionId, agentProperties.getProvider(), UUID.randomUUID().toString());
 
-            StreamState state = new StreamState(support, userId, sessionId, sessionIdValue, lockKey, lockToken);
+            StreamState state = new StreamState(support, userId, sessionId, sessionIdValue, sessionLock);
             // 面试会话走专属 Agent：自己的提示词、工具白名单与评分子 Agent。
             state.interview = interviewState != null;
             if (state.interview) {
@@ -199,8 +205,8 @@ public class AssistantServiceImpl implements AssistantService {
             state.subscription.set(subscription);
             return support.getEmitter();
         } catch (RuntimeException exception) {
-            // 启动阶段失败时必须立刻释放，否则该会话会被锁到租约结束。
-            releaseSessionLock(lockKey, lockToken);
+            // 启动阶段失败时必须立刻释放，否则该会话要等到看门狗停摆后才会自动解锁。
+            releaseSessionLock(sessionLock);
             throw exception;
         }
     }
@@ -313,7 +319,7 @@ public class AssistantServiceImpl implements AssistantService {
         }
         saveAssistantMessage(state);
         dispose(state);
-        releaseSessionLock(state.lockKey, state.lockToken);
+        releaseSessionLock(state.sessionLock);
         // 连接已断开的会话不再推送任何事件（包括结果与 done），但上面的落库照常执行。
         if (!sendTerminalEvent || state.detached) {
             return;
@@ -468,43 +474,80 @@ public class AssistantServiceImpl implements AssistantService {
     /**
      * 获取会话并发锁。
      *
-     * <p>锁在请求线程获取、在流式线程释放，线程绑定的分布式锁无法跨线程解锁，
-     * 因此用「setIfAbsent + 持有者令牌」实现与线程无关的互斥锁，租约到期后自动释放。
+     * <p>锁交给 Redisson 的 {@link RLock} 托管：只尝试一次，抢不到立刻失败而不排队；不设固定租约，
+     * 拿到锁后由看门狗按锁存活自动续期——流跑多久就续多久，不会出现「流还没结束、租约已经到期」
+     * 而被第二个请求插队的情况。
+     *
+     * <p>持有者标识由本次请求生成，不取线程 ID：锁在请求线程获取、在流式线程释放，而 Tomcat 线程
+     * 会被复用，同一个线程跑同一会话的下一个请求时会被 Redisson 判成「同线程重入」直接拿到锁。
      *
      * @param lockKey 锁键
-     * @return 本次持有的随机令牌
+     * @return 锁句柄，释放时必须原样传回
      */
-    private String acquireSessionLock(String lockKey) {
-        String lockToken = UUID.randomUUID().toString();
-        long leaseSeconds = agentProperties.getStreamTimeoutSeconds() + SESSION_LOCK_LEASE_EXTRA_SECONDS;
-        Boolean acquired = redisUtil.setIfAbsent(lockKey, lockToken, leaseSeconds, TimeUnit.SECONDS);
-        if (!Boolean.TRUE.equals(acquired)) {
+    private SessionLock acquireSessionLock(String lockKey) {
+        RLock lock = redissonClient.getLock(lockKey);
+        long ownerId = LOCK_OWNER_SEQUENCE.incrementAndGet();
+        // 带持有者标识的异步抢占：只尝试一次，不等待也不订阅锁通道，抢不到直接返回 false。
+        if (!Boolean.TRUE.equals(awaitLockResult(lock.tryLockAsync(ownerId)))) {
             // 会话占用属于业务异常，按统一约定返回 HTTP 200，由 code 1050 表达失败语义。
             throw new BizException(ErrorConstant.SESSION_BUSY);
         }
-        return lockToken;
+        return new SessionLock(lock, ownerId);
     }
 
     /**
      * 释放会话并发锁。
      *
-     * <p>只有令牌仍然匹配才删除，避免租约到期后误删其它请求刚拿到的锁；
-     * 释放失败由租约到期兜底，不影响主流程。
+     * <p>释放发生在流式线程而不是获取锁的请求线程，所以必须带上获取时的持有者标识：只有标识仍然
+     * 匹配，Redisson 才真正删除锁，不会误删看门狗超时后由别的请求重新拿到的锁。释放失败只记日志，
+     * 持有者一旦退出，看门狗停止续期，锁会在看门狗超时后自动过期，不会永久占住会话。
      *
-     * @param lockKey 锁键
-     * @param lockToken 本次持有的随机令牌
+     * @param sessionLock 锁句柄，为空表示本次没拿到锁
      */
-    private void releaseSessionLock(String lockKey, String lockToken) {
-        if (lockKey == null || lockToken == null) {
+    private void releaseSessionLock(SessionLock sessionLock) {
+        if (sessionLock == null) {
             return;
         }
         try {
-            if (lockToken.equals(redisUtil.get(lockKey, String.class))) {
-                redisUtil.delete(lockKey);
-            }
-        } catch (Exception exception) {
-            log.warn("释放会话并发锁失败，将由租约到期后自动释放，lockKey={}", lockKey, exception);
+            awaitLockResult(sessionLock.lock().unlockAsync(sessionLock.ownerId()));
+        } catch (RuntimeException exception) {
+            log.warn("释放会话并发锁失败，将由看门狗停摆后自动过期，lockName={}",
+                    sessionLock.lock().getName(), exception);
         }
+    }
+
+    /**
+     * 阻塞等待 Redisson 锁命令结果。
+     *
+     * <p>抢占与释放都要拿到结果才能判断是否成功，这里把异步结果同步取回；中断异常按约定恢复中断
+     * 标记后再抛出，不静默吞掉。
+     *
+     * @param future Redisson 异步结果
+     * @param <T> 结果类型
+     * @return 命令结果
+     */
+    private static <T> T awaitLockResult(RFuture<T> future) {
+        try {
+            return future.get();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new RedisException("等待 Redis 锁命令被中断", exception);
+        } catch (ExecutionException exception) {
+            throw new RedisException("Redis 锁命令执行失败", exception.getCause());
+        }
+    }
+
+    /**
+     * 会话并发锁句柄。
+     *
+     * <p>锁对象与持有者标识必须成对传递：持有者标识是释放锁的唯一凭据，且只在本次请求内有效。
+     *
+     * @param lock Redisson 锁对象
+     * @param ownerId 锁持有者标识
+     * @author wxy
+     * @date 2026-10-01
+     */
+    private record SessionLock(RLock lock, long ownerId) {
     }
 
     /**
@@ -536,14 +579,9 @@ public class AssistantServiceImpl implements AssistantService {
         private final Long sessionIdValue;
 
         /**
-         * 会话并发锁键。
+         * 会话并发锁句柄，本轮结束时释放。
          */
-        private final String lockKey;
-
-        /**
-         * 会话并发锁持有者令牌。
-         */
-        private final String lockToken;
+        private final SessionLock sessionLock;
 
         /**
          * 已生成的回复文本。
@@ -577,22 +615,19 @@ public class AssistantServiceImpl implements AssistantService {
          * @param userId 用户 ID
          * @param sessionId 会话 ID
          * @param sessionIdValue 会话 ID 的数值形式
-         * @param lockKey 会话并发锁键
-         * @param lockToken 会话并发锁持有者令牌
+         * @param sessionLock 会话并发锁句柄
          */
         private StreamState(
                 SseEmitterSupport support,
                 Long userId,
                 String sessionId,
                 Long sessionIdValue,
-                String lockKey,
-                String lockToken) {
+                SessionLock sessionLock) {
             this.support = support;
             this.userId = userId;
             this.sessionId = sessionId;
             this.sessionIdValue = sessionIdValue;
-            this.lockKey = lockKey;
-            this.lockToken = lockToken;
+            this.sessionLock = sessionLock;
         }
     }
 
