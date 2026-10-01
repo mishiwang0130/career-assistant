@@ -4,19 +4,23 @@ import com.wxy.career.common.enums.ChatSceneEnum;
 import com.wxy.career.common.enums.InterviewActionEnum;
 import com.wxy.career.common.enums.InterviewOutcomeEnum;
 import com.wxy.career.common.enums.InterviewQuestionTypeEnum;
+import com.wxy.career.common.enums.MessageRoleEnum;
 import com.wxy.career.common.exception.BizException;
 import com.wxy.career.config.InterviewProperties;
 import com.wxy.career.mapper.ChatSessionMapper;
 import com.wxy.career.mapper.InterviewQaMapper;
 import com.wxy.career.po.ChatSession;
 import com.wxy.career.po.InterviewQa;
+import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.UserProfileService;
+import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.AnswerEvaluationSubmitVO;
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
 import com.wxy.career.vo.InterviewResultItemVO;
 import com.wxy.career.vo.InterviewResultRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
+import com.wxy.career.vo.PageRespVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.vo.UserProfileRespVO;
 import org.junit.jupiter.api.BeforeEach;
@@ -74,6 +78,11 @@ class InterviewFlowServiceImplTest {
     private UserProfileService userProfileService;
 
     /**
+     * 被 mock 的消息服务：回合开始时用它记下正在回答的题目。
+     */
+    private AssistantMessageService assistantMessageService;
+
+    /**
      * 被测的流程服务。
      */
     private InterviewFlowServiceImpl interviewFlowService;
@@ -86,6 +95,7 @@ class InterviewFlowServiceImplTest {
         interviewQaMapper = mock(InterviewQaMapper.class);
         chatSessionMapper = mock(ChatSessionMapper.class);
         userProfileService = mock(UserProfileService.class);
+        assistantMessageService = mock(AssistantMessageService.class);
 
         InterviewProperties interviewProperties = new InterviewProperties();
         interviewProperties.setQuestionCount(8);
@@ -94,6 +104,7 @@ class InterviewFlowServiceImplTest {
         ReflectionTestUtils.setField(interviewFlowService, "interviewQaMapper", interviewQaMapper);
         ReflectionTestUtils.setField(interviewFlowService, "chatSessionMapper", chatSessionMapper);
         ReflectionTestUtils.setField(interviewFlowService, "userProfileService", userProfileService);
+        ReflectionTestUtils.setField(interviewFlowService, "assistantMessageService", assistantMessageService);
         ReflectionTestUtils.setField(interviewFlowService, "interviewProperties", interviewProperties);
         ReflectionTestUtils.setField(interviewFlowService, "objectMapper", new ObjectMapper());
 
@@ -104,6 +115,8 @@ class InterviewFlowServiceImplTest {
         profile.setWorkYears(5);
         when(userProfileService.getRequiredUserProfile(anyLong())).thenReturn(profile);
         when(interviewQaMapper.selectBySession(anyLong(), anyLong())).thenReturn(List.of());
+        when(assistantMessageService.listMessages(anyLong(), anyLong(), anyLong(), anyLong()))
+                .thenReturn(messagePage("讲讲 JVM 内存结构"));
     }
 
     /**
@@ -280,6 +293,115 @@ class InterviewFlowServiceImplTest {
 
         assertThat(interviewFlowService.commitTurn(USER_ID, SESSION_ID)).isNull();
         verify(interviewQaMapper, never()).insert(any(InterviewQa.class));
+    }
+
+    /**
+     * 模型漏调记录工具、但最后一题的追问已经答完时，平台补记收尾回合：面试正常结束、结果可用。
+     *
+     * <p>真实环境出现过「面试官回了『本场面试到此结束』但没调用记录工具」的故障：这一轮被丢弃，
+     * 面试永远结束不了，逐题点评与报告都出不来。兜底必须把这种情况接住。
+     */
+    @Test
+    void shouldSynthesizeFinishTurnWhenLastQuestionAnswered() {
+        InterviewQa lastMainQuestion = new InterviewQa();
+        lastMainQuestion.setQuestionIndex(8);
+        lastMainQuestion.setRoundNo(InterviewQa.ROUND_MAIN);
+        lastMainQuestion.setQuestionType(InterviewQuestionTypeEnum.BASIC.getValue());
+        lastMainQuestion.setDifficulty(4);
+        lastMainQuestion.setOutcome(InterviewOutcomeEnum.PARTIAL.getValue());
+        lastMainQuestion.setNextAction(InterviewActionEnum.FOLLOW_UP.getValue());
+        when(interviewQaMapper.selectBySession(USER_ID, 12L)).thenReturn(List.of(lastMainQuestion));
+        when(assistantMessageService.listMessages(USER_ID, 12L, 1L, 2L))
+                .thenReturn(messagePage("最后一题的追问：那拒绝策略呢？"));
+
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "拒绝策略是直接抛异常");
+        submitEvaluation("CORRECT", "答到要点");
+        // 模型只给了收尾话术，没有调用 record_interview_answer
+        interviewFlowService.commitTurn(USER_ID, SESSION_ID);
+
+        ArgumentCaptor<InterviewQa> captor = ArgumentCaptor.forClass(InterviewQa.class);
+        verify(interviewQaMapper).insert(captor.capture());
+        InterviewQa row = captor.getValue();
+        // 题目取回合开始时记下的那条助手消息，判定取评分子 Agent 的结论，动作固定为结束
+        assertThat(row.getQuestion()).isEqualTo("最后一题的追问：那拒绝策略呢？");
+        assertThat(row.getRoundNo()).isEqualTo(InterviewQa.ROUND_FOLLOW_UP);
+        assertThat(row.getOutcome()).isEqualTo(InterviewOutcomeEnum.CORRECT.getValue());
+        assertThat(row.getNextAction()).isEqualTo(InterviewActionEnum.FINISHED.getValue());
+        assertThat(row.getEvaluationJson()).contains("答到要点");
+        // 补记落库后，面试状态就是「已结束」：逐题结果与报告据此下发
+        when(interviewQaMapper.selectBySession(USER_ID, 12L)).thenReturn(List.of(row));
+        assertThat(interviewFlowService.getState(USER_ID, SESSION_ID).getFinished()).isTrue();
+    }
+
+    /**
+     * 用户明确要求结束、模型却没调用记录工具时，平台同样补记收尾回合。
+     */
+    @Test
+    void shouldSynthesizeFinishTurnWhenUserAsksToEnd() {
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "结束面试吧");
+        submitEvaluation("PARTIAL", "答得有遗漏");
+
+        interviewFlowService.commitTurn(USER_ID, SESSION_ID);
+
+        ArgumentCaptor<InterviewQa> captor = ArgumentCaptor.forClass(InterviewQa.class);
+        verify(interviewQaMapper).insert(captor.capture());
+        InterviewQa row = captor.getValue();
+        assertThat(row.getQuestion()).isEqualTo("讲讲 JVM 内存结构");
+        assertThat(row.getOutcome()).isEqualTo(InterviewOutcomeEnum.PARTIAL.getValue());
+        assertThat(row.getNextAction()).isEqualTo(InterviewActionEnum.FINISHED.getValue());
+        when(interviewQaMapper.selectBySession(USER_ID, 12L)).thenReturn(List.of(row));
+        assertThat(interviewFlowService.getState(USER_ID, SESSION_ID).getFinished()).isTrue();
+    }
+
+    /**
+     * 「用户要求结束」的判定刻意保守：短消息命中结束类关键词才算，正常提问里出现「结束」不算。
+     */
+    @Test
+    void shouldJudgeEndRequestConservatively() {
+        assertThat(InterviewFlowServiceImpl.isEndRequest("结束面试吧")).isTrue();
+        assertThat(InterviewFlowServiceImpl.isEndRequest(" 不面了 ")).isTrue();
+        assertThat(InterviewFlowServiceImpl.isEndRequest("结束")).isTrue();
+        assertThat(InterviewFlowServiceImpl.isEndRequest("就到这吧")).isTrue();
+
+        // 正常提问里出现「结束」不算：不是结束类关键词
+        assertThat(InterviewFlowServiceImpl.isEndRequest("结束语怎么写")).isFalse();
+        // 长句不算：避免把「这题我不会，结束前再问一个简单的吧」误判成要求结束
+        assertThat(InterviewFlowServiceImpl.isEndRequest("这题我不会，结束前再问一个简单的吧")).isFalse();
+        assertThat(InterviewFlowServiceImpl.isEndRequest("")).isFalse();
+        assertThat(InterviewFlowServiceImpl.isEndRequest(null)).isFalse();
+    }
+
+    /**
+     * 提交一条评分结论（评分子 Agent 在面试官开流前完成的那一步）。
+     *
+     * @param outcome 判定结果
+     * @param comment 一句话点评
+     */
+    private void submitEvaluation(String outcome, String comment) {
+        AnswerEvaluationSubmitVO evaluation = new AnswerEvaluationSubmitVO();
+        evaluation.setOutcome(outcome);
+        evaluation.setScore(80);
+        evaluation.setComment(comment);
+        evaluation.setReferenceAnswer("标准答案：要点一、要点二");
+        interviewFlowService.submitEvaluation(USER_ID, SESSION_ID, evaluation);
+    }
+
+    /**
+     * 构造一页消息，只放一条助手消息（本回合的题目）。
+     *
+     * @param content 助手消息正文
+     * @return 分页消息
+     */
+    private PageRespVO<AssistantMessageRespVO> messagePage(String content) {
+        AssistantMessageRespVO message = new AssistantMessageRespVO();
+        message.setId(1L);
+        message.setSessionId(SESSION_ID);
+        message.setRole(MessageRoleEnum.ASSISTANT.getValue());
+        message.setContent(content);
+        PageRespVO<AssistantMessageRespVO> page = new PageRespVO<>();
+        page.setTotal(1L);
+        page.setRecords(List.of(message));
+        return page;
     }
 
     /**

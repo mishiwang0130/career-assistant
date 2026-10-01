@@ -34,7 +34,6 @@ import com.wxy.career.tool.SubmitAnswerEvaluationTool;
 import com.wxy.career.tool.SubmitInterviewReportTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import com.wxy.career.vo.InterviewStateRespVO;
-import com.wxy.career.vo.InterviewEvaluationRespVO;
 import com.wxy.career.vo.InterviewReportRespVO;
 import com.wxy.career.vo.InterviewResultRespVO;
 import io.agentscope.core.message.Msg;
@@ -294,15 +293,14 @@ class InterviewStreamTest {
     }
 
     /**
-     * 每答完一题下发逐题点评；结束那一轮再下发报告状态。
+     * 面试结束那一轮：进度 → 逐题结果（结束时一次性给逐题点评）→ 报告状态（生成中）依次在 done 之前下发。
      *
-     * <p>F6 的两条硬约定都在这里固定：点评紧跟落库那一回合（答完一题立即看点评），报告由后台任务生成、
-     * 面板先拿到「生成中」再轮询；四个 result 载荷的顺序固定为点评 → 进度 → 结果 → 报告状态。
+     * <p>答题过程中不插点评，用户不会被点评打断；报告由后台任务生成，面板先拿到「生成中」再轮询。
      *
      * @throws Exception 请求执行异常
      */
     @Test
-    void shouldSendEvaluationAndReportState() throws Exception {
+    void shouldSendResultAndReportStateWhenFinished() throws Exception {
         when(interviewFlowService.prepareTurn(1L, SESSION_ID, "最后一题的回答"))
                 .thenReturn(buildState(8, 4, 1, false));
         when(interviewFlowService.commitTurn(1L, SESSION_ID)).thenReturn(buildState(8, 4, 1, true));
@@ -313,19 +311,6 @@ class InterviewStreamTest {
         result.setFinished(true);
         result.setItems(List.of());
         when(interviewFlowService.getResult(1L, SESSION_ID)).thenReturn(result);
-
-        InterviewEvaluationRespVO evaluation = new InterviewEvaluationRespVO();
-        evaluation.setSessionId(SESSION_ID);
-        evaluation.setQuestionIndex(8);
-        evaluation.setRoundNo(1);
-        evaluation.setOutcome("PARTIAL");
-        evaluation.setOutcomeLabel("答得有遗漏");
-        evaluation.setDifficulty(4);
-        evaluation.setScore(70);
-        evaluation.setCorrectPoints(List.of("答到了核心参数"));
-        evaluation.setMissingPoints(List.of("拒绝策略"));
-        evaluation.setEvaluated(true);
-        when(interviewReviewService.latestEvaluation(1L, SESSION_ID)).thenReturn(evaluation);
 
         InterviewReportRespVO reportState = new InterviewReportRespVO();
         reportState.setSessionId(SESSION_ID);
@@ -343,11 +328,10 @@ class InterviewStreamTest {
 
         String body = awaitStreamBody(mvcResult.getResponse());
 
-        assertThat(body).contains("\"type\":\"interview_evaluation\"");
-        assertThat(body).contains("\"correctPoints\":[\"答到了核心参数\"]");
         assertThat(body).contains("\"type\":\"interview_report\"");
         assertThat(body).contains("\"status\":\"GENERATING\"");
-        assertThat(body.indexOf("interview_evaluation")).isLessThan(body.indexOf("interview_progress"));
+        // 逐题点评不再单独下发：答题过程中没有 result 事件，点评随结束时的逐题结果一起给
+        assertThat(body).doesNotContain("interview_evaluation");
         assertThat(body.indexOf("interview_progress")).isLessThan(body.indexOf("interview_result"));
         assertThat(body.indexOf("interview_result")).isLessThan(body.indexOf("interview_report"));
         assertThat(body.indexOf("interview_report")).isLessThan(body.indexOf("event:done"));

@@ -1,6 +1,5 @@
 import type { AssistantResultPayload } from '@/types/assistant'
 import type {
-  InterviewEvaluationResult,
   InterviewProgressResult,
   InterviewReportResult,
   InterviewResult,
@@ -70,18 +69,6 @@ export function findLatestResult(
   messages: ReadonlyArray<ResultCarrier>,
 ): InterviewResult | null {
   return findLatestByType<InterviewResult>(messages, 'interview_result')
-}
-
-/**
- * 取消息区里最近一次逐题点评（F6）。
- *
- * @param messages 消息区消息
- * @returns 最近一次逐题点评，没有时返回 null
- */
-export function findLatestEvaluation(
-  messages: ReadonlyArray<ResultCarrier>,
-): InterviewEvaluationResult | null {
-  return findLatestByType<InterviewEvaluationResult>(messages, 'interview_evaluation')
 }
 
 /**

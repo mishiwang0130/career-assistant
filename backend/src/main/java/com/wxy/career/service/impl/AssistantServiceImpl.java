@@ -23,7 +23,6 @@ import com.wxy.career.util.AgentScopeStateKeyUtil;
 import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.InterviewProgressResultVO;
-import com.wxy.career.vo.InterviewEvaluationRespVO;
 import com.wxy.career.vo.InterviewReportRespVO;
 import com.wxy.career.vo.InterviewResultRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
@@ -641,8 +640,6 @@ public class AssistantServiceImpl implements AssistantService {
         if (progress == null) {
             return;
         }
-        // F6：先下发本回合的逐题点评（答完一题立即看点评），内容就是 F5 刚落库的那份评分结论，不重新评分。
-        sendInterviewEvaluation(state);
         // F6：每回合沉淀掌握度与薄弱点；面试结束的那一轮同时用后台子 Agent 启动报告生成。
         InterviewReportRespVO reportState = interviewReviewService.afterTurnCommitted(
                 state.userId, state.sessionId, Boolean.TRUE.equals(progress.getFinished()));
@@ -668,26 +665,4 @@ public class AssistantServiceImpl implements AssistantService {
         }
     }
 
-    /**
-     * 下发本回合的逐题点评。
-     *
-     * <p>点评来自刚落库的 {@code interview_qa.evaluation_json}（F5 的评分结论），失败只记日志：
-     * 点评属于补充信息，不影响进度下发与界面可用性。
-     *
-     * @param state 流式会话状态
-     */
-    private void sendInterviewEvaluation(StreamState state) {
-        try {
-            InterviewEvaluationRespVO evaluation =
-                    interviewReviewService.latestEvaluation(state.userId, state.sessionId);
-            if (evaluation == null) {
-                return;
-            }
-            if (!state.support.send(SseEvent.result(evaluation))) {
-                log.warn("逐题点评下发失败，连接可能已断开，sessionId={}", state.sessionId);
-            }
-        } catch (Exception exception) {
-            log.error("逐题点评组装失败，userId={}，sessionId={}", state.userId, state.sessionId, exception);
-        }
-    }
 }

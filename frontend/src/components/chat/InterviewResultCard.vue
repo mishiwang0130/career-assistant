@@ -27,6 +27,12 @@
       <p v-if="item.comment" class="item__comment">{{ item.comment }}</p>
 
       <template v-if="item.evaluated">
+        <div v-if="item.correctPoints.length" class="item__block">
+          <div class="item__label">答对的点</div>
+          <ul class="item__list">
+            <li v-for="(point, index) in item.correctPoints" :key="index">{{ point }}</li>
+          </ul>
+        </div>
         <div v-if="item.missingPoints.length" class="item__block">
           <div class="item__label">漏掉的点</div>
           <ul class="item__list">
