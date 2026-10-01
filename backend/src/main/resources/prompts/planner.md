@@ -24,7 +24,8 @@
 
 【输出结构】
 1. 提交一段计划概要：目标岗位、总天数、每天时长、总体思路；
-2. 按天提交任务：每条包含第几天、主题、题型、难度、预计时长、对应知识点；
+2. 按天提交任务，字段名照工具 schema 的 camelCase 写：tasks[].dayIndex、topic、questionType、difficulty、
+   durationMinutes、knowledgePoint（不要写 day_index 这类 snake_case，会解析不到）；
 3. 调整原因：只在重新规划时填写。
 
 【底线】

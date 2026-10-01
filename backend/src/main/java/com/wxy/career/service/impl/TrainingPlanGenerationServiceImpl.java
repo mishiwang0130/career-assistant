@@ -176,6 +176,8 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         }
         try {
             HarnessAgent agent = agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME);
+            // 天数与每日时长以用户本次请求为准：模型在提交里填错也不会改变用户输入的周期。
+            trainingPlanService.recordGenerationInput(userId, sessionId, days, dailyMinutes);
             boolean hasActivePlan = trainingPlanService.hasActivePlan(userId);
             SseEmitterSupport support = createEmitterSupport();
             support.sendMeta(SCENE_TRAINING_PLAN, sessionId, agentProperties.getProvider(),
@@ -360,9 +362,12 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         }
         TrainingPlanRespVO plan = trainingPlanService.consumeSubmittedPlan(state.userId, state.sessionId);
         if (plan == null) {
-            // 模型没提交计划：本轮没有产出，提示重试而不是下发空计划。
+            // 模型没提交出可用计划：把服务端记录的失败原因带上，避免只给一句笼统提示。
+            String reason = trainingPlanService.consumeSubmitFailure(state.userId, state.sessionId);
             if (!state.detached) {
-                state.support.sendError(NO_PLAN_MESSAGE);
+                state.support.sendError(StringUtils.hasText(reason)
+                        ? "计划没有生成成功：" + reason + "。请重试。"
+                        : NO_PLAN_MESSAGE);
             }
             return;
         }
@@ -412,9 +417,12 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
             text.append("【当前计划】该用户还没有计划，本次是首次生成，adjustment_reason 留空。")
                     .append(System.lineSeparator());
         }
-        text.append("【提交要求】days 与 daily_minutes 必须原样填 ").append(days).append(" 与 ")
-                .append(dailyMinutes).append("；每天至少要有一条任务；当天任务时长合计不要超过每日时长；")
-                .append("难度按天递进；提交成功后只简要说明取舍，不要重复整份计划。");
+        text.append("【提交要求】字段名照 schema 的 camelCase 写（tasks 里是 dayIndex、topic、questionType、")
+                .append("difficulty、durationMinutes、knowledgePoint）；days 填 ").append(days)
+                .append("、dailyMinutes 填 ").append(dailyMinutes)
+                .append("（这两个值以用户本次输入为准，服务端会覆盖）；每天至少要有一条任务；")
+                .append("当天任务时长合计不要超过每日时长；难度按天递进；")
+                .append("提交成功后只简要说明取舍，不要重复整份计划。");
         return text.toString();
     }
 

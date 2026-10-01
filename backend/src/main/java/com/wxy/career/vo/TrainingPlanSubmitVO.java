@@ -1,5 +1,7 @@
 package com.wxy.career.vo;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 
 import java.util.List;
@@ -14,16 +16,22 @@ import java.util.List;
  * @date 2026-10-01
  */
 @Data
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class TrainingPlanSubmitVO {
 
     /**
-     * 本次生成的天数，必须与请求里输入的一致。
+     * 本次生成的天数。
+     *
+     * <p>服务端以**用户本次请求的输入**为准（见 {@code TrainingPlanService#recordGenerationInput}）：
+     * 模型填错或漏填都不影响落库，这里保留字段只是为了让 schema 与提示词有一份可对照的入参。
      */
+    @JsonAlias("days_count")
     private Integer days;
 
     /**
-     * 本次生成每天可练时长（分钟），必须与请求里输入的一致。
+     * 本次生成每天可练时长（分钟），同样以用户本次请求的输入为准。
      */
+    @JsonAlias("daily_minutes")
     private Integer dailyMinutes;
 
     /**
@@ -34,6 +42,7 @@ public class TrainingPlanSubmitVO {
     /**
      * 调整原因：重新规划时写清依据（新增薄弱点、进度落后、时间变化）；首次生成留空。
      */
+    @JsonAlias("adjustment_reason")
     private String adjustmentReason;
 
     /**

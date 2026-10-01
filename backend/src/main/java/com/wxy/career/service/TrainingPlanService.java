@@ -37,6 +37,19 @@ public interface TrainingPlanService {
     boolean hasActivePlan(Long userId);
 
     /**
+     * 记下本次生成请求的输入（天数与每日时长）。
+     *
+     * <p>这两个量以**用户本次请求**为准：计划 Agent 填错或漏填都不该让计划落不了库，也不该改变用户输入的周期。
+     * 生成开始时登记一次，提交计划时按它落库（模型提交的同名字段只作为对照）。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 计划 Agent 的运行标识
+     * @param days 本次请求的天数
+     * @param dailyMinutes 本次请求的每日时长（分钟）
+     */
+    void recordGenerationInput(Long userId, String sessionId, int days, int dailyMinutes);
+
+    /**
      * 勾选或取消勾选一条训练任务。
      *
      * @param userId 用户 ID
@@ -67,4 +80,16 @@ public interface TrainingPlanService {
      * @return 计划响应，没有提交过时返回 null
      */
     TrainingPlanRespVO consumeSubmittedPlan(Long userId, String sessionId);
+
+    /**
+     * 取走本次生成最近一次提交失败的原因。
+     *
+     * <p>模型提交的计划不满足结构要求时，工具只能返回一段提示给模型，生成流本身是「正常结束但没有产出」。
+     * 生成流结束时会用本方法取走原因，拼进给用户的失败提示里，避免只看到一句「没有生成出可用的计划」。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 计划 Agent 的运行标识
+     * @return 失败原因，没有失败过时返回 null
+     */
+    String consumeSubmitFailure(Long userId, String sessionId);
 }

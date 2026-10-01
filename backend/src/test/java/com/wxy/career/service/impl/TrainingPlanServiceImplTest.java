@@ -1,5 +1,7 @@
 package com.wxy.career.service.impl;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.common.enums.TrainingPlanStatusEnum;
 import com.wxy.career.common.exception.BizException;
 import com.wxy.career.config.TrainingProperties;
@@ -154,8 +156,13 @@ class TrainingPlanServiceImplTest {
         submit.getTasks().removeIf(task -> task.getDayIndex() == 3);
 
         assertThatThrownBy(() -> trainingPlanService.submitPlan(1L, "training-plan-1", submit))
-                .isInstanceOf(BizException.class);
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("第 3 天没有安排任务");
         verify(trainingPlanMapper, never()).insert(any(TrainingPlan.class));
+        // 失败原因留在本次运行上，供生成流结束时给出可读提示。
+        assertThat(trainingPlanService.consumeSubmitFailure(1L, "training-plan-1"))
+                .contains("第 3 天没有安排任务");
+        assertThat(trainingPlanService.consumeSubmitFailure(1L, "training-plan-1")).isNull();
     }
 
     /**
@@ -167,8 +174,61 @@ class TrainingPlanServiceImplTest {
         submit.getTasks().get(1).setDurationMinutes(60);
 
         assertThatThrownBy(() -> trainingPlanService.submitPlan(1L, "training-plan-1", submit))
-                .isInstanceOf(BizException.class);
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("超过每天 30 分钟");
         verify(trainingPlanMapper, never()).insert(any(TrainingPlan.class));
+    }
+
+    /**
+     * 天数与每日时长以用户本次请求为准：模型填了别的时间也不会改变落库的周期。
+     */
+    @Test
+    void shouldUseRequestedInputsInsteadOfModelValues() {
+        List<TrainingPlan> inserted = new ArrayList<>();
+        when(trainingPlanMapper.insert(any(TrainingPlan.class))).thenAnswer(invocation -> {
+            TrainingPlan plan = invocation.getArgument(0);
+            plan.setId(99L);
+            inserted.add(plan);
+            return 1;
+        });
+        trainingPlanService.recordGenerationInput(1L, "training-plan-1", 3, 60);
+        TrainingPlanSubmitVO submit = buildSubmit(3, 60, null);
+        // 模型自作主张写成 5 天 / 每天 90 分钟：应按请求的 3 天 / 60 分钟落库。
+        submit.setDays(5);
+        submit.setDailyMinutes(90);
+
+        trainingPlanService.submitPlan(1L, "training-plan-1", submit);
+
+        assertThat(inserted).hasSize(1);
+        assertThat(inserted.get(0).getTotalDays()).isEqualTo(3);
+        assertThat(inserted.get(0).getDailyMinutes()).isEqualTo(60);
+        assertThat(inserted.get(0).getEndDate()).isEqualTo(LocalDate.now().plusDays(2));
+    }
+
+    /**
+     * 模型用 snake_case 写工具入参时也要能绑定（框架用 Jackson 默认命名策略解析工具入参）。
+     *
+     * <p>线上踩过：提示词里写的是 {@code daily_minutes}/{@code day_index}，模型照抄，Jackson 按 camelCase 解析
+     * 后这些字段全是 null，计划被整单拒绝，用户只看到「本次没有生成出可用的计划」。
+     */
+    @Test
+    void shouldBindSnakeCaseToolArguments() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        String json = "{\"days\":7,\"daily_minutes\":60,\"summary\":\"概要\",\"adjustment_reason\":\"新增薄弱点\","
+                + "\"tasks\":[{\"day_index\":1,\"topic\":\"Redis 分布式锁\",\"question_type\":\"八股\","
+                + "\"difficulty\":2,\"duration_minutes\":30,\"knowledge_point\":\"Redis 分布式锁\","
+                + "\"task_date\":\"2026-10-01\"}]}";
+
+        TrainingPlanSubmitVO submit = objectMapper.readValue(json, TrainingPlanSubmitVO.class);
+
+        assertThat(submit.getDailyMinutes()).isEqualTo(60);
+        assertThat(submit.getAdjustmentReason()).isEqualTo("新增薄弱点");
+        assertThat(submit.getTasks()).hasSize(1);
+        assertThat(submit.getTasks().get(0).getDayIndex()).isEqualTo(1);
+        assertThat(submit.getTasks().get(0).getQuestionType()).isEqualTo("八股");
+        assertThat(submit.getTasks().get(0).getDurationMinutes()).isEqualTo(30);
+        assertThat(submit.getTasks().get(0).getKnowledgePoint()).isEqualTo("Redis 分布式锁");
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.wxy.career.vo;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 
 /**
@@ -11,11 +13,13 @@ import lombok.Data;
  * @date 2026-10-01
  */
 @Data
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class TrainingTaskSubmitVO {
 
     /**
      * 第几天，从 1 开始，必须落在计划天数内。
      */
+    @JsonAlias("day_index")
     private Integer dayIndex;
 
     /**
@@ -26,6 +30,7 @@ public class TrainingTaskSubmitVO {
     /**
      * 题型，例如八股、项目、综合。
      */
+    @JsonAlias("question_type")
     private String questionType;
 
     /**
@@ -36,10 +41,12 @@ public class TrainingTaskSubmitVO {
     /**
      * 预计时长（分钟）。
      */
+    @JsonAlias("duration_minutes")
     private Integer durationMinutes;
 
     /**
      * 对应知识点名称，可为空（主题不是补薄弱点时可留空）。
      */
+    @JsonAlias("knowledge_point")
     private String knowledgePoint;
 }

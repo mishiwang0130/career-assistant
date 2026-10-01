@@ -30,8 +30,10 @@ public class SubmitTrainingPlanTool {
      * 校验失败时补充的字段口径提示，避免模型反复提交同一份不完整结论。
      */
     private static final String FIELD_HINT =
-            "请检查：days 与 daily_minutes 与本次输入一致；每天至少要有一条任务；同一天任务时长合计不超过每日时长；"
-                    + "day_index 从 1 开始且不超过总天数；difficulty 取值 1-5；topic 与 question_type 非空。";
+            "字段名用 schema 里的 camelCase：plan.tasks[].dayIndex、topic、questionType、difficulty、"
+                    + "durationMinutes、knowledgePoint。请检查：每天至少一条任务；同一天时长合计不超过每天时长；"
+                    + "dayIndex 从 1 开始且不超过总天数；topic 与 questionType 非空。"
+                    + "修正后请**立即重新调用 submit_training_plan** 提交一次。";
 
     /**
      * 训练计划服务。
@@ -52,9 +54,9 @@ public class SubmitTrainingPlanTool {
             readOnly = false)
     public String submitTrainingPlan(
             @ToolParam(name = "plan", required = true,
-                    description = "计划结论：days、daily_minutes、summary、adjustment_reason（重新规划时必填）、"
-                            + "tasks（每条含 day_index、topic、question_type、difficulty、duration_minutes、"
-                            + "knowledge_point）")
+                    description = "计划结论：days、dailyMinutes、summary、adjustmentReason（重新规划时写清依据）、"
+                            + "tasks（每条含 dayIndex、topic、questionType、difficulty、durationMinutes、"
+                            + "knowledgePoint）。字段名与 schema 一致，不要写 snake_case")
             TrainingPlanSubmitVO plan,
             RuntimeContext runtimeContext) {
         Long userId = RuntimeContextUserUtil.requireUserId(runtimeContext);

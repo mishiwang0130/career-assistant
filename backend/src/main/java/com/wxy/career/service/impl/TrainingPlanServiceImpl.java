@@ -2,6 +2,7 @@ package com.wxy.career.service.impl;
 
 import com.wxy.career.common.enums.TrainingPlanStatusEnum;
 import com.wxy.career.common.exception.BizException;
+import com.wxy.career.common.result.ErrorCode;
 import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.config.TrainingProperties;
 import com.wxy.career.mapper.TrainingPlanMapper;
@@ -91,6 +92,21 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
     private static final int KNOWLEDGE_POINT_MAX_LENGTH = 200;
 
     /**
+     * 难度最小值。
+     */
+    private static final int MIN_DIFFICULTY = 1;
+
+    /**
+     * 难度最大值。
+     */
+    private static final int MAX_DIFFICULTY = 5;
+
+    /**
+     * 模型没给难度时的缺省值（中等难度）。
+     */
+    private static final int DEFAULT_DIFFICULTY = 3;
+
+    /**
      * 计划 Mapper。
      */
     @Resource
@@ -126,6 +142,18 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
     private final Map<String, BufferedPlan> submittedBuffer = new ConcurrentHashMap<>();
 
     /**
+     * 本次生成请求的输入（天数与每日时长），键为 {@code userId/sessionId}。
+     *
+     * <p>用户输入的周期是权威值：模型提交的同名字段填错也不影响落库。
+     */
+    private final Map<String, BufferedInput> generationInputs = new ConcurrentHashMap<>();
+
+    /**
+     * 本次生成最近一次提交失败的原因，键为 {@code userId/sessionId}，供生成流结束时的失败提示使用。
+     */
+    private final Map<String, BufferedFailure> submitFailures = new ConcurrentHashMap<>();
+
+    /**
      * 查询当前用户生效中的计划。
      *
      * @param userId 用户 ID
@@ -157,6 +185,27 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
     public boolean hasActivePlan(Long userId) {
         requireUserId(userId);
         return trainingPlanMapper.selectActiveByUser(userId) != null;
+    }
+
+    /**
+     * 记下本次生成请求的输入。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 计划 Agent 的运行标识
+     * @param days 本次请求的天数
+     * @param dailyMinutes 本次请求的每日时长（分钟）
+     */
+    @Override
+    public void recordGenerationInput(Long userId, String sessionId, int days, int dailyMinutes) {
+        requireUserId(userId);
+        if (!StringUtils.hasText(sessionId) || days < 1 || dailyMinutes < 1) {
+            throw new BizException(ErrorConstant.PARAM_ERROR);
+        }
+        String key = bufferKey(userId, sessionId);
+        generationInputs.put(key, new BufferedInput(days, dailyMinutes, System.currentTimeMillis()));
+        // 新一轮开始，清掉上一轮的失败原因，避免失败提示串到本次。
+        submitFailures.remove(key);
+        cleanExpiredBuffer();
     }
 
     /**
@@ -201,10 +250,32 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
         if (!StringUtils.hasText(sessionId)) {
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
-        validateSubmit(submitVO);
+        String key = bufferKey(userId, sessionId);
+        try {
+            submitPlanInternal(userId, key, sessionId, submitVO);
+        } catch (BizException exception) {
+            // 记下失败原因：生成流正常结束但没有产出时，用它给出「为什么没生成成功」的可读提示。
+            submitFailures.put(key, new BufferedFailure(
+                    exception.getErrorCode().getMsg(), System.currentTimeMillis()));
+            throw exception;
+        }
+    }
+
+    /**
+     * 落库一份计划结论（提交工具的实现路径）。
+     *
+     * @param userId 用户 ID
+     * @param key 运行态缓冲键
+     * @param sessionId 计划 Agent 的运行标识
+     * @param submitVO 计划结论
+     */
+    private void submitPlanInternal(Long userId, String key, String sessionId, TrainingPlanSubmitVO submitVO) {
+        // 天数与每日时长以用户本次请求为准：模型提交的同名字段只做对照，填错也不改变用户输入的周期。
+        BufferedInput input = resolveGenerationInput(key, submitVO);
+        int days = input.days();
+        int dailyMinutes = input.dailyMinutes();
+        validateSubmit(submitVO, days, dailyMinutes);
         UserProfileRespVO profile = userProfileService.getRequiredUserProfile(userId);
-        int days = submitVO.getDays();
-        int dailyMinutes = submitVO.getDailyMinutes();
         LocalDate today = LocalDate.now();
         LocalDate endDate = today.plusDays(days - 1L);
 
@@ -214,7 +285,7 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
         plan.setUserId(userId);
         plan.setStatus(TrainingPlanStatusEnum.ACTIVE.getValue());
         plan.setTargetPosition(truncate(profile.getTargetPosition(), TOPIC_MAX_LENGTH));
-        plan.setTotalDays(days);
+            plan.setTotalDays(days);
         plan.setDailyMinutes(dailyMinutes);
         plan.setStartDate(today);
         plan.setEndDate(endDate);
@@ -232,7 +303,7 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
             task.setTaskDate(today.plusDays(taskSubmit.getDayIndex() - 1L));
             task.setTopic(truncate(taskSubmit.getTopic(), TOPIC_MAX_LENGTH));
             task.setQuestionType(truncate(taskSubmit.getQuestionType(), QUESTION_TYPE_MAX_LENGTH));
-            task.setDifficulty(taskSubmit.getDifficulty());
+            task.setDifficulty(normalizeDifficulty(taskSubmit.getDifficulty()));
             task.setDurationMinutes(taskSubmit.getDurationMinutes());
             task.setKnowledgePoint(truncate(taskSubmit.getKnowledgePoint(), KNOWLEDGE_POINT_MAX_LENGTH));
             task.setSortOrder(sortOrder++);
@@ -241,9 +312,30 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
         }
         log.info("训练计划已落库，userId={}，planId={}，days={}，dailyMinutes={}，taskCount={}，endedPlans={}",
                 userId, plan.getId(), days, dailyMinutes, submitVO.getTasks().size(), ended);
-        submittedBuffer.put(bufferKey(userId, sessionId),
-                new BufferedPlan(plan.getId(), System.currentTimeMillis()));
+        submittedBuffer.put(key, new BufferedPlan(plan.getId(), System.currentTimeMillis()));
         cleanExpiredBuffer();
+    }
+
+    /**
+     * 解析本次生成的天数与每日时长。
+     *
+     * <p>优先用生成开始时登记的请求输入；没有登记（例如直接调用服务层的场景）时退回模型提交的字段，
+     * 两者都不可用时按参数错误拒绝。
+     *
+     * @param key 运行态缓冲键
+     * @param submitVO 计划结论
+     * @return 生效的输入
+     */
+    private BufferedInput resolveGenerationInput(String key, TrainingPlanSubmitVO submitVO) {
+        BufferedInput recorded = generationInputs.get(key);
+        if (recorded != null) {
+            return recorded;
+        }
+        if (submitVO == null || submitVO.getDays() == null || submitVO.getDailyMinutes() == null) {
+            throw new BizException(new ErrorCode(ErrorConstant.PARAM_ERROR.getCode(),
+                    "计划缺少天数或每天时长"));
+        }
+        return new BufferedInput(submitVO.getDays(), submitVO.getDailyMinutes(), System.currentTimeMillis());
     }
 
     /**
@@ -258,7 +350,11 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
         if (userId == null || !StringUtils.hasText(sessionId)) {
             return null;
         }
-        BufferedPlan buffered = submittedBuffer.remove(bufferKey(userId, sessionId));
+        String key = bufferKey(userId, sessionId);
+        BufferedPlan buffered = submittedBuffer.remove(key);
+        // 本次运行结束：输入与失败原因都清掉，避免串到下一轮。
+        generationInputs.remove(key);
+        submitFailures.remove(key);
         if (buffered == null) {
             return null;
         }
@@ -273,55 +369,97 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
     }
 
     /**
+     * 取走本次生成最近一次提交失败的原因。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 计划 Agent 的运行标识
+     * @return 失败原因，没有失败过时返回 null
+     */
+    @Override
+    public String consumeSubmitFailure(Long userId, String sessionId) {
+        if (userId == null || !StringUtils.hasText(sessionId)) {
+            return null;
+        }
+        BufferedFailure failure = submitFailures.remove(bufferKey(userId, sessionId));
+        return failure == null ? null : failure.reason();
+    }
+
+    /**
      * 校验提交的计划结论是否可用。
      *
-     * <p>校验口径与分配器一致：天数与每日时长必须在配置边界内；任务必须覆盖每一天（任务数超上限时按上限取
-     * 前 N 天）；当天任务时长合计不能超过每日时长。校验失败抛业务异常，由工具转成可读提示。
+     * <p>校验口径与分配器一致：任务必须覆盖每一天（任务数超上限时按上限取前 N 天）；当天任务时长合计不能超过
+     * 每日时长。**失败原因写进异常消息**：工具会把它转述给模型（让它自己改正），生成流结束时的提示也用它说明
+     * 「为什么没生成成功」，而不是笼统的「参数错误」。
      *
      * @param submitVO 计划结论
+     * @param days 本次请求的天数（以请求为准）
+     * @param dailyMinutes 本次请求的每日时长（以请求为准）
      */
-    private void validateSubmit(TrainingPlanSubmitVO submitVO) {
+    private void validateSubmit(TrainingPlanSubmitVO submitVO, int days, int dailyMinutes) {
         if (submitVO == null) {
-            throw new BizException(ErrorConstant.PARAM_ERROR);
+            throw paramError("计划内容为空，请重试");
         }
         TrainingProperties.Plan planConfig = trainingProperties.getPlan();
-        Integer days = submitVO.getDays();
-        Integer dailyMinutes = submitVO.getDailyMinutes();
-        if (days == null || dailyMinutes == null
-                || days < 1 || days > planConfig.getMaxDays()
-                || dailyMinutes < planConfig.getMinDailyMinutes()
-                || dailyMinutes > planConfig.getMaxDailyMinutes()) {
-            throw new BizException(ErrorConstant.PARAM_ERROR);
-        }
         List<TrainingTaskSubmitVO> tasks = submitVO.getTasks();
-        if (tasks == null || tasks.isEmpty() || tasks.size() > planConfig.getMaxTasks()) {
-            throw new BizException(ErrorConstant.PARAM_ERROR);
+        if (tasks == null || tasks.isEmpty()) {
+            throw paramError("计划里没有任何任务");
+        }
+        if (tasks.size() > planConfig.getMaxTasks()) {
+            throw paramError("计划的任务条数（" + tasks.size() + "）超过上限 "
+                    + planConfig.getMaxTasks() + " 条");
         }
         List<TrainingPlanAllocator.DaySlot> slots =
                 TrainingPlanAllocator.allocate(days, dailyMinutes, planConfig.getMaxTasks());
+        int scheduledDays = slots.size();
         Map<Integer, Integer> minutesByDay = new LinkedHashMap<>();
         Map<Integer, Integer> tasksByDay = new LinkedHashMap<>();
-        for (TrainingTaskSubmitVO task : tasks) {
+        for (int index = 0; index < tasks.size(); index++) {
+            TrainingTaskSubmitVO task = tasks.get(index);
             if (task == null || task.getDayIndex() == null || task.getDayIndex() < 1
-                    || task.getDayIndex() > slots.size()
-                    || task.getDurationMinutes() == null || task.getDurationMinutes() < 1
-                    || !StringUtils.hasText(task.getTopic())
-                    || !StringUtils.hasText(task.getQuestionType())
-                    || task.getDifficulty() == null
-                    || task.getDifficulty() < 1 || task.getDifficulty() > 5) {
-                throw new BizException(ErrorConstant.PARAM_ERROR);
+                    || task.getDayIndex() > scheduledDays) {
+                throw paramError("第 " + (index + 1) + " 条任务缺少天数，或天数超出 1-" + scheduledDays + " 天");
+            }
+            if (task.getDurationMinutes() == null || task.getDurationMinutes() < 1) {
+                throw paramError("第 " + (index + 1) + " 条任务缺少时长，或时长不是正整数分钟");
+            }
+            if (!StringUtils.hasText(task.getTopic()) || !StringUtils.hasText(task.getQuestionType())) {
+                throw paramError("第 " + (index + 1) + " 条任务缺少主题或题型");
             }
             minutesByDay.merge(task.getDayIndex(), task.getDurationMinutes(), Integer::sum);
             tasksByDay.merge(task.getDayIndex(), 1, Integer::sum);
         }
         for (TrainingPlanAllocator.DaySlot slot : slots) {
             if (tasksByDay.getOrDefault(slot.getDayIndex(), 0) < 1) {
-                throw new BizException(ErrorConstant.PARAM_ERROR);
+                throw paramError("第 " + slot.getDayIndex() + " 天没有安排任务");
             }
             if (minutesByDay.getOrDefault(slot.getDayIndex(), 0) > dailyMinutes) {
-                throw new BizException(ErrorConstant.PARAM_ERROR);
+                throw paramError("第 " + slot.getDayIndex() + " 天的任务时长合计 "
+                        + minutesByDay.get(slot.getDayIndex()) + " 分钟，超过每天 " + dailyMinutes + " 分钟");
             }
         }
+    }
+
+    /**
+     * 构造带可读原因的 400 业务异常。
+     *
+     * @param reason 失败原因
+     * @return 业务异常
+     */
+    private BizException paramError(String reason) {
+        return new BizException(new ErrorCode(ErrorConstant.PARAM_ERROR.getCode(), reason));
+    }
+
+    /**
+     * 把难度归一到 1-5：模型给空值或越界值时不整单拒绝，按就近取值落库（展示用的等级，不影响计划结构）。
+     *
+     * @param difficulty 模型给的难度，可为空
+     * @return 1-5 的难度
+     */
+    private int normalizeDifficulty(Integer difficulty) {
+        if (difficulty == null) {
+            return DEFAULT_DIFFICULTY;
+        }
+        return Math.max(MIN_DIFFICULTY, Math.min(MAX_DIFFICULTY, difficulty));
     }
 
     /**
@@ -477,6 +615,8 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
     private void cleanExpiredBuffer() {
         long now = System.currentTimeMillis();
         submittedBuffer.entrySet().removeIf(entry -> now - entry.getValue().createdAt() > BUFFER_TTL_MILLIS);
+        generationInputs.entrySet().removeIf(entry -> now - entry.getValue().createdAt() > BUFFER_TTL_MILLIS);
+        submitFailures.entrySet().removeIf(entry -> now - entry.getValue().createdAt() > BUFFER_TTL_MILLIS);
     }
 
     /**
@@ -497,5 +637,24 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
      * @param createdAt 写入时间（毫秒）
      */
     private record BufferedPlan(Long planId, long createdAt) {
+    }
+
+    /**
+     * 本次生成请求的输入。
+     *
+     * @param days 天数
+     * @param dailyMinutes 每日时长（分钟）
+     * @param createdAt 写入时间（毫秒）
+     */
+    private record BufferedInput(int days, int dailyMinutes, long createdAt) {
+    }
+
+    /**
+     * 本次生成最近一次提交失败的原因。
+     *
+     * @param reason 失败原因
+     * @param createdAt 写入时间（毫秒）
+     */
+    private record BufferedFailure(String reason, long createdAt) {
     }
 }
