@@ -265,10 +265,13 @@ class AgentFactoryHarnessTest {
     }
 
     /**
-     * 验证计划 Agent 不挂长期记忆：生成计划时不会去记忆库召回（薄弱点只从 MySQL 读）。
+     * 验证计划 Agent 与助手、面试官共用同一套底层装配：自动召回照常（多一个背景参考）。
+     *
+     * <p>F7 的约束是「不写记忆」与「薄弱点以 MySQL 为准」，不是「不召回」；这里断言框架的长期记忆钩子确实
+     * 走到了适配层的 {@code retrieve}，避免以后有人把计划 Agent 的记忆装配单独摘掉而与其它 Agent 不一致。
      */
     @Test
-    void shouldNotAttachLongTermMemoryToPlanner() {
+    void shouldKeepAutomaticRecallForPlanner() {
         com.wxy.career.middleware.UserLongTermMemoryAdapter adapter =
                 mock(com.wxy.career.middleware.UserLongTermMemoryAdapter.class);
         when(adapter.retrieve(any(Msg.class))).thenReturn(reactor.core.publisher.Mono.just("历史片段"));
@@ -283,8 +286,8 @@ class AgentFactoryHarnessTest {
         agent.streamEvents(Msg.builder().role(MsgRole.USER).textContent("生成训练计划").build(), runtimeContext)
                 .blockLast();
 
-        // 计划 Agent 的底层 Agent 没有挂长期记忆，因此框架不会调用适配层召回。
-        verify(adapter, never()).retrieve(any(Msg.class));
+        // 调用前框架按当前问题召回一次：计划 Agent 的召回链路与助手一致。
+        verify(adapter, org.mockito.Mockito.timeout(3000).atLeastOnce()).retrieve(any(Msg.class));
     }
 
     /**
