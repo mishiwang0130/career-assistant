@@ -57,16 +57,18 @@ public class RecordInterviewAnswerTool {
      * @return 下一步指令，失败时给出可读原因
      */
     @Tool(name = "record_interview_answer",
-            description = "记录用户本题的作答，并拿到下一步该怎么问。调用前必须先让评分子 Agent 用 "
-                    + "submit_answer_evaluation 提交本题结论；每回合只调用一次。追问、换题与难度由服务端规则决定，"
-                    + "你照返回的指令执行即可，不要自己决定要不要追问。",
+            description = "记录用户本题的作答，并拿到下一步该怎么问。本题的评分由平台在你开工前完成，"
+                    + "你不需要评分、也不需要派发任何子 Agent；每回合只调用一次。追问、换题与难度由服务端规则决定，"
+                    + "你照返回的指令执行即可，不要自己决定要不要追问，也不要自己宣布面试结束。",
             readOnly = true)
     public String recordInterviewAnswer(
-            @ToolParam(name = "question", required = true,
-                    description = "本次提问的题目正文；若用户回答的是追问，就填追问内容")
+            @ToolParam(name = "question", required = false,
+                    description = "本次提问的题目正文；若用户回答的是追问，就填追问内容。省略时服务端会按"
+                            + "刚问出去的那道题自动补齐")
             String question,
-            @ToolParam(name = "question_type", required = true,
-                    description = "本题题型：BASIC 八股 / PROJECT 项目 / COMPREHENSIVE 综合")
+            @ToolParam(name = "question_type", required = false,
+                    description = "本题题型：BASIC 八股 / PROJECT 项目 / COMPREHENSIVE 综合。省略或填错时"
+                            + "服务端会按本轮的建议题型自动补齐")
             String questionType,
             @ToolParam(name = "end_now", required = false,
                     description = "用户主动要求结束本场面试时传 true，其余情况不传")

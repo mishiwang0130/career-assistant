@@ -282,17 +282,90 @@ class InterviewFlowServiceImplTest {
     }
 
     /**
-     * 模型没走完本回合（只记了用户回答、没有评分与判定）时不落库：进度停在原处，也不写半截数据。
+     * 模型漏调记录工具时，平台按兜底口径把这一回合补记完整：题目与题型由服务端补齐，动作仍按规则算。
      *
-     * <p>真实环境出现过模型把工具调用写成 JSON 文本、导致评分结论没提交、最后把一个只有 answer 的占位
-     * 记录写库并撞上非空约束的情况，这里把它固定成「不落库、不推进」。
+     * <p>丢一回合会让平台进度停在原处、与模型的真实进度错位，后面的题会被当上一题的追问评分、题量永远走不满。
      */
     @Test
-    void shouldSkipCommitWhenTurnIncomplete() {
+    void shouldSynthesizeTurnWhenModelSkipsRecordTool() {
         interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+
+        interviewFlowService.commitTurn(USER_ID, SESSION_ID);
+
+        ArgumentCaptor<InterviewQa> captor = ArgumentCaptor.forClass(InterviewQa.class);
+        verify(interviewQaMapper).insert(captor.capture());
+        InterviewQa row = captor.getValue();
+        assertThat(row.getQuestion()).isEqualTo("讲讲 JVM 内存结构");
+        assertThat(row.getQuestionType()).isEqualTo(InterviewQuestionTypeEnum.BASIC.getValue());
+        assertThat(row.getOutcome()).isEqualTo(InterviewOutcomeEnum.PARTIAL.getValue());
+        assertThat(row.getNextAction()).isEqualTo(InterviewActionEnum.FOLLOW_UP.getValue());
+    }
+
+    /**
+     * 开场那一轮只提问：用户消息是开场指令、没有在飞的题目，仍然不落库、不推进。
+     */
+    @Test
+    void shouldNotSynthesizeOpeningTurn() {
+        when(assistantMessageService.listMessages(anyLong(), anyLong(), anyLong(), anyLong()))
+                .thenReturn(emptyPage());
+
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "开始面试");
 
         assertThat(interviewFlowService.commitTurn(USER_ID, SESSION_ID)).isNull();
         verify(interviewQaMapper, never()).insert(any(InterviewQa.class));
+    }
+
+    /**
+     * 真实故障回归：追问的回答没被模型记录时，平台补记后进度必须跟着推进到下一题。
+     *
+     * <p>修复前这一回合被丢弃，平台还以为停在第 1 题的追问，模型却已经在问第 2 题——「去哪查看」这类
+     * 消息会被拿去和收尾话术评分，面试因此永远走不到结束。
+     */
+    @Test
+    void shouldKeepProgressAlignedWhenFollowUpAnswerNotRecorded() {
+        InterviewQa mainQuestion = new InterviewQa();
+        mainQuestion.setQuestionIndex(1);
+        mainQuestion.setRoundNo(InterviewQa.ROUND_MAIN);
+        mainQuestion.setQuestionType(InterviewQuestionTypeEnum.BASIC.getValue());
+        mainQuestion.setDifficulty(3);
+        mainQuestion.setOutcome(InterviewOutcomeEnum.PARTIAL.getValue());
+        mainQuestion.setNextAction(InterviewActionEnum.FOLLOW_UP.getValue());
+        when(interviewQaMapper.selectBySession(USER_ID, 12L)).thenReturn(List.of(mainQuestion));
+        when(assistantMessageService.listMessages(USER_ID, 12L, 1L, 2L))
+                .thenReturn(messagePage("第 1 题追问：频繁拼接会产生什么内存问题？"));
+
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "会频繁创建对象");
+        submitEvaluation("PARTIAL", "答得有遗漏");
+        interviewFlowService.commitTurn(USER_ID, SESSION_ID);
+
+        ArgumentCaptor<InterviewQa> captor = ArgumentCaptor.forClass(InterviewQa.class);
+        verify(interviewQaMapper).insert(captor.capture());
+        InterviewQa row = captor.getValue();
+        assertThat(row.getQuestionIndex()).isEqualTo(1);
+        assertThat(row.getRoundNo()).isEqualTo(InterviewQa.ROUND_FOLLOW_UP);
+        assertThat(row.getNextAction()).isEqualTo(InterviewActionEnum.NEXT_QUESTION.getValue());
+
+        when(interviewQaMapper.selectBySession(USER_ID, 12L)).thenReturn(List.of(mainQuestion, row));
+        InterviewStateRespVO state = interviewFlowService.getState(USER_ID, SESSION_ID);
+        assertThat(state.getQuestionIndex()).isEqualTo(2);
+        assertThat(state.getRoundNo()).isEqualTo(InterviewQa.ROUND_MAIN);
+    }
+
+    /**
+     * 模型调用记录工具但漏填题目与题型时，服务端按刚问出去的题目与建议题型补齐，不再整回合丢掉。
+     */
+    @Test
+    void shouldResolveMissingQuestionAndTypeFromServerSide() {
+        interviewFlowService.prepareTurn(USER_ID, SESSION_ID, "我的回答");
+        submitEvaluation("CORRECT", "答到要点");
+        InterviewAnswerSubmitVO submitVO = new InterviewAnswerSubmitVO();
+
+        interviewFlowService.recordAnswer(USER_ID, SESSION_ID, submitVO);
+
+        InterviewQa row = commitAndCaptureRow();
+        assertThat(row.getQuestion()).isEqualTo("讲讲 JVM 内存结构");
+        assertThat(row.getQuestionType()).isEqualTo(InterviewQuestionTypeEnum.BASIC.getValue());
+        assertThat(row.getOutcome()).isEqualTo(InterviewOutcomeEnum.CORRECT.getValue());
     }
 
     /**
@@ -401,6 +474,18 @@ class InterviewFlowServiceImplTest {
         PageRespVO<AssistantMessageRespVO> page = new PageRespVO<>();
         page.setTotal(1L);
         page.setRecords(List.of(message));
+        return page;
+    }
+
+    /**
+     * 构造一页空消息（开场那一轮还没有助手消息）。
+     *
+     * @return 空分页消息
+     */
+    private PageRespVO<AssistantMessageRespVO> emptyPage() {
+        PageRespVO<AssistantMessageRespVO> page = new PageRespVO<>();
+        page.setTotal(0L);
+        page.setRecords(List.of());
         return page;
     }
 

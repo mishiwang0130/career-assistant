@@ -306,12 +306,13 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
     public InterviewAnswerResultVO recordAnswer(
             Long userId, String sessionId, InterviewAnswerSubmitVO submitVO) {
         Long sessionIdValue = requireInterviewSession(userId, sessionId);
-        validateSubmit(submitVO);
-        InterviewQuestionTypeEnum questionType = InterviewQuestionTypeEnum.find(submitVO.getQuestionType());
-        if (questionType == null) {
-            // 题型取值非法时按参数错误抛出，由工具转成可读提示让模型改正后重试。
+        if (submitVO == null) {
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
+        // 题型先按模型填的解析；填漏或填了非法值时，用服务端的建议题型兜底（题型只影响统计展示，
+        // 不值得让整回合丢掉），因此这里不再直接拒绝。
+        InterviewQuestionTypeEnum requestedQuestionType =
+                InterviewQuestionTypeEnum.find(submitVO.getQuestionType());
         // 本回合已经记录过（模型重复调用同一个工具）：直接返回上一次的结论，既不改判定也不写第二条。
         BufferedTurn recorded = turnBuffer.get(bufferKey(userId, sessionId));
         if (recorded != null && recorded.row().getNextAction() != null) {
@@ -345,7 +346,15 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
                 outcome,
                 Boolean.TRUE.equals(submitVO.getEndNow()));
         String evaluationJson = evaluation == null ? null : writeEvaluation(evaluation.payload());
-        InterviewQa row = buildRow(userId, sessionId, sessionIdValue, current, submitVO.getQuestion(),
+        InterviewQuestionTypeEnum questionType = requestedQuestionType != null
+                ? requestedQuestionType : resolveFallbackQuestionType(current);
+        // 题目同理：模型漏填时用回合开始时记下的题目兜底；两者都没有才是真的异常调用。
+        String question = StringUtils.hasText(submitVO.getQuestion())
+                ? submitVO.getQuestion() : (recorded == null ? null : recorded.pendingQuestion());
+        if (!StringUtils.hasText(question)) {
+            throw new BizException(ErrorConstant.PARAM_ERROR);
+        }
+        InterviewQa row = buildRow(userId, sessionId, sessionIdValue, current, question,
                 questionType, outcome, judgement, evaluationJson, action);
         long now = System.currentTimeMillis();
         purgeExpired(now);
@@ -380,11 +389,11 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         InterviewQa row = buffered.row();
         if (row.getNextAction() == null || row.getOutcome() == null || row.getQuestion() == null) {
             // 只填了用户回答的占位记录说明模型没走完本回合（漏调 record_interview_answer 或评分结论没提交上来）。
-            // 如果这一回合本该收尾（题量走满或用户明确要求结束），平台按兜底口径补记，保证面试一定能结束并出结果；
-            // 其余情况仍然不推进、不写半截数据，用户重新作答即可。
-            row = synthesizeFinishFallback(userId, sessionId, buffered);
+            // 只要用户确实是在回答一道题（回合开始时记下了题目），平台就按兜底口径把这一回合补记完整，
+            // 绝不让回合凭空消失——丢一回合会让平台状态与真实对话错位，后面的题目、判定与结束条件全部跟着歪。
+            row = synthesizeTurn(userId, sessionId, buffered);
             if (row == null) {
-                log.warn("面试回合记录不完整，跳过落库，userId={}，sessionId={}", userId, sessionId);
+                log.warn("面试回合无法补记，跳过落库，userId={}，sessionId={}", userId, sessionId);
                 return null;
             }
         }
@@ -396,26 +405,28 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
     }
 
     /**
-     * 模型漏调记录工具时的收尾兜底：只有在「本回合确实该收尾」时才补记一条完整记录。
+     * 模型漏调记录工具时的回合兜底：把这一回合按服务端已有信息补记完整。
      *
-     * <p>触发条件（二者之一）：
-     * <ol>
-     *   <li>主问题已经答满（questionIndex ≥ questionCount）；</li>
-     *   <li>用户本回合明确要求结束（{@link #isEndRequest(String)}）。</li>
-     * </ol>
-     * 其余情况返回 null，保持「进度停在原处、用户重新作答即可」的既有行为，绝不写半截数据。
+     * <p>为什么必须补记而不是丢弃：丢一回合会让平台的进度停在原处，而模型会照着自己的对话继续出题，
+     * 两边就此错位——后面的题会被当上一题的追问评分、题量永远走不满、面试结束不了，点评与报告也就出不来
+     * （真实环境已经踩过：第 8 题答「不知道」后模型收尾，因为漏调工具整场卡死）。
      *
-     * <p>补记所需的题目来自回合开始时记下的上一条助手消息；判定与点评优先取评分子 Agent 已经提交的结论
-     * （评分在面试官开流前就完成了），拿不到就按既有的保守口径「答得有遗漏」处理。
+     * <p>补记条件：回合开始时记下了用户正在回答的题目（{@code pendingQuestion} 非空）。开场那一轮
+     * 只提问、没有在飞的题目，仍然不落库；缓冲过期或会话已结束时也返回 null。
+     *
+     * <p>补记内容：题目取回合开始时记下的上一条助手消息；题型取服务端的建议题型；判定与点评优先取
+     * 评分子 Agent 已经提交的结论（评分在面试官开流前就完成了），拿不到就按既有的保守口径
+     * 「答得有遗漏」处理；动作仍由 {@link #decideAction} 按同一套规则算出（用户明确要求结束时收尾）。
      *
      * @param userId 用户 ID
      * @param sessionId 会话 ID
      * @param buffered 本回合的运行态缓冲
-     * @return 补记完整的收尾记录；不需要或无法补记时返回 null
+     * @return 补记完整的记录；不该补记或无法补记时返回 null
      */
-    private InterviewQa synthesizeFinishFallback(Long userId, String sessionId, BufferedTurn buffered) {
+    private InterviewQa synthesizeTurn(Long userId, String sessionId, BufferedTurn buffered) {
         Long sessionIdValue = parseSessionId(sessionId);
-        if (sessionIdValue == null) {
+        if (sessionIdValue == null || !StringUtils.hasText(buffered.pendingQuestion())) {
+            // 开场那一轮只提问：用户消息是开场指令，不是对某道题的回答，落库会把整场面试往后错一位。
             return null;
         }
         InterviewStateRespVO current = loadState(userId, sessionId, sessionIdValue);
@@ -432,14 +443,8 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         boolean endNow = isEndRequest(answer);
         InterviewActionEnum action = decideAction(
                 current.getQuestionIndex(), current.getRoundNo(), current.getQuestionCount(), outcome, endNow);
-        if (action != InterviewActionEnum.FINISHED) {
-            return null;
-        }
-        InterviewQuestionTypeEnum questionType = InterviewQuestionTypeEnum.find(current.getRecommendedQuestionType());
-        if (questionType == null) {
-            // 建议题型取不到时按八股题落库：这一列非空，且题型只影响统计展示。
-            questionType = InterviewQuestionTypeEnum.BASIC;
-        }
+        InterviewQuestionTypeEnum questionType = resolveFallbackQuestionType(current);
+        // 题目理论上一定取得到（读消息失败才可能为空），兜底占位保证这一列非空、这一回合不丢。
         String question = StringUtils.hasText(buffered.pendingQuestion())
                 ? buffered.pendingQuestion() : FALLBACK_QUESTION;
         String judgement = evaluation == null ? FALLBACK_JUDGEMENT : evaluation.payload().getComment();
@@ -461,9 +466,22 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         row.setUpdateBy(userId);
         // 结论只服务本回合：补记成功后取走，避免重复提交时再落到下一题上。
         evaluationBuffer.remove(bufferKey(userId, sessionId));
-        log.warn("模型未记录本回合，平台按收尾兜底补记，userId={}，sessionId={}，questionIndex={}，endNow={}",
-                userId, sessionId, current.getQuestionIndex(), endNow);
+        log.warn("模型未记录本回合，平台按兜底口径补记，userId={}，sessionId={}，questionIndex={}，"
+                        + "roundNo={}，action={}，endNow={}",
+                userId, sessionId, current.getQuestionIndex(), current.getRoundNo(), action.getValue(), endNow);
         return row;
+    }
+
+    /**
+     * 解析兜底题型：优先用服务端的建议题型，取不到按八股题落库（该列非空，题型只影响统计展示）。
+     *
+     * @param current 当前面试状态
+     * @return 题型枚举
+     */
+    private InterviewQuestionTypeEnum resolveFallbackQuestionType(InterviewStateRespVO current) {
+        InterviewQuestionTypeEnum recommended =
+                InterviewQuestionTypeEnum.find(current.getRecommendedQuestionType());
+        return recommended == null ? InterviewQuestionTypeEnum.BASIC : recommended;
     }
 
     /**
@@ -901,20 +919,6 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         result.setQuestionType(next.getRecommendedQuestionType());
         result.setFinished(next.getFinished());
         return result;
-    }
-
-    /**
-     * 校验模型提交的判定结果结构。
-     *
-     * @param submitVO 判定结果
-     */
-    private void validateSubmit(InterviewAnswerSubmitVO submitVO) {
-        if (submitVO == null || !StringUtils.hasText(submitVO.getQuestion())) {
-            throw new BizException(ErrorConstant.PARAM_ERROR);
-        }
-        if (!StringUtils.hasText(submitVO.getQuestionType())) {
-            throw new BizException(ErrorConstant.PARAM_ERROR);
-        }
     }
 
     /**
