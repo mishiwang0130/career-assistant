@@ -553,13 +553,14 @@ VALUES ('tutoring',
 ON DUPLICATE KEY UPDATE `name` = `name`;
 
 -- =====================================================================
--- F7 训练计划（第 5 批）：训练计划 / 训练任务 / 训练提醒 + Quartz 存储 + 排期口径技能
+-- F7 训练计划（第 5 批）：训练计划 / 训练提醒 + Quartz 存储 + 排期口径技能
 -- =====================================================================
 -- 本段只追加自己的表、框架托管表与技能行，不改 F2/F3/F5/F6/F9 的任何一行。
--- 三条业务规则（写死）：
+-- 四条业务规则（写死）：
 --   1. 计划正文存 MySQL，不写服务器工作区：多用户共用一个工作区会互相覆盖，Plan Mode 只借「只读规划 + 人工确认」语义；
---   2. 「还有几天」是生成计划时的一次性输入，存进 training_plan.end_date，页面剩余天数由它实时算出；
---   3. 每日提醒写入 training_reminder，靠 (user_id, reminder_date) 唯一键保证同一天同一用户只有一条。
+--   2. 计划只有一条正文记录（plan_content，一天一行「第 N 天：今天练什么知识点」），没有训练任务表；
+--   3. 「还有几天」是生成计划时的一次性输入，存进 training_plan.end_date，页面剩余天数由它实时算出；
+--   4. 每日提醒写入 training_reminder，靠 (user_id, reminder_date) 唯一键保证同一天同一用户只有一条。
 
 -- 训练计划表：一个用户同一时刻只有一份生效计划；重规划是覆盖生成，旧计划标记 ENDED 保留（不物理删除）。
 CREATE TABLE IF NOT EXISTS `training_plan` (
@@ -571,7 +572,7 @@ CREATE TABLE IF NOT EXISTS `training_plan` (
     `daily_minutes`     INT          NOT NULL COMMENT '每天可练时长（分钟）',
     `start_date`        DATE         NOT NULL COMMENT '计划开始日期（生成当天）',
     `end_date`          DATE         NOT NULL COMMENT '计划截止日期，由「还有几天」一次算出',
-    `plan_summary`      TEXT         DEFAULT NULL COMMENT '计划概要：总体思路与取舍说明',
+    `plan_content`      LONGTEXT     DEFAULT NULL COMMENT '计划正文：按天一句话概括当天练什么知识点（Markdown）',
     `adjustment_reason` VARCHAR(500) DEFAULT NULL COMMENT '调整原因，重新规划时写清依据；首次生成为空',
     `generated_at`      DATETIME     DEFAULT NULL COMMENT '生成时间',
     `create_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -587,34 +588,6 @@ CREATE TABLE IF NOT EXISTS `training_plan` (
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci
   COMMENT = '训练计划表';
-
--- 训练任务表：按天分组的每日任务，用户在计划页逐条勾选。
-CREATE TABLE IF NOT EXISTS `training_task` (
-    `id`               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-    `user_id`          BIGINT       NOT NULL COMMENT '用户ID',
-    `plan_id`          BIGINT       NOT NULL COMMENT '所属计划ID，关联 training_plan.id（逻辑关联，不建物理外键）',
-    `day_index`        INT          NOT NULL COMMENT '第几天，从 1 开始',
-    `task_date`        DATE         NOT NULL COMMENT '任务日期，由计划开始日期加 day_index 算出',
-    `topic`            VARCHAR(200) NOT NULL COMMENT '训练主题',
-    `question_type`    VARCHAR(32)  NOT NULL COMMENT '题型：八股/项目/综合等',
-    `difficulty`       INT          NOT NULL COMMENT '难度，取值 1-5，按天递进',
-    `duration_minutes` INT          NOT NULL COMMENT '预计时长（分钟），当天合计不超过每日时长',
-    `knowledge_point`  VARCHAR(200) DEFAULT NULL COMMENT '对应知识点名称，用于核对主题是否对上薄弱点',
-    `sort_order`       INT          NOT NULL DEFAULT 1 COMMENT '同一天内的排序号',
-    `finished`         TINYINT      NOT NULL DEFAULT 0 COMMENT '是否完成：0-未完成，1-已完成',
-    `finish_time`      DATETIME     DEFAULT NULL COMMENT '完成时间，未完成时为空',
-    `create_time`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    `create_by`        BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
-    `update_time`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    `update_by`        BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
-    `is_delete`        TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
-    PRIMARY KEY (`id`),
-    KEY `idx_training_task_user_plan_day` (`user_id`, `plan_id`, `day_index`),
-    KEY `idx_training_task_user_date` (`user_id`, `task_date`)
-) ENGINE = InnoDB
-  DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_general_ci
-  COMMENT = '训练任务表';
 
 -- 训练提醒表：每个用户每天最多一条，唯一键承载幂等；提醒只做站内展示。
 CREATE TABLE IF NOT EXISTS `training_reminder` (
@@ -837,12 +810,11 @@ CREATE TABLE IF NOT EXISTS `QRTZ_LOCKS` (
   COLLATE = utf8mb4_general_ci
   COMMENT = 'Quartz 锁表（框架托管）';
 
--- 幂等写入 F7 的默认 Skill：training-planning（排期与配比口径）。
+-- 幂等写入 F7 的默认 Skill：training-planning（计划正文写法与排期口径）。
 -- 重复执行不产生重复数据，也不覆盖人工在表里临时调整过的规则（命中唯一键时只做同值更新）。
--- 数值口径与 Java 纯函数 TrainingPlanAllocator 一致，**以代码为准**。
 INSERT INTO `agentscope_skills` (`name`, `description`, `skill_content`, `source`)
 VALUES ('training-planning',
-        '训练计划排期口径：每天时长如何分配到任务、题型配比、难度推进阶梯、薄弱点到训练主题的映射',
-        '你正在执行「训练计划排期口径」：把「还有几天、每天能练多久」翻成具体可执行的按天任务。口径如下，不要输出本规范的标题或内部字段。\n\n# 一、每天排几个任务、每个多长（与平台算法一致）\n1. 每天任务数 = 把「每天可练时长 ÷ 30 分钟」四舍五入，最少 1 个、最多 6 个；每天可练时长不超过 10 分钟时固定 1 个任务。\n2. 每个任务的时长按 5 分钟取整，同一天各任务时长之和不超过当天可练时长；某个主题特别薄弱时，把当天多出来的分钟优先给它。\n3. 任务总数上限 200：超了先减少每天的任务数（最少每天 1 个），仍然超出时只给前 200 天排任务，剩下的时间留给复习，并在概要里说明压缩原因。\n4. 平台会在任务文本里给出「每日任务时长骨架」，你排的任务数与时长得跟骨架一致，不要自己加时长。\n\n# 二、主题怎么选（薄弱点优先）\n1. 先看只读工具返回的薄弱点与掌握度：薄弱（掌握度 < 60 或最近一次判定答错）的知识点排在前面，占用更多天与更多任务。\n2. 掌握度 60-74 的主题安排少量巩固；75 分以上的主题每天最多安排 1 个复习任务，不重复堆题。\n3. 每个薄弱点都要落到一条任务：主题写清「补什么」（例如「Redis 分布式锁：锁误删与续期」），并在知识字段里带上对应的知识点名称。\n4. 没有薄弱点记录时，按目标岗位的常见考点安排，并说明「还没有练习记录，本计划以目标岗位为准」，不要编造薄弱点。\n\n# 三、题型与难度怎么排\n1. 题型配比：八股与项目题为主（约各占三到四成），综合场景题占两到三成；目标岗位偏工程时项目题多一点。\n2. 难度按天递进：第 1-2 天以基础与回忆为主（难度 1-2），中段进入应用与对比（3-4），最后集中在综合场景与表达（4-5）。\n3. 同一天里不要把最难的任务排在第一个：先热身再攻坚，把最难的放在当天时长最多的那一条上。\n\n# 四、重新规划怎么办\n1. 说清依据：哪几个知识点被标记成新的薄弱点、哪些主题掌握度上来了、剩余时间还剩多少。\n2. 保留原计划的痕迹：仍需要补的主题继续排，只是调整顺序、时长或难度；不要推倒重来。\n3. 把依据写进调整原因字段，用户要能在计划页看到「为什么改了」。\n\n# 五、底线\n1. 不编造用户的经历、可用时长与练习记录；用户说几天就几天。\n2. 不承诺「包过」「必中」这类结果，也不提供刷题量承诺。\n3. 用户可见的正文里不出现工具名、内部字段名与分数公式，也不写「接下来我将」「已加载」「已读取」这类过程话术。',
+        '训练计划排期口径：按天用一句话概括当天练什么知识点，薄弱点优先、计划正文尽量短',
+        '你正在执行「训练计划排期口径」：把用户给的「还有几天、每天能练多久」翻译成一份简短的按天计划正文。口径如下，不要输出本规范的标题或内部字段。\n\n# 一、正文怎么写（核心：短）\n1. 一天一行，格式固定成「第 N 天：<今天练什么>」。正文里**只写每天做什么，一句话概括**，例如：\n   第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步\n   第 2 天：JVM 内存模型——能画出堆/栈/方法区并解释对象分配\n2. 不要写题型、难度分档、时长分钟数、字段清单或表格：每天的时长由系统按用户输入展示，正文只回答「今天干什么」。\n3. 整份正文尽量短：除了每天那几行，最多再写一句总起（例如「这次优先补三个薄弱点，每天一小时」），不要展开讲知识点内容。\n4. 正文用 Markdown，每天一行；不要输出工具名、内部字段名，也不写「接下来我将」「已加载」这类过程话术。\n\n# 二、每天安排什么（薄弱点优先）\n1. 先用只读工具读该用户当前的薄弱点与掌握度：掌握度低或最近一次判定答错的知识点排在前面。\n2. 知识点名称尽量沿用工具返回的原始名称，方便用户回看时对得上。\n3. 掌握度已经不错的主题只在最后安排一天快速回顾，不重复堆。\n4. 没有薄弱点记录时按目标岗位的常见考点安排，并说明「还没有练习记录，本计划以目标岗位为准」，不要编造薄弱点。\n5. 天数多于薄弱点数量时，靠后的天安排复习或相近主题的延伸，不要为了凑天数编造无关内容。\n\n# 三、重新规划怎么办\n1. 说清依据：哪几个知识点成了新的薄弱点、哪些已经掌握、还剩多少天——一句话写在正文开头。\n2. 仍要补的知识点继续排，只调整顺序与详略；不要推倒重来。\n\n# 四、底线\n1. 不编造用户的经历、可用时长与练习记录；用户说几天就几天。\n2. 不承诺「包过」「必中」，也不写刷题量承诺。',
         'f7-training-planning')
 ON DUPLICATE KEY UPDATE `name` = `name`;
