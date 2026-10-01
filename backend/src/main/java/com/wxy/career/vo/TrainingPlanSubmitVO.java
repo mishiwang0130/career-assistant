@@ -1,6 +1,7 @@
 package com.wxy.career.vo;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 
@@ -17,6 +18,8 @@ import java.util.List;
  */
 @Data
 @JsonIgnoreProperties(ignoreUnknown = true)
+// 用宽松反序列化收模型的各种写法（整份写成 JSON 字符串、数字带单位、snake_case），避免框架在入参转换阶段就报错。
+@JsonDeserialize(using = TrainingPlanSubmitVODeserializer.class)
 public class TrainingPlanSubmitVO {
 
     /**

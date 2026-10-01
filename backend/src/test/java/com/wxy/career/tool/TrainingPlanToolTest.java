@@ -153,4 +153,21 @@ class TrainingPlanToolTest {
                 .contains("写入失败")
                 .contains("参数错误");
     }
+
+    /**
+     * 非业务异常（数据库异常、空指针一类）也要转成可读提示，不能让框架把这一轮直接标记成工具 ERROR。
+     */
+    @Test
+    void shouldTranslateUnexpectedFailure() {
+        doThrow(new IllegalStateException("DB down"))
+                .when(trainingPlanService).submitPlan(any(), anyString(), any());
+        var runtimeContext = io.agentscope.core.agent.RuntimeContext.builder()
+                .userId("7")
+                .sessionId("training-plan-7")
+                .build();
+
+        String message = submitTrainingPlanTool.submitTrainingPlan(new TrainingPlanSubmitVO(), runtimeContext);
+
+        assertThat(message).contains("提交失败").contains("IllegalStateException");
+    }
 }

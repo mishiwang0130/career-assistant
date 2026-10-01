@@ -94,9 +94,12 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
     private static final String NO_PLAN_MESSAGE = "本次没有生成出可用的计划，请重试";
 
     /**
-     * 自动确认的最大次数：正常路径只会自动确认一次，超过说明模型在反复请求写权限，直接结束避免死循环。
+     * 自动确认的最大次数。
+     *
+     * <p>模型每次重提计划都会再触发一次写工具确认（工具被拒后按提示改正再提交是正常路径），因此这个上限要覆盖
+     * 若干次重提：取值与计划 Agent 的步数上限同量级，真正防死循环靠框架的 max-iters。
      */
-    private static final int MAX_AUTO_CONFIRM = 2;
+    private static final int MAX_AUTO_CONFIRM = 10;
 
     /**
      * 日期格式。

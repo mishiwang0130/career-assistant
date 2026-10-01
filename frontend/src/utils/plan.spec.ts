@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import type { TrainingPlanRespVO } from '@/types/plan'
 import {
+  buildPlanCardPreview,
   buildPlanProgress,
   countRemainingDays,
   describeExistingPlan,
   describeGenerationProgress,
   isConfirmRequired,
   isGenerationTerminalEvent,
+  nextStreamText,
   parsePlanResultEvent,
   summarizePlan,
 } from '@/utils/plan'
@@ -168,5 +170,40 @@ describe('训练计划工具函数', () => {
     expect(isGenerationTerminalEvent('error')).toBe(true)
     expect(isGenerationTerminalEvent('result')).toBe(false)
     expect(isGenerationTerminalEvent('tool')).toBe(false)
+  })
+
+  it('思考增量先累积，正文一开始产出就丢弃思考', () => {
+    const first = nextStreamText({ thinking: '', answer: '' }, 'thinking', '{"content":"先看薄弱点"}')
+    expect(first).toEqual({ thinking: '先看薄弱点', answer: '' })
+
+    const second = nextStreamText(first!, 'thinking', '{"content":"，再排期"}')
+    expect(second).toEqual({ thinking: '先看薄弱点，再排期', answer: '' })
+
+    const third = nextStreamText(second!, 'delta', '{"content":"## 计划\\n第 1 天"}')
+    expect(third).toEqual({ thinking: '', answer: '## 计划\n第 1 天' })
+
+    // 正文产出后的思考增量不再补回。
+    const fourth = nextStreamText(third!, 'thinking', '{"content":"继续想"}')
+    expect(fourth).toEqual({ thinking: '', answer: '## 计划\n第 1 天' })
+  })
+
+  it('非文本事件与非法 JSON 不改变生成过程文本', () => {
+    expect(nextStreamText({ thinking: 'a', answer: 'b' }, 'tool', '{"name":"get_weak_points"}')).toBeNull()
+    expect(nextStreamText({ thinking: 'a', answer: 'b' }, 'delta', '{oops')).toBeNull()
+    expect(nextStreamText({ thinking: 'a', answer: 'b' }, 'delta', '{"content":""}')).toBeNull()
+  })
+
+  it('计划说明卡片默认只露前几行', () => {
+    const summary = '第一行\n\n第二行\n第三行\n第四行\n第五行'
+
+    const preview = buildPlanCardPreview(summary)
+
+    expect(preview).toContain('第一行')
+    expect(preview).toContain('第四行')
+    expect(preview).not.toContain('第五行')
+    expect(preview.endsWith('……')).toBe(true)
+    // 行数少时原样返回，不加省略号。
+    expect(buildPlanCardPreview('只有一行')).toBe('只有一行')
+    expect(buildPlanCardPreview(null)).toBe('')
   })
 })

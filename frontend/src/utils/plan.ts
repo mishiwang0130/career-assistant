@@ -173,6 +173,70 @@ export function isGenerationTerminalEvent(event: string): boolean {
   return event === 'done' || event === 'error'
 }
 
+/** 生成过程中的文本：思考与正文分开累积。 */
+export interface GenerationStreamText {
+  /** 思考增量累积的文本；正文一开始产出就丢弃，不再补回。 */
+  thinking: string
+  /** 正文（计划说明）增量累积的文本。 */
+  answer: string
+}
+
+/**
+ * 按事件更新生成过程的文本。
+ *
+ * 规则沿用会话里的展示口径：`thinking` 只在正文产出前展示，一旦出现 `delta` 立刻丢弃思考文本，
+ * 之后的思考增量不再补回；`tool`/`node` 属于内部过程，只通过进度文案体现，不混进正文。
+ *
+ * @param current 当前文本
+ * @param event 事件名
+ * @param data 事件的 data 行
+ * @returns 更新后的文本，事件与文本无关时返回 null
+ */
+export function nextStreamText(
+  current: GenerationStreamText,
+  event: string,
+  data: string,
+): GenerationStreamText | null {
+  if (event !== 'thinking' && event !== 'delta') {
+    return null
+  }
+  let content: unknown
+  try {
+    content = (JSON.parse(data) as { content?: unknown }).content
+  } catch {
+    return null
+  }
+  if (typeof content !== 'string' || content.length === 0) {
+    return null
+  }
+  if (event === 'delta') {
+    // 正文开始产出：思考过程立刻丢弃，不保留折叠入口。
+    return { thinking: '', answer: current.answer + content }
+  }
+  return { thinking: current.answer ? '' : current.thinking + content, answer: current.answer }
+}
+
+/**
+ * 生成计划说明卡片的折叠预览：取前若干行，避免整段 Markdown 直接把页面撑长。
+ *
+ * @param summary 计划说明（支持 Markdown）
+ * @param maxLines 预览行数，默认 4
+ * @returns 预览文本，说明为空时返回空串
+ */
+export function buildPlanCardPreview(summary: string | null | undefined, maxLines = 4): string {
+  if (!summary) {
+    return ''
+  }
+  const lines = summary
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+  if (lines.length <= maxLines) {
+    return lines.join('\n')
+  }
+  return `${lines.slice(0, maxLines).join('\n')}\n\n……`
+}
+
 /**
  * 把确认请求里的现有计划摘要拼成一句人话。
  *

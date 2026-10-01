@@ -66,6 +66,14 @@ public class SubmitTrainingPlanTool {
         } catch (BizException exception) {
             log.info("提交训练计划失败，userId={}，code={}", userId, exception.getErrorCode().getCode());
             return "提交失败：" + exception.getErrorCode().getMsg() + "。" + FIELD_HINT;
+        } catch (Exception exception) {
+            // 兜底：数据库异常、空指针一类非业务异常不能让整轮直接崩（框架会把工具异常标记成 ERROR 并中断这一轮），
+            // 这里转成可读提示让模型改正或重提，同时把堆栈打进日志便于定位。
+            log.error("提交训练计划出现非业务异常，userId={}，days={}，taskCount={}",
+                    userId, plan == null ? null : plan.getDays(),
+                    plan == null || plan.getTasks() == null ? null : plan.getTasks().size(), exception);
+            return "提交失败：服务端处理计划时出错（" + exception.getClass().getSimpleName()
+                    + "）。请检查字段与本次输入是否一致后重新提交一次。" + FIELD_HINT;
         }
     }
 }

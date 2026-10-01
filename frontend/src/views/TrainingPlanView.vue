@@ -20,6 +20,19 @@
         :title="`今日提醒：${planStore.plan.todayReminder.content}`"
       />
 
+      <!-- 生成说明卡片：默认只露几行 Markdown，点「展开全文」看完整说明（需求方要的「卡片 + 可打开」形态） -->
+      <el-card v-if="summaryText" class="plan-summary-card">
+        <template #header>
+          <div class="plan-summary-card__header">
+            <span>本次计划说明</span>
+            <el-button link type="primary" @click="summaryExpanded = !summaryExpanded">
+              {{ summaryExpanded ? '收起' : '展开全文' }}
+            </el-button>
+          </div>
+        </template>
+        <div class="plan-summary-card__body" v-html="renderedSummary"></div>
+      </el-card>
+
       <el-empty
         v-if="!planStore.plan?.hasPlan"
         description="还没有训练计划，输入天数和每天可练时长生成一份"
@@ -90,7 +103,12 @@
       </template>
     </el-card>
 
-    <el-dialog v-model="generationDialogVisible" title="生成训练计划" width="420px">
+    <el-dialog
+      v-model="generationDialogVisible"
+      title="生成训练计划"
+      width="560px"
+      :close-on-click-modal="false"
+    >
       <el-form label-position="top">
         <el-form-item label="还有几天">
           <el-input-number v-model="generationForm.days" :min="1" :max="365" :step="1" step-strictly />
@@ -105,7 +123,14 @@
           />
         </el-form-item>
       </el-form>
-      <p class="plan-dialog__hint">{{ progressText }}</p>
+      <div v-if="progressText || thinkingText || answerText || errorText" class="plan-stream">
+        <p v-if="progressText" class="plan-stream__hint">{{ progressText }}</p>
+        <div ref="streamRef" class="plan-stream__body">
+          <p v-if="thinkingText" class="plan-stream__thinking">{{ thinkingText }}</p>
+          <div v-if="answerText" class="plan-stream__answer" v-html="renderedAnswer"></div>
+        </div>
+        <p v-if="errorText" class="plan-stream__error">{{ errorText }}</p>
+      </div>
       <template #footer>
         <el-button :disabled="generating" @click="generationDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="generating" @click="handleSubmitGeneration">
@@ -117,7 +142,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -127,12 +152,15 @@ import { usePlanStore } from '@/stores/plan'
 import { useProfileStore } from '@/stores/profile'
 import type { TrainingPlanConfirmRequiredResult } from '@/types/plan'
 import {
+  buildPlanCardPreview,
   countRemainingDays,
   describeExistingPlan,
   describeGenerationProgress,
   isGenerationTerminalEvent,
+  nextStreamText,
   parsePlanResultEvent,
 } from '@/utils/plan'
+import { renderMarkdown } from '@/utils/markdown'
 
 /** 求职目标未填写的业务错误码，与后端 ErrorConstant.USER_PROFILE_REQUIRED 一致。 */
 const PROFILE_REQUIRED_CODE = 1101
@@ -163,6 +191,43 @@ const generationForm = reactive({
 
 /** 流式过程中的文本，用于给用户即时反馈。 */
 const progressText = ref('')
+
+/** 生成过程里的思考文本（正文产出后清空）。 */
+const thinkingText = ref('')
+
+/** 生成过程里的正文文本（计划说明）。 */
+const answerText = ref('')
+
+/** 本轮生成的失败原因，展示在弹窗里而不是只弹一个 toast。 */
+const errorText = ref('')
+
+/** 计划说明卡片是否展开全文。 */
+const summaryExpanded = ref(false)
+
+/** 生成过程区域的滚动容器。 */
+const streamRef = ref<HTMLElement | null>(null)
+
+/** 计划说明正文：优先用落库的概要，没有时用本次流式产出的正文。 */
+const summaryText = computed(() => {
+  const summary = planStore.plan?.hasPlan ? planStore.plan.summary : ''
+  return summary?.trim() ? summary : answerText.value.trim() ? answerText.value : ''
+})
+
+/** 折叠预览（默认只露几行）。 */
+const renderedSummary = computed(() =>
+  renderMarkdown(summaryExpanded.value ? summaryText.value : buildPlanCardPreview(summaryText.value)),
+)
+
+/** 生成过程正文的 Markdown 渲染结果。 */
+const renderedAnswer = computed(() => renderMarkdown(answerText.value))
+
+// 生成过程中让过程区自动滚到底部，用户能一直看到最新产出。
+watch([thinkingText, answerText, progressText], async () => {
+  await nextTick()
+  if (streamRef.value) {
+    streamRef.value.scrollTop = streamRef.value.scrollHeight
+  }
+})
 
 /** 本次生成的取消句柄，超时或用户关闭弹窗时中断等待。 */
 let generationAbort: AbortController | null = null
@@ -210,6 +275,9 @@ function handleGenerate(): void {
 async function handleSubmitGeneration(): Promise<void> {
   generating.value = true
   progressText.value = '正在按你的薄弱点排计划…'
+  thinkingText.value = ''
+  answerText.value = ''
+  errorText.value = ''
   generationAbort = new AbortController()
   const timer = window.setTimeout(() => {
     generationAbort?.abort()
@@ -236,7 +304,11 @@ async function handleSubmitGeneration(): Promise<void> {
  * @param data 事件数据（单行 JSON）
  */
 function onGenerationEvent(event: string, data: string): void {
-  if (event === 'delta') {
+  // 思考与正文按会话里的同一套展示口径累积：正文一出现就丢弃思考。
+  const streamed = nextStreamText({ thinking: thinkingText.value, answer: answerText.value }, event, data)
+  if (streamed) {
+    thinkingText.value = streamed.thinking
+    answerText.value = streamed.answer
     return
   }
   // 工具事件只用来给一个「正在做什么」的进度，不展示工具名；thinking 属于内部过程，不展示。
@@ -251,7 +323,8 @@ function onGenerationEvent(event: string, data: string): void {
   }
   if (event === 'error') {
     progressText.value = ''
-    ElMessage.error(readMessage(data) ?? '计划生成失败，请稍后重试')
+    errorText.value = readMessage(data) ?? '计划生成失败，请稍后重试'
+    ElMessage.error(errorText.value)
     return
   }
   if (event !== 'result') {
@@ -491,5 +564,78 @@ function readMessage(data: string): string | null {
   margin: 0;
   color: #909399;
   font-size: 12px;
+}
+
+.plan-summary-card {
+  margin-bottom: 16px;
+  border-radius: 12px;
+}
+
+.plan-summary-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2d3d;
+}
+
+.plan-summary-card__body {
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.plan-summary-card__body :deep(h1),
+.plan-summary-card__body :deep(h2),
+.plan-summary-card__body :deep(h3) {
+  margin: 8px 0;
+  font-size: 14px;
+}
+
+.plan-summary-card__body :deep(pre) {
+  overflow-x: auto;
+  padding: 8px;
+  background: #f7f8fa;
+  border-radius: 6px;
+}
+
+.plan-stream {
+  margin-top: 12px;
+}
+
+.plan-stream__hint {
+  margin: 0 0 6px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.plan-stream__body {
+  max-height: 220px;
+  padding: 10px;
+  overflow-y: auto;
+  background: #f7f8fa;
+  border-radius: 8px;
+}
+
+.plan-stream__thinking {
+  margin: 0;
+  color: #a8abb2;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.plan-stream__answer {
+  color: #303133;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.plan-stream__error {
+  margin: 8px 0 0;
+  color: #f56c6c;
+  font-size: 12px;
+  line-height: 1.6;
 }
 </style>
