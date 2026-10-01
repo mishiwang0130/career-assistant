@@ -159,8 +159,8 @@ class TrainingPlanGenerationServiceImplTest {
         when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
         when(planConfirmStore.markGenerating(1L)).thenReturn(true);
         when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
-        when(planner.streamEvents(any(Msg.class), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+        when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
+                .thenReturn(Flux.<AgentEvent>empty());
         TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
         reqVO.setDays(7);
         reqVO.setDailyMinutes(60);
@@ -185,10 +185,9 @@ class TrainingPlanGenerationServiceImplTest {
         when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
         when(planConfirmStore.markGenerating(1L)).thenReturn(true);
         when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
-        when(planner.streamEvents(any(Msg.class), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.just(buildConfirmEvent()));
+        // 第一轮：发出确认请求（暂停）；重订阅那轮：立即结束，产物已由服务层取走。
         when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.<AgentEvent>empty());
+                .thenReturn(Flux.just(buildConfirmEvent()), Flux.<AgentEvent>empty());
         TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
         reqVO.setDays(7);
         reqVO.setDailyMinutes(60);
@@ -196,9 +195,12 @@ class TrainingPlanGenerationServiceImplTest {
         assertThat(generationService.generate(reqVO)).isNotNull();
 
         ArgumentCaptor<List<Msg>> captor = ArgumentCaptor.forClass(List.class);
-        verify(planner, org.mockito.Mockito.timeout(3000))
+        // 等两次调用都发生（原始任务 + 带确认结论的重订阅）再读捕获的参数，避免读到第一次的入参。
+        verify(planner, org.mockito.Mockito.timeout(3000).times(2))
                 .streamEvents(captor.capture(), any(io.agentscope.core.agent.RuntimeContext.class));
-        Object rawResults = captor.getValue().get(0).getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
+        // 两次调用：第一次是原始任务，第二次（最后一条）才是带确认结论的重订阅。
+        List<Msg> confirmMessages = captor.getAllValues().get(captor.getAllValues().size() - 1);
+        Object rawResults = confirmMessages.get(0).getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
         assertThat(rawResults).isInstanceOf(List.class);
         List<?> confirmResults = (List<?>) rawResults;
         assertThat(confirmResults).hasSize(1);
@@ -225,12 +227,10 @@ class TrainingPlanGenerationServiceImplTest {
         when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
         HarnessAgent planner = mock(HarnessAgent.class);
         when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
-        // 第一轮流：发出确认请求后正常结束（这就是暂停）。
-        when(planner.streamEvents(any(Msg.class), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.just(buildConfirmEvent()));
-        // 重订阅那轮流：仍在进行中（真实场景里它会继续跑工具与模型），用来验证它没有被上一轮流掐掉。
+        // 第一轮流：发出确认请求后正常结束（这就是暂停）；重订阅那轮：仍在进行中，
+        // 用来验证它没有被上一轮流的结束掐掉（真实场景里它会继续跑工具与模型）。
         when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.<AgentEvent>never());
+                .thenReturn(Flux.just(buildConfirmEvent()), Flux.<AgentEvent>never());
 
         SseEmitterSupport support = mock(SseEmitterSupport.class);
         when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
@@ -269,6 +269,50 @@ class TrainingPlanGenerationServiceImplTest {
         verify(trainingPlanService, never()).submitPlan(anyLong(), anyString(), any());
         // 过期时顺带清掉 Agent 里可能残留的待确认状态，否则用户重新生成会被框架拒绝。
         verify(planConfirmStore).clearPending(1L);
+    }
+
+    /**
+     * 旧规划态不可用时（框架的 SYSTEM 注入守卫 / 挂起的待确认调用）清理状态后自动重试一次。
+     *
+     * <p>线上踩过：计划 Agent 的旧状态会让框架在任何业务动作之前就抛
+     * {@code Hooks must not inject SYSTEM messages...}，用户看到「计划生成失败」，再点一次还是失败。
+     * 这类失败发生在写库之前，清理状态后重试是安全的。
+     */
+    @Test
+    void shouldRetryOnceWhenPlanStateIsUnusable() {
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
+        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        HarnessAgent planner = mock(HarnessAgent.class);
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        // 第一次调用直接被框架的守卫拒绝；重试后正常结束（产物由服务层取走）。
+        when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
+                .thenReturn(Flux.error(new IllegalStateException(
+                                "Hooks must not inject SYSTEM messages into PreCallEvent.inputMessages."
+                                        + " Use event.setSystemMessage() or event.appendSystemContent() instead.")),
+                        Flux.<AgentEvent>empty());
+        TrainingPlanRespVO plan = new TrainingPlanRespVO();
+        plan.setHasPlan(Boolean.TRUE);
+        plan.setPlanId(77L);
+        when(trainingPlanService.consumeSubmittedPlan(1L, "training-plan-1")).thenReturn(plan);
+        SseEmitterSupport support = mock(SseEmitterSupport.class);
+        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
+        TrainingPlanGenerationServiceImpl spiedService = org.mockito.Mockito.spy(generationService);
+        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
+        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
+        reqVO.setDays(7);
+        reqVO.setDailyMinutes(60);
+
+        assertThat(spiedService.generate(reqVO)).isNotNull();
+
+        // 先清理旧规划态（清 Redis 里的待确认快照 + Agent 会话状态），再重试并成功下发计划。
+        org.mockito.Mockito.verify(planConfirmStore, org.mockito.Mockito.timeout(3000).atLeastOnce())
+                .clearPending(1L);
+        org.mockito.Mockito.verify(planner, org.mockito.Mockito.timeout(3000).atLeast(2))
+                .clearContext("1", "training-plan-1");
+        org.mockito.Mockito.verify(support, org.mockito.Mockito.timeout(3000))
+                .sendResult(any(Object.class));
+        org.mockito.Mockito.verify(support, org.mockito.Mockito.never()).sendError(anyString());
     }
 
     /**

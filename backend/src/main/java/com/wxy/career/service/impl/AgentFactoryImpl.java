@@ -1082,7 +1082,9 @@ public class AgentFactoryImpl implements AgentFactory {
         toolkit.registerTool(getWeakPointsTool);
         toolkit.registerTool(submitTrainingPlanTool);
         HarnessAgent agent = HarnessAgent.Builder
-                .fromAgent(buildLongTermReactAgent(AgentFactory.PLANNER_AGENT_NAME,
+                // 计划 Agent 不挂长期记忆：本模块的薄弱点只从 MySQL 读（get_weak_points），
+                // 记忆库只服务 F9 的讲解连续性，计划生成链路不查也不写。
+                .fromAgent(buildPlannerReactAgent(AgentFactory.PLANNER_AGENT_NAME,
                         PLANNER_AGENT_DESCRIPTION, toolkit, PLANNER_MAX_ITERS))
                 .name(AgentFactory.PLANNER_AGENT_NAME)
                 .description(PLANNER_AGENT_DESCRIPTION)
@@ -1114,6 +1116,37 @@ public class AgentFactoryImpl implements AgentFactory {
         log.info("构建 Agent 完成，agentName={}，tools={}，skills={}",
                 agent.getName(), agent.getToolkit().getToolNames(), agent.getSkillRepositories().size());
         return agent;
+    }
+
+    /**
+     * 构建计划 Agent 的底层 ReActAgent（**不挂长期记忆**）。
+     *
+     * <p>与助手 / 面试官不同，计划 Agent 不带 {@code longTermMemory}：
+     *
+     * <ol>
+     *   <li>本模块的薄弱点只从 MySQL 读（复用 {@code get_weak_points}），记忆库不参与计划生成；</li>
+     *   <li>少一个框架记忆钩子，计划生成链路更确定：记忆召回属于「跨会话讲解连续性」的能力，只服务 F9。</li>
+     * </ol>
+     *
+     * @param agentName Agent 名
+     * @param description Agent 描述
+     * @param toolkit 已注册业务工具的 Toolkit
+     * @param maxIters 步数上限
+     * @return 未挂长期记忆的底层 Agent
+     */
+    private ReActAgent buildPlannerReactAgent(
+            String agentName, String description, Toolkit toolkit, int maxIters) {
+        return ReActAgent.builder()
+                .name(agentName)
+                .description(description)
+                .sysPrompt(systemPromptProvider.prompt(agentName))
+                .model(agentModel)
+                .generateOptions(GenerateOptions.builder().temperature(0.6).build())
+                .toolkit(toolkit)
+                .maxIters(maxIters)
+                .middlewares(List.of(systemPromptMiddleware, metricsMiddleware))
+                .stateStore(agentStateStore)
+                .build();
     }
 
     /**

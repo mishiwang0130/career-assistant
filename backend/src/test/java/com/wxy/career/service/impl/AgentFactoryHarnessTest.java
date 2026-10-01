@@ -57,8 +57,11 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -259,6 +262,29 @@ class AgentFactoryHarnessTest {
         assertThat(config.getToolkit().getToolNames())
                 .containsExactlyInAnyOrder("list_planned_users", "save_training_reminder");
         assertThat(config.getModel()).isSameAs(capturingModel);
+    }
+
+    /**
+     * 验证计划 Agent 不挂长期记忆：生成计划时不会去记忆库召回（薄弱点只从 MySQL 读）。
+     */
+    @Test
+    void shouldNotAttachLongTermMemoryToPlanner() {
+        com.wxy.career.middleware.UserLongTermMemoryAdapter adapter =
+                mock(com.wxy.career.middleware.UserLongTermMemoryAdapter.class);
+        when(adapter.retrieve(any(Msg.class))).thenReturn(reactor.core.publisher.Mono.just("历史片段"));
+        ReflectionTestUtils.setField(agentFactory, "userLongTermMemoryAdapter", adapter);
+
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME);
+        RuntimeContext runtimeContext = RuntimeContext.builder()
+                .userId("1")
+                .sessionId("training-plan-memory")
+                .build();
+        capturingModel.reset();
+        agent.streamEvents(Msg.builder().role(MsgRole.USER).textContent("生成训练计划").build(), runtimeContext)
+                .blockLast();
+
+        // 计划 Agent 的底层 Agent 没有挂长期记忆，因此框架不会调用适配层召回。
+        verify(adapter, never()).retrieve(any(Msg.class));
     }
 
     /**

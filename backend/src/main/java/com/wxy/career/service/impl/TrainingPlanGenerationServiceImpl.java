@@ -184,12 +184,12 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
                     UUID.randomUUID().toString());
             StreamState state = new StreamState(
                     support, userId, sessionId, days, dailyMinutes, hasActivePlan, agent);
-            Msg userMessage = Msg.builder()
+            state.requestMessages = List.of(Msg.builder()
                     .name(USER_MESSAGE_NAME)
                     .role(MsgRole.USER)
                     .textContent(buildTaskText(profile, days, dailyMinutes, hasActivePlan, userId))
-                    .build();
-            subscribe(state, agent.streamEvents(userMessage, runtimeContext(state)));
+                    .build());
+            subscribe(state, agent.streamEvents(state.requestMessages, runtimeContext(state)));
             return support.getEmitter();
         } catch (RuntimeException exception) {
             // 进流前失败必须释放占位，否则该用户要等标记过期才能再次生成。
@@ -232,7 +232,8 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         boolean hasActivePlan = trainingPlanService.hasActivePlan(userId);
         StreamState state = new StreamState(
                 support, userId, sessionId, null, null, hasActivePlan, agent);
-        subscribe(state, agent.streamEvents(List.of(confirmMessage(pending)), runtimeContext(state)));
+        state.requestMessages = List.of(confirmMessage(pending));
+        subscribe(state, agent.streamEvents(state.requestMessages, runtimeContext(state)));
         return support.getEmitter();
     }
 
@@ -325,8 +326,8 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
                 finish(state, STREAM_ERROR_MESSAGE);
                 return;
             }
-            subscribe(state, state.agent.streamEvents(
-                    List.of(confirmMessage(pending, true)), runtimeContext(state)));
+            state.requestMessages = List.of(confirmMessage(pending, true));
+            subscribe(state, state.agent.streamEvents(state.requestMessages, runtimeContext(state)));
             return;
         }
         // 已有生效计划：把确认请求下发给前端，本次流到此结束；用户确认后走 confirm 阶段继续。
@@ -348,8 +349,38 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
      * @param error 异常
      */
     private void onError(StreamState state, Throwable error) {
-        log.error("计划生成流异常，userId={}", state.userId, error);
+        log.error("计划生成流异常，userId={}，sessionId={}，agent={}",
+                state.userId, state.sessionId, state.agent.getName(), error);
+        // 脏规划态类错误（挂起的待确认调用、框架的 SYSTEM 注入守卫等）发生在任何业务动作之前：
+        // 清掉规划态后重试一次，用户不必自己再点一次，也不会把脏状态留在下一轮。
+        if (isDirtyPlanStateError(error) && state.retryAttempted.compareAndSet(false, true)) {
+            log.warn("检测到计划 Agent 的旧规划态不可用，清理后重试一次，userId={}", state.userId);
+            resetPreviousGeneration(state.userId, state.sessionId);
+            subscribe(state, state.agent.streamEvents(state.requestMessages, runtimeContext(state)));
+            return;
+        }
+        // 这一轮失败同样清掉规划态：下次点击从干净状态开始（失败发生在业务动作之前，没有副作用）。
+        safeClearPlanState(state.userId, state.sessionId);
         finish(state, STREAM_ERROR_MESSAGE);
+    }
+
+    /**
+     * 判断异常是否属于「计划 Agent 的旧规划态不可用」。
+     *
+     * <p>两类都出现过：一是上一次生成停在覆盖确认（框架提示 paused for human-in-the-loop confirmation），
+     * 二是框架钩子在旧状态上注入了 SYSTEM 消息（Hooks must not inject SYSTEM messages）。它们在业务动作之前
+     * 就失败，清理状态后重试是安全的。
+     *
+     * @param error 异常
+     * @return true 表示可以清理状态后重试
+     */
+    private boolean isDirtyPlanStateError(Throwable error) {
+        String message = error == null ? null : error.getMessage();
+        if (!StringUtils.hasText(message)) {
+            return false;
+        }
+        return message.contains("human-in-the-loop confirmation")
+                || message.contains("Hooks must not inject SYSTEM messages");
     }
 
     /**
@@ -791,6 +822,17 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
          * 自动确认次数。
          */
         private final AtomicInteger autoConfirmCount = new AtomicInteger();
+
+        /**
+         * 本次运行是否已经因「旧规划态不可用」重试过一次。
+         */
+        private final java.util.concurrent.atomic.AtomicBoolean retryAttempted =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        /**
+         * 本次调用的输入消息，重试时原样重发。
+         */
+        private List<Msg> requestMessages = List.of();
 
         /**
          * 订阅代次：每次（重）订阅自增，只有最新一代的事件会改变流的状态。
