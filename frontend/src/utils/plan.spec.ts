@@ -6,6 +6,7 @@ import {
   countRemainingDays,
   describeExistingPlan,
   isConfirmRequired,
+  parsePlanResultEvent,
   summarizePlan,
 } from '@/utils/plan'
 
@@ -112,5 +113,33 @@ describe('训练计划工具函数', () => {
     expect(text).toContain('Java 后端开发')
     expect(text).toContain('剩余 4 天')
     expect(text).toContain('3/8')
+  })
+
+  it('result 事件按协议取外层 data 里的结构化产物', () => {
+    // 冻结协议：data 行是 {"data": <结构化产物>}，不是把产物直接当 data。
+    const raw = JSON.stringify({ data: { type: 'training_plan', plan: PLAN } })
+
+    const payload = parsePlanResultEvent(raw)
+
+    expect(payload?.type).toBe('training_plan')
+    expect(payload && 'plan' in payload ? payload.plan.planId : null).toBe(9)
+  })
+
+  it('覆盖确认与放弃覆盖的结果都能解析出来', () => {
+    const confirmRaw = JSON.stringify({
+      data: { type: 'plan_confirm_required', message: '已有计划', existingPlan: { planId: 9 } },
+    })
+    const rejectedRaw = JSON.stringify({ data: { type: 'plan_confirm_rejected', message: '已保留' } })
+
+    expect(parsePlanResultEvent(confirmRaw)?.type).toBe('plan_confirm_required')
+    expect(parsePlanResultEvent(rejectedRaw)?.type).toBe('plan_confirm_rejected')
+  })
+
+  it('非计划结果、空值与非法 JSON 一律返回 null，不抛异常', () => {
+    // 助手链路的 result（简历诊断等）不能误当成训练计划结果。
+    expect(parsePlanResultEvent(JSON.stringify({ data: { type: 'resume_diagnosis' } }))).toBeNull()
+    expect(parsePlanResultEvent(JSON.stringify({ type: 'training_plan' }))).toBeNull()
+    expect(parsePlanResultEvent('')).toBeNull()
+    expect(parsePlanResultEvent('{oops')).toBeNull()
   })
 })

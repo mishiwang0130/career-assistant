@@ -83,6 +83,55 @@ export function isConfirmRequired(payload: TrainingPlanResultPayload): boolean {
 }
 
 /**
+ * 解析 SSE `result` 事件的 data 行。
+ *
+ * 冻结协议里 `result` 事件的 data 是 `{"data": <结构化产物>}`（见 SseEvent.result 与助手链路同样的读取方式），
+ * 不是把结构化产物直接当 data。两者搞混的表现是：F12 里能看到 result 事件与内容，页面却什么都不显示。
+ *
+ * @param raw SSE data 行（单行 JSON）
+ * @returns 训练计划结果载荷，不是计划结果或解析失败时返回 null
+ */
+export function parsePlanResultEvent(raw: string): TrainingPlanResultPayload | null {
+  if (!raw) {
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const payload = unwrapResultPayload(parsed)
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+  const type = (payload as { type?: unknown }).type
+  if (type === 'plan_confirm_required' || type === 'training_plan' || type === 'plan_confirm_rejected') {
+    // 已按 type 收窄到三个取值，这里显式经 unknown 转换，避免 TS 认为两个类型不重叠。
+    return payload as unknown as TrainingPlanResultPayload
+  }
+  return null
+}
+
+/**
+ * 剥掉 `result` 事件的外层 `{data: ...}` 包装。
+ *
+ * @param parsed 解析后的 data 行
+ * @returns 结构化产物，取不到时返回 null
+ */
+function unwrapResultPayload(parsed: unknown): Record<string, unknown> | null {
+  if (parsed === null || typeof parsed !== 'object') {
+    return null
+  }
+  const envelope = parsed as { data?: unknown }
+  const inner = envelope.data
+  if (inner !== null && typeof inner === 'object') {
+    return inner as Record<string, unknown>
+  }
+  return null
+}
+
+/**
  * 把确认请求里的现有计划摘要拼成一句人话。
  *
  * @param summary 现有计划摘要

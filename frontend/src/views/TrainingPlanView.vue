@@ -125,11 +125,8 @@ import * as planApi from '@/api/plan'
 import { BizError } from '@/api/request'
 import { usePlanStore } from '@/stores/plan'
 import { useProfileStore } from '@/stores/profile'
-import type {
-  TrainingPlanConfirmRequiredResult,
-  TrainingPlanResultPayload,
-} from '@/types/plan'
-import { countRemainingDays, describeExistingPlan } from '@/utils/plan'
+import type { TrainingPlanConfirmRequiredResult } from '@/types/plan'
+import { countRemainingDays, describeExistingPlan, parsePlanResultEvent } from '@/utils/plan'
 
 /** 求职目标未填写的业务错误码，与后端 ErrorConstant.USER_PROFILE_REQUIRED 一致。 */
 const PROFILE_REQUIRED_CODE = 1101
@@ -227,7 +224,7 @@ function onGenerationEvent(event: string, data: string): void {
   if (event !== 'result') {
     return
   }
-  const payload = parsePayload(data)
+  const payload = parsePlanResultEvent(data)
   if (!payload) {
     return
   }
@@ -307,20 +304,6 @@ function handleGenerationError(error: unknown): void {
     return
   }
   ElMessage.error('计划生成失败，请稍后重试')
-}
-
-/**
- * 解析 result 事件载荷。
- *
- * @param data 单行 JSON
- * @returns 载荷，解析失败时返回 null
- */
-function parsePayload(data: string): TrainingPlanResultPayload | null {
-  try {
-    return JSON.parse(data) as TrainingPlanResultPayload
-  } catch {
-    return null
-  }
 }
 
 /**
