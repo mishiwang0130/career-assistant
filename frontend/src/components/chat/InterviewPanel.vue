@@ -30,7 +30,7 @@
       </div>
       <!--
         消息气泡下方就是结构化卡片的渲染位（MessageBubble 内按 result.type 分流）：
-        本批已承载面试进度，F6 的逐题点评与报告卡片直接在同一位置新增分支即可。
+        本批已承载面试进度；逐题点评与面试报告统一在面试结束时渲染在消息区下方（见下面的结果卡片与报告卡片）。
       -->
       <MessageBubble
         v-for="message in assistantStore.messages"

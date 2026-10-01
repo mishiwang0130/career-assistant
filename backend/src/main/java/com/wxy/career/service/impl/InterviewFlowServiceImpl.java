@@ -5,6 +5,7 @@ import com.wxy.career.common.enums.ChatSceneEnum;
 import com.wxy.career.common.enums.InterviewActionEnum;
 import com.wxy.career.common.enums.InterviewOutcomeEnum;
 import com.wxy.career.common.enums.InterviewQuestionTypeEnum;
+import com.wxy.career.common.enums.MessageRoleEnum;
 import com.wxy.career.common.exception.BizException;
 import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.config.InterviewProperties;
@@ -12,14 +13,17 @@ import com.wxy.career.mapper.ChatSessionMapper;
 import com.wxy.career.mapper.InterviewQaMapper;
 import com.wxy.career.po.ChatSession;
 import com.wxy.career.po.InterviewQa;
+import com.wxy.career.service.AssistantMessageService;
 import com.wxy.career.service.InterviewFlowService;
 import com.wxy.career.service.UserProfileService;
+import com.wxy.career.vo.AssistantMessageRespVO;
 import com.wxy.career.vo.InterviewAnswerResultVO;
 import com.wxy.career.vo.InterviewAnswerSubmitVO;
 import com.wxy.career.vo.InterviewResultItemVO;
 import com.wxy.career.vo.InterviewResultRespVO;
 import com.wxy.career.vo.InterviewStateRespVO;
 import com.wxy.career.vo.AnswerEvaluationSubmitVO;
+import com.wxy.career.vo.PageRespVO;
 import com.wxy.career.vo.UserProfileRespVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -87,6 +91,11 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
     private static final long TURN_BUFFER_TTL_MILLIS = 30L * 60L * 1000L;
 
     /**
+     * 读取「本回合题目」时的分页大小：取最近两条消息，跳过用户消息拿上一条助手消息。
+     */
+    private static final long LAST_QUESTION_PAGE_SIZE = 2L;
+
+    /**
      * 参考得分下限。
      */
     private static final int SCORE_MIN = 0;
@@ -113,6 +122,13 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
      */
     @Resource
     private UserProfileService userProfileService;
+
+    /**
+     * 消息服务：回合开始时用它记下用户正在回答的那道题（上一条助手消息），
+     * 供「模型漏调记录工具」时的收尾兜底补记使用。
+     */
+    @Resource
+    private AssistantMessageService assistantMessageService;
 
     /**
      * 面试配置，提供题量与上下文压缩阈值。
@@ -142,6 +158,56 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
      * 评分不可用时的判定要点：写明原因，便于 F6 复盘时识别这一题没有真实评分。
      */
     private static final String FALLBACK_JUDGEMENT = "评分不可用，本回合按答得有遗漏处理";
+
+    /**
+     * 兜底补记收尾回合时，取不到题目正文时的占位文案。
+     */
+    private static final String FALLBACK_QUESTION = "（本题题目未记录）";
+
+    /**
+     * 判定「用户明确要求结束面试」的关键词。
+     *
+     * <p>只在模型漏调记录工具的兜底里用，判定刻意保守：整条消息去掉空白与标点后不超过
+     * {@link #END_REQUEST_MAX_LENGTH} 个字，且包含这里的关键词（或整条消息就是「结束」）。
+     * 这样「结束面试吧」「不面了」会被识别，而「结束语怎么写」这类正常提问不会误判成收尾。
+     */
+    private static final List<String> END_REQUEST_KEYWORDS = List.of(
+            "结束面试", "结束这场", "结束吧", "不面了", "不想面", "不答了",
+            "到此为止", "停止面试", "面完了", "就到这", "不来了");
+
+    /**
+     * 判定「用户要求结束」时的消息长度上限（去掉空白与标点后的字符数）。
+     */
+    private static final int END_REQUEST_MAX_LENGTH = 8;
+
+    /**
+     * 判断用户这条消息是不是「明确要求结束面试」。
+     *
+     * <p>给「模型漏调记录工具」的兜底用：题量走满或用户明确要求结束时，平台自己把收尾回合补记下来，
+     * 保证面试一定能走到结束并给出逐题点评与报告。判定保守，宁可漏判也不误判（漏判只是保持原有行为：
+     * 这一轮不推进、用户重新作答）。
+     *
+     * @param answer 用户本回合的消息内容
+     * @return 是否明确要求结束
+     */
+    static boolean isEndRequest(String answer) {
+        if (!StringUtils.hasText(answer)) {
+            return false;
+        }
+        String normalized = answer.replaceAll("[\\s\\p{Punct}。，、？！；：“”‘’（）【】]", "");
+        if (normalized.isEmpty() || normalized.length() > END_REQUEST_MAX_LENGTH) {
+            return false;
+        }
+        if ("结束".equals(normalized)) {
+            return true;
+        }
+        for (String keyword : END_REQUEST_KEYWORDS) {
+            if (normalized.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /**
      * 面试回合准入校验并记下本回合的用户回答。
@@ -175,7 +241,9 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         purgeExpired(now);
         // 新回合开始：上一回合的评分结论作废，避免旧结论被用在这一题上。
         evaluationBuffer.remove(bufferKey(userId, sessionId));
-        turnBuffer.put(bufferKey(userId, sessionId), new BufferedTurn(pending, now));
+        // 顺手记下用户正在回答的题目：模型漏调记录工具时，平台要靠它把收尾回合补记完整。
+        turnBuffer.put(bufferKey(userId, sessionId),
+                new BufferedTurn(pending, currentQuestion(userId, sessionIdValue), now));
         return state;
     }
 
@@ -281,7 +349,8 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
                 questionType, outcome, judgement, evaluationJson, action);
         long now = System.currentTimeMillis();
         purgeExpired(now);
-        turnBuffer.put(bufferKey(userId, sessionId), new BufferedTurn(row, now));
+        turnBuffer.put(bufferKey(userId, sessionId),
+                new BufferedTurn(row, recorded == null ? null : recorded.pendingQuestion(), now));
         // 结论只服务本回合：记录成功后立即取走，模型重复调用时不会再落一条重复记录。
         evaluationBuffer.remove(bufferKey(userId, sessionId));
         // 下一步状态与落库后的回放结果同源：同一份规则、同一条记录，实时与回放不会走偏。
@@ -310,16 +379,117 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         }
         InterviewQa row = buffered.row();
         if (row.getNextAction() == null || row.getOutcome() == null || row.getQuestion() == null) {
-            // 只填了用户回答的占位记录说明模型没走完本回合（例如评分结论一直没提交上来）：
-            // 宁可这一轮不推进，也不能把半截数据写进表里。
-            log.warn("面试回合记录不完整，跳过落库，userId={}，sessionId={}", userId, sessionId);
-            return null;
+            // 只填了用户回答的占位记录说明模型没走完本回合（漏调 record_interview_answer 或评分结论没提交上来）。
+            // 如果这一回合本该收尾（题量走满或用户明确要求结束），平台按兜底口径补记，保证面试一定能结束并出结果；
+            // 其余情况仍然不推进、不写半截数据，用户重新作答即可。
+            row = synthesizeFinishFallback(userId, sessionId, buffered);
+            if (row == null) {
+                log.warn("面试回合记录不完整，跳过落库，userId={}，sessionId={}", userId, sessionId);
+                return null;
+            }
         }
         interviewQaMapper.insert(row);
         // 以落库后的完整记录回放状态，界面拿到的进度就是下一次出题时的真实进度。
         List<InterviewQa> rows = interviewQaMapper.selectBySession(userId, row.getSessionId());
         int startDifficulty = resolveStartDifficulty(loadWorkYears(userId));
         return deriveState(sessionId, interviewProperties.getQuestionCount(), startDifficulty, rows);
+    }
+
+    /**
+     * 模型漏调记录工具时的收尾兜底：只有在「本回合确实该收尾」时才补记一条完整记录。
+     *
+     * <p>触发条件（二者之一）：
+     * <ol>
+     *   <li>主问题已经答满（questionIndex ≥ questionCount）；</li>
+     *   <li>用户本回合明确要求结束（{@link #isEndRequest(String)}）。</li>
+     * </ol>
+     * 其余情况返回 null，保持「进度停在原处、用户重新作答即可」的既有行为，绝不写半截数据。
+     *
+     * <p>补记所需的题目来自回合开始时记下的上一条助手消息；判定与点评优先取评分子 Agent 已经提交的结论
+     * （评分在面试官开流前就完成了），拿不到就按既有的保守口径「答得有遗漏」处理。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @param buffered 本回合的运行态缓冲
+     * @return 补记完整的收尾记录；不需要或无法补记时返回 null
+     */
+    private InterviewQa synthesizeFinishFallback(Long userId, String sessionId, BufferedTurn buffered) {
+        Long sessionIdValue = parseSessionId(sessionId);
+        if (sessionIdValue == null) {
+            return null;
+        }
+        InterviewStateRespVO current = loadState(userId, sessionId, sessionIdValue);
+        if (Boolean.TRUE.equals(current.getFinished())) {
+            return null;
+        }
+        BufferedEvaluation evaluation = evaluationBuffer.get(bufferKey(userId, sessionId));
+        InterviewOutcomeEnum outcome = evaluation == null
+                ? InterviewOutcomeEnum.PARTIAL : InterviewOutcomeEnum.find(evaluation.payload().getOutcome());
+        if (outcome == null) {
+            outcome = InterviewOutcomeEnum.PARTIAL;
+        }
+        String answer = buffered.row() == null ? null : buffered.row().getAnswer();
+        boolean endNow = isEndRequest(answer);
+        InterviewActionEnum action = decideAction(
+                current.getQuestionIndex(), current.getRoundNo(), current.getQuestionCount(), outcome, endNow);
+        if (action != InterviewActionEnum.FINISHED) {
+            return null;
+        }
+        InterviewQuestionTypeEnum questionType = InterviewQuestionTypeEnum.find(current.getRecommendedQuestionType());
+        if (questionType == null) {
+            // 建议题型取不到时按八股题落库：这一列非空，且题型只影响统计展示。
+            questionType = InterviewQuestionTypeEnum.BASIC;
+        }
+        String question = StringUtils.hasText(buffered.pendingQuestion())
+                ? buffered.pendingQuestion() : FALLBACK_QUESTION;
+        String judgement = evaluation == null ? FALLBACK_JUDGEMENT : evaluation.payload().getComment();
+        InterviewQa row = new InterviewQa();
+        row.setUserId(userId);
+        row.setSessionId(sessionIdValue);
+        row.setQuestionIndex(current.getQuestionIndex());
+        row.setRoundNo(current.getRoundNo());
+        row.setQuestionType(questionType.getValue());
+        row.setDifficulty(current.getDifficulty());
+        row.setQuestion(question.trim());
+        row.setAnswer(answer);
+        row.setOutcome(outcome.getValue());
+        row.setJudgement(truncate(judgement, InterviewQa.JUDGEMENT_MAX_LENGTH));
+        row.setEvaluationJson(evaluation == null ? null : writeEvaluation(evaluation.payload()));
+        row.setNextAction(action.getValue());
+        // 流式回落在异步线程执行，审计字段显式写入。
+        row.setCreateBy(userId);
+        row.setUpdateBy(userId);
+        // 结论只服务本回合：补记成功后取走，避免重复提交时再落到下一题上。
+        evaluationBuffer.remove(bufferKey(userId, sessionId));
+        log.warn("模型未记录本回合，平台按收尾兜底补记，userId={}，sessionId={}，questionIndex={}，endNow={}",
+                userId, sessionId, current.getQuestionIndex(), endNow);
+        return row;
+    }
+
+    /**
+     * 取本回合用户正在回答的题目：当前会话里最近一条助手消息。
+     *
+     * <p>回合开始时读取（此时用户消息还没落库，上一条助手消息就是刚问出去的那道题），
+     * 读取失败只记日志、返回 null，不影响答题主流程。
+     *
+     * @param userId 用户 ID
+     * @param sessionIdValue 会话 ID
+     * @return 题目正文，取不到时返回 null
+     */
+    private String currentQuestion(Long userId, Long sessionIdValue) {
+        try {
+            PageRespVO<AssistantMessageRespVO> page =
+                    assistantMessageService.listMessages(userId, sessionIdValue, 1L, LAST_QUESTION_PAGE_SIZE);
+            for (AssistantMessageRespVO record : page.getRecords()) {
+                if (record != null && MessageRoleEnum.ASSISTANT.getValue().equals(record.getRole())) {
+                    return record.getContent();
+                }
+            }
+        } catch (Exception exception) {
+            log.warn("读取本回合题目失败，收尾兜底将使用占位题目，userId={}，sessionId={}",
+                    userId, sessionIdValue, exception);
+        }
+        return null;
     }
 
     /**
@@ -903,11 +1073,12 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
      * 暂存的本回合记录。
      *
      * @param row 待落库的问答记录，答题回合里先只填回答
+     * @param pendingQuestion 用户正在回答的题目（回合开始时的上一条助手消息），供收尾兜底补记使用
      * @param createdAt 写入时间戳，用于过期兜底清理
      * @author wxy
      * @date 2026-09-29
      */
-    private record BufferedTurn(InterviewQa row, long createdAt) {
+    private record BufferedTurn(InterviewQa row, String pendingQuestion, long createdAt) {
     }
 
     /**

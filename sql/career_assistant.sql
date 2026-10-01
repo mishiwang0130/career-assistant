@@ -504,3 +504,17 @@ VALUES ('interview-report',
 3. 只提交一次；工具返回失败时按提示修正字段后重试，不要重复提交多份。',
         'f6-interview-report')
 ON DUPLICATE KEY UPDATE `name` = `name`;
+
+-- F6 修复（2026-10-01）：面试收尾必须走工具。
+-- 真实环境出现过面试官直接说「本场面试到此结束」但没调用 record_interview_answer 的情况，
+-- 平台因此收不到结束信号：这一轮不落库、面试永远结束不了，逐题点评与报告都出不来。
+-- 这里用 UPDATE 追加约束而不是改上面的 INSERT：初始化脚本命中唯一键时只做同值更新，改正文不会影响
+-- 已经建好的库；WHERE 里的标记保证重复执行只追加一次，也不覆盖人工在表里做过的其它调整。
+UPDATE `agentscope_skills`
+SET `skill_content` = CONCAT(`skill_content`,
+    '\n\n# 六、收尾必须走工具（2026-10-01 加固）',
+    '\n1. 用户每一轮回答之后，先调用 record_interview_answer 拿指令，再组织回答：没有拿到指令之前不要判断本题算不算通过，也不要宣布面试结束。',
+    '\n2. 用户说「结束面试」「不面了」「就到这」这类话时，同样先调工具并传 end_now=true，再按返回的「面试结束」指令收尾。',
+    '\n3. 禁止只回一句「本场面试到此结束」而不调用工具：平台收不到结束信号，这一轮就不会落库，逐题点评与面试报告也出不来。')
+WHERE `name` = 'interview-questioning'
+  AND `skill_content` NOT LIKE '%收尾必须走工具%';
