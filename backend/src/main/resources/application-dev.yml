@@ -30,6 +30,15 @@ app:
     compaction:
       trigger-messages: 40
       keep-messages: 16
+  # 长期记忆（F6）：测试环境同样用 localhost 占位，Mem0 部署后改环境变量即可，不改代码。
+  memory:
+    enabled: ${MEM0_ENABLED:true}
+    recall-timeout-ms: ${MEM0_RECALL_TIMEOUT_MS:3000}
+    mem0:
+      base-url: ${MEM0_BASE_URL:http://localhost:8000}
+      api-key: ${MEM0_API_KEY:}
+      api-type: ${MEM0_API_TYPE:SELF_HOSTED}
+      timeout-ms: ${MEM0_TIMEOUT_MS:60000}
 
 logging:
   level:

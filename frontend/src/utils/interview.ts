@@ -1,5 +1,11 @@
 import type { AssistantResultPayload } from '@/types/assistant'
-import type { InterviewProgressResult, InterviewResult, InterviewStateRespVO } from '@/types/interview'
+import type {
+  InterviewEvaluationResult,
+  InterviewProgressResult,
+  InterviewReportResult,
+  InterviewResult,
+  InterviewStateRespVO,
+} from '@/types/interview'
 
 /**
  * 面试进度与难度的展示口径。
@@ -47,15 +53,9 @@ export function formatDifficulty(difficulty: number): string {
  * @returns 最近一次面试进度，没有时返回 null
  */
 export function findLatestProgress(
-  messages: ReadonlyArray<{ result: AssistantResultPayload | null }>,
+  messages: ReadonlyArray<ResultCarrier>,
 ): InterviewProgressResult | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const result = messages[index].result
-    if (result && result.type === 'interview_progress') {
-      return result
-    }
-  }
-  return null
+  return findLatestByType<InterviewProgressResult>(messages, 'interview_progress')
 }
 
 /**
@@ -67,12 +67,63 @@ export function findLatestProgress(
  * @returns 最近一次面试结果，没有时返回 null
  */
 export function findLatestResult(
-  messages: ReadonlyArray<{ result: AssistantResultPayload | null }>,
+  messages: ReadonlyArray<ResultCarrier>,
 ): InterviewResult | null {
+  return findLatestByType<InterviewResult>(messages, 'interview_result')
+}
+
+/**
+ * 取消息区里最近一次逐题点评（F6）。
+ *
+ * @param messages 消息区消息
+ * @returns 最近一次逐题点评，没有时返回 null
+ */
+export function findLatestEvaluation(
+  messages: ReadonlyArray<ResultCarrier>,
+): InterviewEvaluationResult | null {
+  return findLatestByType<InterviewEvaluationResult>(messages, 'interview_evaluation')
+}
+
+/**
+ * 取消息区里最近一次面试报告状态（F6）。
+ *
+ * @param messages 消息区消息
+ * @returns 最近一次报告状态，没有时返回 null
+ */
+export function findLatestReport(
+  messages: ReadonlyArray<ResultCarrier>,
+): InterviewReportResult | null {
+  return findLatestByType<InterviewReportResult>(messages, 'interview_report')
+}
+
+/** 消息区里带结构化结果的最小结构：`results` 是完整数组，`result` 是最后一个（历史用法）。 */
+interface ResultCarrier {
+  /** 本回合最后一个结构化结果。 */
+  result: AssistantResultPayload | null
+  /** 本回合全部结构化结果；老数据可能没有这个字段。 */
+  results?: AssistantResultPayload[]
+}
+
+/**
+ * 从后往前按类型查找最近一次结构化结果。
+ *
+ * 优先扫 `results` 数组（一轮可能有多个结果），没有数组时回退到单个 `result` 字段。
+ *
+ * @param messages 消息区消息
+ * @param type 结果类型标识
+ */
+function findLatestByType<T extends AssistantResultPayload>(
+  messages: ReadonlyArray<ResultCarrier>,
+  type: T['type'],
+): T | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const result = messages[index].result
-    if (result && result.type === 'interview_result') {
-      return result
+    const message = messages[index]
+    const payloads = message.results?.length ? message.results : message.result ? [message.result] : []
+    for (let payloadIndex = payloads.length - 1; payloadIndex >= 0; payloadIndex -= 1) {
+      const payload = payloads[payloadIndex]
+      if (payload.type === type) {
+        return payload as T
+      }
     }
   }
   return null

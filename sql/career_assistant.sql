@@ -397,3 +397,110 @@ VALUES ('job-match',
    不得替用户编造简历里没有的数字、指标、项目或时间（例如凭空写出「可用性从 98.5% 提升到 99.95%」）。',
         'f3-job-match')
 ON DUPLICATE KEY UPDATE `name` = `name`;
+
+-- ==================== F6 面试点评与报告 ====================
+
+-- 知识点掌握度表：F6 的权威掌握度数据。一个用户一个知识点一行，按「近期多次证据 + 时间衰减 + 中性先验」
+-- 计算（口径见 docs/技术约定.md 的「面试点评与报告（F6）」章节与 mastery-evaluation 技能），
+-- 由 Java 纯函数每回合重算后 upsert；F7 的训练计划从这里读薄弱点。
+CREATE TABLE IF NOT EXISTS `knowledge_mastery` (
+    `id`                 BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`            BIGINT       NOT NULL COMMENT '用户ID',
+    `knowledge_point`    VARCHAR(200) NOT NULL COMMENT '知识点名称，粒度到「Redis 分布式锁」这一级',
+    `mastery_score`      INT          NOT NULL COMMENT '掌握度0-100，按近期多次证据与时间衰减加权得出',
+    `mastery_level`      VARCHAR(16)  NOT NULL COMMENT '掌握度等级：WEAK/NEEDS_WORK/BASIC/PROFICIENT/MASTERED',
+    `weak`               TINYINT      NOT NULL DEFAULT 0 COMMENT '是否薄弱点：0-否，1-是',
+    `evidence_count`     INT          NOT NULL DEFAULT 0 COMMENT '参与计算的证据条数（不含中性先验）',
+    `last_session_id`    BIGINT       DEFAULT NULL COMMENT '最近一次证据所在的面试会话ID',
+    `last_outcome`       VARCHAR(16)  DEFAULT NULL COMMENT '最近一次证据的判定：CORRECT/PARTIAL/WRONG',
+    `last_evidence_time` DATETIME     DEFAULT NULL COMMENT '最近一次证据的时间',
+    `create_time`        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`          BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`          BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`          TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_knowledge_mastery_user_point` (`user_id`, `knowledge_point`),
+    KEY `idx_knowledge_mastery_user_weak` (`user_id`, `weak`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '知识点掌握度表';
+
+-- 面试报告表：一个面试会话一行（user_id + session_id 唯一）。状态只有生成中/已完成/生成失败三态，
+-- 报告由后台子 Agent（report-writer，timeout_seconds=0）生成后经 submit_interview_report 回写；
+-- 错题清单、薄弱点清单、掌握度不落本表，读取时由 interview_qa 与 knowledge_mastery 现算。
+CREATE TABLE IF NOT EXISTS `interview_report` (
+    `id`            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`       BIGINT       NOT NULL COMMENT '用户ID',
+    `session_id`    BIGINT       NOT NULL COMMENT '面试会话ID，关联 chat_session.id',
+    `status`        VARCHAR(16)  NOT NULL COMMENT '生成状态：GENERATING-生成中，SUCCEEDED-已完成，FAILED-生成失败',
+    `attempt`       INT          NOT NULL DEFAULT 0 COMMENT '生成尝试次数，重试时递增',
+    `summary`       TEXT         DEFAULT NULL COMMENT '面试总结正文（报告子 Agent 产出）',
+    `report_json`   LONGTEXT     DEFAULT NULL COMMENT '报告结构化结论JSON：亮点与下一步建议等',
+    `error_message` VARCHAR(500) DEFAULT NULL COMMENT '失败原因，成功时置空',
+    `finish_time`   DATETIME     DEFAULT NULL COMMENT '生成完成时间',
+    `create_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`     BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`     BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`     TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_interview_report_user_session` (`user_id`, `session_id`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '面试报告表';
+
+-- 幂等写入 F6 的默认 Skill：mastery-evaluation（掌握度与薄弱点判定口径）。
+-- 重复执行不产生重复数据，也不覆盖人工在表里临时调整过的规则（命中唯一键时只做同值更新）。
+INSERT INTO `agentscope_skills` (`name`, `description`, `skill_content`, `source`)
+VALUES ('mastery-evaluation',
+        '掌握度与薄弱点判定口径：证据来源与单条证据分、90 天窗口与最近 8 条、半衰期 30 天的时间衰减、中性先验、五级分档与薄弱点判定',
+        '你正在执行「掌握度与薄弱点判定口径」。这套口径同时写在代码里，代码是权威实现，本规范用于让报告解释清楚分数是怎么来的。
+
+# 一、证据与单条证据分
+1. 证据来自每场面试的逐题点评（interview_qa）：一行点评按它自己声明的知识点展开，同一行对同一知识点只算一条证据。
+2. 单条证据分：点评给了 0-100 的参考分就用参考分；没给则按判定映射：答到要点 90、有遗漏 65、不会或答错 20。
+
+# 二、窗口与权重
+1. 只看最近 90 天内的证据，每个知识点最多取最近 8 条（按时间倒序）。
+2. 权重按时间衰减：0.5 的「距今天数 ÷ 30」次方，也就是半衰期 30 天——越近的证据越算数。
+3. 额外加一条分数 60、权重 1.0 的中性先验，代表「还没形成判断」：这样答错一两道题不会把掌握度直接打到最低。
+
+# 三、掌握度与等级
+1. 掌握度 = 所有证据「权重 × 分数」之和 ÷ 权重之和，四舍五入取 0-100 的整数。
+2. 等级分档：低于 30 薄弱、30-59 待补强、60-74 基本掌握、75-89 熟练、90 及以上精通。
+3. 薄弱点：窗口内最新一条证据是「不会或答错」，或者掌握度低于 60，二者满足其一即算薄弱点。
+
+# 四、底线
+1. 掌握度是多次证据综合的结果，不因为一道题的判定就跳到最低或最高。
+2. 只依据 interview_qa 里的知识点与判定，不替用户推断他没答到过的知识点。
+3. 解释掌握度时只说结论与依据，不输出公式细节、内部字段名或 JSON。',
+        'f6-interview-report')
+ON DUPLICATE KEY UPDATE `name` = `name`;
+
+-- 幂等写入 F6 的默认 Skill：interview-report（面试报告写作规范）。
+INSERT INTO `agentscope_skills` (`name`, `description`, `skill_content`, `source`)
+VALUES ('interview-report',
+        '面试报告写作规范：报告结构（面试总结、亮点、下一步建议）、写作底线与提交方式，报告子 Agent 用它统一产出',
+        '你正在执行「面试报告写作规范」。这场面试的逐题判定、错题清单、薄弱点清单与知识点掌握度已经由系统整理好并放在给你的材料里，你只负责把它们写成一份用户能直接照着行动的面试报告。
+
+# 一、报告结构（按此顺序产出）
+1. 面试总结：3-5 句话，先说整体表现（答得最好的部分），再说主要差距，最后给一句整体判断；不要罗列题目。
+2. 亮点：从材料里挑出真实的 2-3 个优势，每条一句话，指明是哪道题或哪个知识点体现的。
+3. 下一步建议：按优先级给 3-5 条，每条写清「补什么知识点 + 具体怎么补（复习方向或练习方式）」，优先覆盖薄弱点清单里最靠前的知识点。
+
+# 二、写作底线
+1. 只依据给你的材料：题目、判定、错题、薄弱点、掌握度。不编造用户没说过的经历、项目、数字，也不脑补他「其实会」。
+2. 不提分数公式、不贴评分 JSON、不输出字段清单、不讲内部过程，也不提任何工具、技能或子角色。
+3. 对事不对人：指出差距时说清依据，不做人格评价，不用空洞的鼓励话术。
+4. 语言直白：先给结论再给依据，句子短，不用「接下来我将」「首先我们需要」这类铺垫。
+
+# 三、提交方式
+1. 把结论用 submit_interview_report 工具提交一次：summary（面试总结正文）、highlights（亮点清单）、
+   suggestions（下一步建议清单）、sessionId（材料里给出的会话 ID，原样填）。
+2. 提交后正文只回一句「报告完成」：报告内容属于结构化产物，不要复述、不要输出清单。
+3. 只提交一次；工具返回失败时按提示修正字段后重试，不要重复提交多份。',
+        'f6-interview-report')
+ON DUPLICATE KEY UPDATE `name` = `name`;

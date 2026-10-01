@@ -62,6 +62,14 @@ public class InterviewResultItemVO {
     private String comment;
 
     /**
+     * 答对或答到的点。
+     *
+     * <p>F6 新增：点评卡片要展示「正确点 / 遗漏点 / 错误点 / 表达问题 / 建议补充」，F5 的结果结构原本
+     * 只回放了缺失与错误清单，这里补上答对的点，字段只新增、不改已有字段含义。
+     */
+    private List<String> correctPoints;
+
+    /**
      * 应该提到但没提到的点——「哪里答得不好」的主要来源。
      */
     private List<String> missingPoints;

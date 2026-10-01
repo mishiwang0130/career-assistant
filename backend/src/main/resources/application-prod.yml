@@ -31,3 +31,12 @@ app:
     compaction:
       trigger-messages: 40
       keep-messages: 16
+  # 长期记忆（F6）：生产环境的连接信息全部强制从环境变量读取，YAML 不留任何真实地址与密钥。
+  memory:
+    enabled: ${MEM0_ENABLED:true}
+    recall-timeout-ms: ${MEM0_RECALL_TIMEOUT_MS:3000}
+    mem0:
+      base-url: ${MEM0_BASE_URL}
+      api-key: ${MEM0_API_KEY}
+      api-type: ${MEM0_API_TYPE:SELF_HOSTED}
+      timeout-ms: ${MEM0_TIMEOUT_MS:60000}

@@ -65,6 +65,16 @@ app:
     compaction:
       trigger-messages: 40
       keep-messages: 16
+  # 长期记忆（F6）：Mem0 服务由项目方部署与运维，这里只放连接配置；
+  # 地址统一用 localhost 占位（自部署 Mem0 官方默认端口 8000），密钥只从环境变量读，部署后改环境变量即可。
+  memory:
+    enabled: ${MEM0_ENABLED:true}
+    recall-timeout-ms: ${MEM0_RECALL_TIMEOUT_MS:3000}
+    mem0:
+      base-url: ${MEM0_BASE_URL:http://localhost:8000}
+      api-key: ${MEM0_API_KEY:}
+      api-type: ${MEM0_API_TYPE:SELF_HOSTED}
+      timeout-ms: ${MEM0_TIMEOUT_MS:60000}
 
 logging:
   level:

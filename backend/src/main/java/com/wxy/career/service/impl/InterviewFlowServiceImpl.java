@@ -418,6 +418,7 @@ public class InterviewFlowServiceImpl implements InterviewFlowService {
         item.setDifficulty(row.getDifficulty());
         item.setEvaluated(evaluation != null);
         item.setComment(evaluation == null ? row.getJudgement() : evaluation.getComment());
+        item.setCorrectPoints(nullToEmpty(evaluation == null ? null : evaluation.getCorrectPoints()));
         item.setMissingPoints(nullToEmpty(evaluation == null ? null : evaluation.getMissingPoints()));
         item.setWrongPoints(nullToEmpty(evaluation == null ? null : evaluation.getWrongPoints()));
         item.setExpressionIssues(nullToEmpty(evaluation == null ? null : evaluation.getExpressionIssues()));

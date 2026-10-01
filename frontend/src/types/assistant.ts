@@ -1,4 +1,9 @@
-import type { InterviewProgressResult, InterviewResult } from '@/types/interview'
+import type {
+  InterviewEvaluationResult,
+  InterviewProgressResult,
+  InterviewReportResult,
+  InterviewResult,
+} from '@/types/interview'
 
 /**
  * 通用助手相关类型。
@@ -148,7 +153,12 @@ export interface ResumeDiagnosisResult {
  * 用 type 做判别联合：当前有简历诊断结论与面试进度，后续 F6 的点评与报告只新增取值，
  * 不改这里的字段含义与事件形态。
  */
-export type AssistantResultPayload = ResumeDiagnosisResult | InterviewProgressResult | InterviewResult
+export type AssistantResultPayload =
+  | ResumeDiagnosisResult
+  | InterviewProgressResult
+  | InterviewResult
+  | InterviewEvaluationResult
+  | InterviewReportResult
 
 /** result 事件数据。 */
 export interface AssistantResultEvent {
@@ -189,4 +199,11 @@ export interface ChatMessage {
   failed: boolean
   /** 结构化结果（如简历诊断结论），没有时为空。 */
   result: AssistantResultPayload | null
+  /**
+   * 本回合收到的全部结构化结果，按到达顺序排列。
+   *
+   * 一轮里可能收到多个 result 事件（面试的一轮会下发逐题点评、进度、逐题结果与报告状态），
+   * 只留最后一个会互相覆盖，因此用数组保留全部；`result` 仍指向最后一个，兼容既有用法。
+   */
+  results: AssistantResultPayload[]
 }

@@ -21,6 +21,7 @@ function createMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     streaming: true,
     failed: false,
     result: null,
+    results: [],
     ...overrides,
   }
 }

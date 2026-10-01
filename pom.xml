@@ -107,6 +107,12 @@
                 <artifactId>agentscope-extensions-skill-mysql-repository</artifactId>
                 <version>${agentscope.version}</version>
             </dependency>
+            <!-- F6 长期记忆：Mem0 扩展（Mem0LongTermMemory），F7/F9 复用同一套装配 -->
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-extensions-mem0</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
 
             <!-- Redisson：AgentScope Redis 会话状态存储使用，版本与 AgentScope 对齐 -->
             <dependency>

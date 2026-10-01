@@ -185,6 +185,7 @@ export const useAssistantStore = defineStore('assistant', () => {
       streaming: false,
       failed: false,
       result: null,
+      results: [],
     })
     const reply: ChatMessage = {
       id: createMessageId(),
@@ -195,6 +196,7 @@ export const useAssistantStore = defineStore('assistant', () => {
       streaming: true,
       failed: false,
       result: null,
+      results: [],
     }
     state.messages.push(reply)
     // 必须取回数组中的响应式代理再写入：直接改 push 进去的原始对象不会触发 Vue 更新，
@@ -352,10 +354,12 @@ export const useAssistantStore = defineStore('assistant', () => {
           })
           break
         case 'result': {
-          // 结构化产物（当前是简历诊断结论）：挂在当前回复上，由消息气泡渲染诊断卡片。
+          // 结构化产物（简历诊断、面试逐题点评、进度、结果与报告状态）：挂在当前回复上，
+          // 同时进数组保留全部——一轮里可能下发多个 result，只留最后一个会互相覆盖。
           const resultEvent = JSON.parse(data) as AssistantResultEvent
           if (resultEvent.data) {
             message.result = resultEvent.data
+            message.results.push(resultEvent.data)
           }
           break
         }
@@ -425,6 +429,7 @@ function toChatMessage(message: AssistantMessageRespVO): ChatMessage {
     streaming: false,
     failed: false,
     result: null,
+    results: [],
   }
 }
 
