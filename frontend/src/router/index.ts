@@ -42,6 +42,12 @@ const routes: RouteRecordRaw[] = [
         name: 'ProfileView',
         component: () => import('@/views/ProfileView.vue'),
       },
+      {
+        // F7 训练计划：资料库下的独立页面（不是会话），路由固定为 /plans。
+        path: 'plans',
+        name: 'TrainingPlanView',
+        component: () => import('@/views/TrainingPlanView.vue'),
+      },
     ],
   },
   {
