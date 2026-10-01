@@ -60,6 +60,11 @@ public class SubmitTrainingPlanTool {
             TrainingPlanSubmitVO plan,
             RuntimeContext runtimeContext) {
         Long userId = RuntimeContextUserUtil.requireUserId(runtimeContext);
+        // 记录模型实际提交的内容概要：工具调用失败时（尤其是框架在入参转换阶段就报错）日志里要能看出模型填了什么。
+        log.info("收到训练计划提交，userId={}，days={}，dailyMinutes={}，taskCount={}",
+                userId, plan == null ? null : plan.getDays(),
+                plan == null ? null : plan.getDailyMinutes(),
+                plan == null || plan.getTasks() == null ? null : plan.getTasks().size());
         try {
             trainingPlanService.submitPlan(userId, runtimeContext.getSessionId(), plan);
             return "训练计划已保存，请用一两句话说明本次的取舍或调整依据。";
