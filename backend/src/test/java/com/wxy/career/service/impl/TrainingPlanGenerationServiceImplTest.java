@@ -18,6 +18,11 @@ import com.wxy.career.vo.TrainingPlanGenerateReqVO;
 import com.wxy.career.vo.UserProfileRespVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.ConfirmResult;
+import io.agentscope.core.event.RequireUserConfirmEvent;
+import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.ToolUseBlock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,10 +32,15 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+
+import org.mockito.ArgumentCaptor;
+import reactor.core.publisher.Flux;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -131,6 +141,71 @@ class TrainingPlanGenerationServiceImplTest {
     }
 
     /**
+     * 每次生成都从干净的规划态开始：上一次停在「等待确认」时留下的状态必须先清掉。
+     *
+     * <p>复现过的故障：上一次生成停在覆盖确认提示，用户关掉页面或刷新后，待确认状态仍在
+     * {@code (planner, training-plan-{userId})} 槽位上；此时再点一次「生成」，框架会在调用开始就抛
+     * 「Agent is paused for human-in-the-loop confirmation ... This call supplied no confirmation」，
+     * 用户看到的是「计划生成失败」。
+     */
+    @Test
+    void shouldResetPreviousStateBeforeGenerating() {
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
+        HarnessAgent planner = mock(HarnessAgent.class);
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        when(planner.streamEvents(any(Msg.class), any(io.agentscope.core.agent.RuntimeContext.class)))
+                .thenReturn(Flux.empty());
+        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
+        reqVO.setDays(7);
+        reqVO.setDailyMinutes(60);
+
+        assertThat(generationService.generate(reqVO)).isNotNull();
+
+        // 生成前先清掉上一次的待确认快照与规划态，避免框架因为「挂着的待确认调用」直接拒绝本次生成。
+        verify(planConfirmStore).clearPending(1L);
+        verify(planner).clearContext("1", "training-plan-1");
+    }
+
+    /**
+     * 首次生成自动确认时，回填给框架的消息必须带上确认结论与对应的工具调用。
+     *
+     * <p>这是 HITL 停机—恢复链路的契约：少带 metadata 或工具调用 id 对不上，框架都会拒绝恢复
+     * （就是线上报的「This call supplied no confirmation」那一类错误）。
+     */
+    @Test
+    void shouldCarryConfirmResultsWhenAutoConfirmingFirstPlan() {
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
+        HarnessAgent planner = mock(HarnessAgent.class);
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        when(planner.streamEvents(any(Msg.class), any(io.agentscope.core.agent.RuntimeContext.class)))
+                .thenReturn(Flux.just(buildConfirmEvent()));
+        when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
+                .thenReturn(Flux.<AgentEvent>empty());
+        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
+        reqVO.setDays(7);
+        reqVO.setDailyMinutes(60);
+
+        assertThat(generationService.generate(reqVO)).isNotNull();
+
+        ArgumentCaptor<List<Msg>> captor = ArgumentCaptor.forClass(List.class);
+        verify(planner, org.mockito.Mockito.timeout(3000))
+                .streamEvents(captor.capture(), any(io.agentscope.core.agent.RuntimeContext.class));
+        Object rawResults = captor.getValue().get(0).getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
+        assertThat(rawResults).isInstanceOf(List.class);
+        List<?> confirmResults = (List<?>) rawResults;
+        assertThat(confirmResults).hasSize(1);
+        assertThat(confirmResults.get(0)).isInstanceOf(ConfirmResult.class);
+        ConfirmResult confirmResult = (ConfirmResult) confirmResults.get(0);
+        assertThat(confirmResult.isConfirmed()).isTrue();
+        assertThat(confirmResult.getToolCall().getId()).isEqualTo("call-1");
+        assertThat(confirmResult.getToolCall().getName()).isEqualTo("submit_training_plan");
+    }
+
+    /**
      * 待确认状态过期：按 1704 拒绝，要求重新生成。
      */
     @Test
@@ -144,6 +219,8 @@ class TrainingPlanGenerationServiceImplTest {
                 .satisfies(exception -> assertThat(((BizException) exception).getErrorCode().getCode())
                         .isEqualTo(1704));
         verify(trainingPlanService, never()).submitPlan(anyLong(), anyString(), any());
+        // 过期时顺带清掉 Agent 里可能残留的待确认状态，否则用户重新生成会被框架拒绝。
+        verify(planConfirmStore).clearPending(1L);
     }
 
     /**
@@ -233,5 +310,31 @@ class TrainingPlanGenerationServiceImplTest {
         pending.setReplyId("reply-1");
         pending.setToolCalls(List.of(toolCall));
         return pending;
+    }
+
+    /**
+     * 构造框架抛出的「写工具待确认」事件。
+     *
+     * @return 确认事件
+     */
+    private RequireUserConfirmEvent buildConfirmEvent() {
+        ToolUseBlock toolUse = ToolUseBlock.builder()
+                .id("call-1")
+                .name("submit_training_plan")
+                .input(Map.of("plan", Map.of("days", 3)))
+                .build();
+        return new RequireUserConfirmEvent("reply-1", List.of(toolUse));
+    }
+
+    /**
+     * 构造求职目标（生成任务文本需要目标岗位）。
+     *
+     * @return 求职目标
+     */
+    private UserProfileRespVO buildProfile() {
+        UserProfileRespVO profile = new UserProfileRespVO();
+        profile.setTargetPosition("Java 后端开发");
+        profile.setWorkYears(3);
+        return profile;
     }
 }

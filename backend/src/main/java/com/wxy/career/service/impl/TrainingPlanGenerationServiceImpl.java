@@ -165,11 +165,15 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         int days = reqVO.getDays();
         int dailyMinutes = reqVO.getDailyMinutes();
         validateBounds(days, dailyMinutes);
+        String sessionId = sessionId(userId);
+        // 每次生成都从干净的规划态开始：上一次生成可能停在「等待覆盖确认」，那份待确认状态留在 Agent 会话里，
+        // 会让本次调用直接被框架拒绝（Agent is paused for human-in-the-loop confirmation: this call supplied
+        // no confirmation）。这里先清掉待确认快照与规划态，保证「再点一次生成」永远能正常工作。
+        resetPreviousGeneration(userId, sessionId);
         // 同一用户同一时刻只允许一次生成在跑，避免两次生成互相覆盖。
         if (!planConfirmStore.markGenerating(userId)) {
             throw new BizException(ErrorConstant.TRAINING_PLAN_GENERATING);
         }
-        String sessionId = sessionId(userId);
         try {
             HarnessAgent agent = agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME);
             boolean hasActivePlan = trainingPlanService.hasActivePlan(userId);
@@ -205,7 +209,9 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         boolean approved = Boolean.TRUE.equals(reqVO.getApproved());
         String sessionId = sessionId(userId);
         if (pending == null || pending.getToolCalls() == null || pending.getToolCalls().isEmpty()) {
-            // 待确认状态已过期（或已被处理）：让用户重新生成，避免拿旧计划做覆盖。
+            // 待确认状态已过期（或已被处理）：先清掉 Agent 里可能残留的待确认状态，再让用户重新生成，
+            // 否则下一次生成会被框架以「有待确认的工具调用」拒绝；同时避免拿旧计划做覆盖。
+            resetPreviousGeneration(userId, sessionId);
             throw new BizException(ErrorConstant.TRAINING_PLAN_CONFIRM_EXPIRED);
         }
         HarnessAgent agent = agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME);
@@ -655,6 +661,22 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         } catch (Exception exception) {
             log.warn("清理计划规划态失败，userId={}", userId, exception);
         }
+    }
+
+    /**
+     * 清掉上一次生成留下的待确认快照与规划态。
+     *
+     * <p>计划 Agent 的待确认状态（`agentscope_confirm_request_reply_id` 等）挂在
+     * {@code (planner, training-plan-{userId})} 这个状态槽位上：上一次生成停在确认提示、用户关掉页面或刷新后，
+     * 状态仍然在。此时直接开一次新的生成，框架会在调用开始就抛「有待确认的工具调用且本次没带确认结论」，
+     * 用户看到的就是「计划生成失败」。因此每次生成前先把它清干净。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 运行标识
+     */
+    private void resetPreviousGeneration(Long userId, String sessionId) {
+        planConfirmStore.clearPending(userId);
+        safeClearPlanState(userId, sessionId);
     }
 
     /**
