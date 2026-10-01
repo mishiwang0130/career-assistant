@@ -72,11 +72,6 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
     public static final String TYPE_FACT = "FACT";
 
     /**
-     * 薄弱点类记忆（F6 追加，只追加不改已有含义）。
-     */
-    public static final String TYPE_WEAKNESS = "WEAKNESS";
-
-    /**
      * Mem0 记忆维度里的业务标识，本项目固定一个业务线。
      */
     public static final String MEMORY_AGENT_NAME = "career-assistant";
@@ -178,9 +173,11 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
     /**
      * 记录长期记忆。
      *
-     * <p>只有带记忆类型元数据（{@code PROFILE} / {@code FACT} / {@code WEAKNESS}）的消息才会被写入：
-     * 框架的自动记录路径传进来的是原始对话消息，没有这些标记，因此被写入门槛挡在外面——原始问答全文、
-     * 寒暄与一次性查询都不进记忆库。
+     * <p>只有带记忆类型元数据（{@code PROFILE} / {@code FACT}）的消息才会被写入：框架的自动记录路径传进来的
+     * 是原始对话消息，没有这些标记，因此被写入门槛挡在外面——原始问答全文、寒暄与一次性查询都不进记忆库。
+     *
+     * <p>写入方是会话归档总结（F9）：它产出结论式记忆后经 {@code UserMemoryService} 调用到这里；
+     * 薄弱点不写记忆库（落 MySQL 的 {@code knowledge_mastery}）。
      *
      * @param messages 待记录的消息
      * @return 完成信号，永远不返回错误
@@ -232,7 +229,7 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
      *
      * @param userId 用户 ID
      * @param sessionId 会话 ID
-     * @param memoryType 记忆类型，取值 {@code PROFILE} / {@code FACT} / {@code WEAKNESS}
+     * @param memoryType 记忆类型，取值 {@code PROFILE} / {@code FACT}（当前写入方只使用 {@code FACT}）
      * @param content 记忆正文，超过 200 字截断
      */
     public void recordForUser(Long userId, String sessionId, String memoryType, String content) {

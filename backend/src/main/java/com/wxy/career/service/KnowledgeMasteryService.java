@@ -21,8 +21,8 @@ public interface KnowledgeMasteryService {
     /**
      * 按本回合的问答记录重算它涉及的知识点，并同步薄弱点到长期记忆。
      *
-     * <p>只重算本回合涉及的知识点（用该用户 90 天窗口内的历史证据），不做全量重算；
-     * 判定为薄弱的知识点会写一份 {@code WEAKNESS} 记忆，供后续会话召回。
+     * <p>只重算本回合涉及的知识点（用该用户 90 天窗口内的历史证据），不做全量重算。
+     * 掌握度与薄弱点只落 MySQL 的 {@code knowledge_mastery}，不写记忆库（F9 的会话归档总结才写记忆）。
      *
      * @param userId 用户 ID
      * @param sessionId 会话 ID

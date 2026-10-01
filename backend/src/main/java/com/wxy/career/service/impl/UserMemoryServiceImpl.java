@@ -13,6 +13,9 @@ import org.springframework.util.StringUtils;
  * <p>只做三件事：把业务语义拼成记忆正文、按用户与会话委托给 {@link UserLongTermMemoryAdapter}、
  * 把异常挡在业务之外。真正的用户隔离、降级、超时、截断都在适配层里统一实现。
  *
+ * <p>写入方是会话归档总结（F9），不写薄弱点：薄弱点落 MySQL 的 {@code knowledge_mastery}，是精确查询，
+ * 不需要在记忆库留副本。
+ *
  * @author wxy
  * @date 2026-09-29
  */
@@ -21,38 +24,10 @@ import org.springframework.util.StringUtils;
 public class UserMemoryServiceImpl implements UserMemoryService {
 
     /**
-     * 薄弱点记忆的正文前缀，让召回结果自带知识点，模型不用猜是哪一块薄弱。
-     */
-    private static final String WEAKNESS_PREFIX = "薄弱知识点「";
-
-    /**
-     * 薄弱点记忆的正文分隔符。
-     */
-    private static final String WEAKNESS_SEPARATOR = "」：";
-
-    /**
      * 长期记忆适配层。
      */
     @Resource
     private UserLongTermMemoryAdapter userLongTermMemoryAdapter;
-
-    /**
-     * 记录薄弱知识点。
-     *
-     * @param userId 用户 ID
-     * @param sessionId 会话 ID
-     * @param knowledgePoint 知识点名称
-     * @param summary 一句话说明
-     */
-    @Override
-    public void rememberWeakness(Long userId, String sessionId, String knowledgePoint, String summary) {
-        if (!StringUtils.hasText(knowledgePoint)) {
-            return;
-        }
-        String content = WEAKNESS_PREFIX + knowledgePoint.trim() + WEAKNESS_SEPARATOR
-                + (StringUtils.hasText(summary) ? summary.trim() : "本场面试没有答到要点，需要补强");
-        write(userId, sessionId, knowledgePoint, content, UserLongTermMemoryAdapter.TYPE_WEAKNESS);
-    }
 
     /**
      * 记录用户画像记忆。

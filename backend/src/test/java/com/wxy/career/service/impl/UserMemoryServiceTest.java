@@ -20,8 +20,9 @@ import static org.mockito.Mockito.when;
 /**
  * 长期记忆业务入口单测。
  *
- * <p>用桩替换记忆实现，不依赖真实 Mem0：验证薄弱点写入带知识点前缀、召回失败按无记忆处理、
+ * <p>用桩替换记忆实现，不依赖真实 Mem0：验证写入按类型落库、召回失败按无记忆处理、
  * 以及**所有写入都带 userId**（不存在无用户标识的调用路径）。
+ * 薄弱点不写记忆库（落 MySQL 的 {@code knowledge_mastery}），因此这里也没有对应用例。
  *
  * @author wxy
  * @date 2026-09-29
@@ -50,22 +51,10 @@ class UserMemoryServiceTest {
     }
 
     /**
-     * 薄弱点写入：正文带知识点前缀与说明，类型固定为 WEAKNESS，且带 userId 与会话 ID。
-     */
-    @Test
-    void shouldRememberWeaknessWithKnowledgePointPrefix() {
-        userMemoryService.rememberWeakness(1L, "12", "Redis 分布式锁", "关键结论说错");
-
-        verify(adapter).recordForUser(eq(1L), eq("12"), eq(UserLongTermMemoryAdapter.TYPE_WEAKNESS),
-                eq("薄弱知识点「Redis 分布式锁」：关键结论说错"));
-    }
-
-    /**
      * 没有用户名（未登录场景）时一律不写：宁可少写一条记忆，也不允许跨用户写。
      */
     @Test
     void shouldNotWriteWithoutUserId() {
-        userMemoryService.rememberWeakness(null, "12", "Redis 分布式锁", "关键结论说错");
         userMemoryService.rememberFact(null, "12", "正在准备秋招");
         userMemoryService.rememberProfile(null, "12", "目标岗位是后端开发");
 
@@ -91,7 +80,18 @@ class UserMemoryServiceTest {
         doThrow(new IllegalStateException("Mem0 不可用"))
                 .when(adapter).recordForUser(anyLong(), anyString(), anyString(), anyString());
 
-        userMemoryService.rememberWeakness(1L, "12", "Redis 分布式锁", "关键结论说错");
+        userMemoryService.rememberFact(1L, "12", "Redis 分布式锁：已讲实现与续期，卡点在锁误删");
+    }
+
+    /**
+     * 归档总结（F9）产出的记忆按 FACT 类型写入，带 userId 与会话 ID，内容原样交给适配层。
+     */
+    @Test
+    void shouldRememberFactThroughAdapter() {
+        userMemoryService.rememberFact(1L, "12", "Redis 分布式锁：已讲实现与续期，卡点在锁误删");
+
+        verify(adapter).recordForUser(eq(1L), eq("12"), eq(UserLongTermMemoryAdapter.TYPE_FACT),
+                eq("Redis 分布式锁：已讲实现与续期，卡点在锁误删"));
     }
 
     /**

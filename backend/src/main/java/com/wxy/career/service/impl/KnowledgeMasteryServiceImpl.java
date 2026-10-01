@@ -8,7 +8,6 @@ import com.wxy.career.mapper.KnowledgeMasteryMapper;
 import com.wxy.career.po.InterviewQa;
 import com.wxy.career.po.KnowledgeMastery;
 import com.wxy.career.service.KnowledgeMasteryService;
-import com.wxy.career.service.UserMemoryService;
 import com.wxy.career.util.InterviewEvaluationParser;
 import com.wxy.career.util.MasteryCalculator;
 import com.wxy.career.vo.AnswerEvaluationSubmitVO;
@@ -31,7 +30,11 @@ import java.util.Set;
  * 知识点掌握度服务实现。
  *
  * <p>证据来自 {@code interview_qa}：每条问答记录按它点评里的知识点展开，单条证据分优先取点评给的参考分，
- * 没有参考分时按判定折算。计算是纯函数（{@link MasteryCalculator}），本类只负责取证据、落库与同步薄弱点。
+ * 没有参考分时按判定折算。计算是纯函数（{@link MasteryCalculator}），本类只负责取证据与落库。
+ *
+ * <p><b>掌握度与薄弱点只落 MySQL</b>：它们是精确查询（按知识点取分值、按分值排序），
+ * {@code knowledge_mastery} 就是权威数据，F7 从这里读；不再往记忆库写副本。
+ * 记忆库的写入链路是会话归档总结（F9），只承接「读得到、算不出、也列不全」的讲解进度与背景。
  *
  * @author wxy
  * @date 2026-09-29
@@ -58,12 +61,6 @@ public class KnowledgeMasteryServiceImpl implements KnowledgeMasteryService {
      */
     @Resource
     private InterviewQaMapper interviewQaMapper;
-
-    /**
-     * 长期记忆入口：薄弱点同时写一份到 Mem0，供跨会话召回。
-     */
-    @Resource
-    private UserMemoryService userMemoryService;
 
     /**
      * JSON 组件，用于回放问答记录里的点评结论。
@@ -98,11 +95,6 @@ public class KnowledgeMasteryServiceImpl implements KnowledgeMasteryService {
             MasteryCalculator.MasteryResult mastery = MasteryCalculator.calculate(
                     collectEvidences(knowledgePoint, evidenceRows, evaluationCache), now);
             upsert(userId, sessionId, knowledgePoint, mastery, now);
-            if (mastery.weak()) {
-                // outcome = WRONG 的知识点必然落在薄弱点里，这里统一按「是否薄弱」写长期记忆。
-                userMemoryService.rememberWeakness(userId, String.valueOf(sessionId), knowledgePoint,
-                        evaluation == null ? null : evaluation.getComment());
-            }
         }
         log.info("掌握度沉淀完成，userId={}，sessionId={}，knowledgePoints={}", userId, sessionId, knowledgePoints);
     }

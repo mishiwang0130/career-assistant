@@ -63,7 +63,7 @@ class UserLongTermMemoryAdapterTest {
 
         String recalled = adapter.retrieve(message).block();
         adapter.record(List.of(message)).block();
-        adapter.recordForUser(1L, "12", UserLongTermMemoryAdapter.TYPE_WEAKNESS, "Redis 分布式锁没答到要点");
+        adapter.recordForUser(1L, "12", UserLongTermMemoryAdapter.TYPE_FACT, "Redis 分布式锁：卡点在锁误删");
 
         assertThat(recalled).isEmpty();
     }
@@ -79,8 +79,8 @@ class UserLongTermMemoryAdapterTest {
         ReflectionTestUtils.setField(disabledAdapter, "memoryProperties", disabled);
 
         assertThat(disabledAdapter.retrieve(userMessage("1", "12")).block()).isEmpty();
-        assertThat(disabledAdapter.record(List.of(candidate("1", "12", "WEAKNESS", "内容"))).block()).isNull();
-        disabledAdapter.recordForUser(1L, "12", UserLongTermMemoryAdapter.TYPE_WEAKNESS, "内容");
+        assertThat(disabledAdapter.record(List.of(candidate("1", "12", "FACT", "内容"))).block()).isNull();
+        disabledAdapter.recordForUser(1L, "12", UserLongTermMemoryAdapter.TYPE_FACT, "内容");
     }
 
     /**
@@ -104,11 +104,11 @@ class UserLongTermMemoryAdapterTest {
     void shouldOnlyWriteMemoryCandidates() {
         recordingAdapter.record(List.of(
                 rawConversation("1", "12"),
-                candidate("1", "12", UserLongTermMemoryAdapter.TYPE_WEAKNESS, "Redis 分布式锁没答到要点"),
+                candidate("1", "12", UserLongTermMemoryAdapter.TYPE_FACT, "Redis 分布式锁：卡点在锁误删"),
                 candidate(null, "12", UserLongTermMemoryAdapter.TYPE_FACT, "缺用户标识"))).block();
 
         assertThat(recordingAdapter.writes).hasSize(1);
-        assertThat(recordingAdapter.writes.get(0).memoryType()).isEqualTo(UserLongTermMemoryAdapter.TYPE_WEAKNESS);
+        assertThat(recordingAdapter.writes.get(0).memoryType()).isEqualTo(UserLongTermMemoryAdapter.TYPE_FACT);
         assertThat(recordingAdapter.writes.get(0).userId()).isEqualTo("1");
         assertThat(recordingAdapter.writes.get(0).sessionId()).isEqualTo("12");
     }
