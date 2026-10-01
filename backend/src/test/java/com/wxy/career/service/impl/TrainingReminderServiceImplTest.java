@@ -4,9 +4,7 @@ import com.wxy.career.common.exception.BizException;
 import com.wxy.career.config.TrainingProperties;
 import com.wxy.career.mapper.TrainingPlanMapper;
 import com.wxy.career.mapper.TrainingReminderMapper;
-import com.wxy.career.mapper.TrainingTaskMapper;
 import com.wxy.career.po.TrainingPlan;
-import com.wxy.career.po.TrainingTask;
 import com.wxy.career.vo.PlannedUsersResultVO;
 import com.wxy.career.vo.TrainingReminderSubmitVO;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,8 +29,8 @@ import static org.mockito.Mockito.when;
 /**
  * 训练提醒服务测试。
  *
- * <p>固定口径：同一天同一用户只落一条（幂等）、没有活跃计划或今天没有任务的用户不提醒、只处理有活跃计划的用户、
- * 目标用户 ID 必须是数字。不连数据库。
+ * <p>固定口径：简报里给的是计划正文（提醒 Agent 自己读今天这一行）、同一天同一用户只落一条（幂等）、
+ * 没有生效计划 / 计划已结束 / 计划没有正文的用户不提醒、只处理在训练期内的用户。不连数据库。
  *
  * @author wxy
  * @date 2026-10-01
@@ -50,11 +48,6 @@ class TrainingReminderServiceImplTest {
     private TrainingPlanMapper trainingPlanMapper;
 
     /**
-     * 任务 Mapper 桩。
-     */
-    private TrainingTaskMapper trainingTaskMapper;
-
-    /**
      * 提醒 Mapper 桩。
      */
     private TrainingReminderMapper trainingReminderMapper;
@@ -65,65 +58,42 @@ class TrainingReminderServiceImplTest {
     @BeforeEach
     void setUp() {
         trainingPlanMapper = mock(TrainingPlanMapper.class);
-        trainingTaskMapper = mock(TrainingTaskMapper.class);
         trainingReminderMapper = mock(TrainingReminderMapper.class);
         trainingReminderService = new TrainingReminderServiceImpl();
         ReflectionTestUtils.setField(trainingReminderService, "trainingPlanMapper", trainingPlanMapper);
-        ReflectionTestUtils.setField(trainingReminderService, "trainingTaskMapper", trainingTaskMapper);
         ReflectionTestUtils.setField(trainingReminderService, "trainingReminderMapper", trainingReminderMapper);
         ReflectionTestUtils.setField(trainingReminderService, "trainingProperties", new TrainingProperties());
     }
 
     /**
-     * 幂等写入：同一天重复触发只走一次 upsert，第二条不会产生新记录。
+     * 幂等写入：同一天重复触发只走一次 upsert。
      */
     @Test
     void shouldUpsertReminderIdempotently() {
-        when(trainingPlanMapper.selectActiveByUser(1L)).thenReturn(buildActivePlan(1L, 9L));
-        when(trainingTaskMapper.listByPlanAndDate(eq(1L), eq(9L), any(LocalDate.class)))
-                .thenReturn(List.of(buildTask()));
+        when(trainingPlanMapper.selectActiveByUser(1L)).thenReturn(buildActivePlan(1L, "第 2 天：Redis 分布式锁——能讲清加锁、续期、释放三步"));
 
-        assertThat(trainingReminderService.saveReminder(buildSubmit("1", "今天练 Redis 分布式锁"))).isTrue();
-        assertThat(trainingReminderService.saveReminder(buildSubmit("1", "今天练 Redis 分布式锁"))).isTrue();
+        assertThat(trainingReminderService.saveReminder(buildSubmit("1", "今天第 2 天：Redis 分布式锁"))).isTrue();
+        assertThat(trainingReminderService.saveReminder(buildSubmit("1", "今天第 2 天：Redis 分布式锁"))).isTrue();
 
-        // 幂等由 (user_id, reminder_date) 唯一键 + ON DUPLICATE KEY UPDATE 承载，只调用 upsert，不做先查再写。
-        verify(trainingReminderMapper, times(2)).upsertDailyReminder(eq(1L), eq(9L), any(LocalDate.class), any());
+        verify(trainingReminderMapper, times(2))
+                .upsertDailyReminder(eq(1L), anyLong(), any(LocalDate.class), any());
     }
 
     /**
-     * 用户没有生效计划时不写提醒。
+     * 没有生效计划 / 计划已结束 / 计划没有正文：都不写提醒。
      */
     @Test
-    void shouldSkipWhenNoActivePlan() {
+    void shouldSkipWhenPlanIsNotRemindable() {
         when(trainingPlanMapper.selectActiveByUser(1L)).thenReturn(null);
-
         assertThat(trainingReminderService.saveReminder(buildSubmit("1", "今天练一会"))).isFalse();
 
-        verify(trainingReminderMapper, never()).upsertDailyReminder(anyLong(), anyLong(), any(), any());
-    }
-
-    /**
-     * 计划已结束时同样跳过。
-     */
-    @Test
-    void shouldSkipWhenPlanFinished() {
-        TrainingPlan ended = buildActivePlan(1L, 9L);
-        ended.setEndDate(LocalDate.now().minusDays(1));
-        when(trainingPlanMapper.selectActiveByUser(1L)).thenReturn(ended);
-
+        TrainingPlan finished = buildActivePlan(1L, "第 1 天：Redis 分布式锁");
+        finished.setEndDate(LocalDate.now().minusDays(1));
+        when(trainingPlanMapper.selectActiveByUser(1L)).thenReturn(finished);
         assertThat(trainingReminderService.saveReminder(buildSubmit("1", "今天练一会"))).isFalse();
 
-        verify(trainingReminderMapper, never()).upsertDailyReminder(anyLong(), anyLong(), any(), any());
-    }
-
-    /**
-     * 今天没有任务的用户不提醒。
-     */
-    @Test
-    void shouldSkipWhenNoTaskToday() {
-        when(trainingPlanMapper.selectActiveByUser(1L)).thenReturn(buildActivePlan(1L, 9L));
-        when(trainingTaskMapper.listByPlanAndDate(eq(1L), eq(9L), any(LocalDate.class))).thenReturn(List.of());
-
+        TrainingPlan emptyContent = buildActivePlan(1L, null);
+        when(trainingPlanMapper.selectActiveByUser(1L)).thenReturn(emptyContent);
         assertThat(trainingReminderService.saveReminder(buildSubmit("1", "今天练一会"))).isFalse();
 
         verify(trainingReminderMapper, never()).upsertDailyReminder(anyLong(), anyLong(), any(), any());
@@ -139,32 +109,30 @@ class TrainingReminderServiceImplTest {
     }
 
     /**
-     * 只有有活跃计划且今天有任务的用户出现在简报里。
+     * 简报带上计划正文与"今天是第几天"：提醒 Agent 据此读出今天要干什么。
      */
     @Test
-    void shouldListOnlyUsersWithTasksToday() {
-        when(trainingPlanMapper.listActivePlans(any(LocalDate.class), anyInt()))
-                .thenReturn(List.of(buildActivePlan(1L, 9L), buildActivePlan(2L, 10L)));
-        when(trainingTaskMapper.listByPlanAndDate(eq(1L), eq(9L), any(LocalDate.class)))
-                .thenReturn(List.of(buildTask()));
-        when(trainingTaskMapper.listByPlanAndDate(eq(2L), eq(10L), any(LocalDate.class))).thenReturn(List.of());
-        when(trainingTaskMapper.countUnfinishedOnDate(eq(1L), eq(9L), any(LocalDate.class))).thenReturn(2L);
+    void shouldListUsersWithPlanContent() {
+        TrainingPlan plan = buildActivePlan(1L, "第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步");
+        plan.setStartDate(LocalDate.now());
+        when(trainingPlanMapper.listActivePlans(any(LocalDate.class), anyInt())).thenReturn(List.of(plan));
 
         PlannedUsersResultVO result = trainingReminderService.listPlannedUsers();
 
         assertThat(result.isHasData()).isTrue();
         assertThat(result.getCount()).isEqualTo(1);
         assertThat(result.getUsers().get(0).getUserId()).isEqualTo("1");
-        assertThat(result.getUsers().get(0).getYesterdayUnfinishedCount()).isEqualTo(2L);
-        assertThat(result.getUsers().get(0).getTodayTasks()).hasSize(1);
+        assertThat(result.getUsers().get(0).getDayIndex()).isEqualTo(1);
+        assertThat(result.getUsers().get(0).getPlanContent()).contains("Redis 分布式锁");
     }
 
     /**
-     * 没有用户需要提醒时返回空状态而不是抛错。
+     * 计划没有正文的用户不进简报。
      */
     @Test
-    void shouldReturnEmptyStateWhenNobodyNeedsReminder() {
-        when(trainingPlanMapper.listActivePlans(any(LocalDate.class), anyInt())).thenReturn(List.of());
+    void shouldSkipUsersWithoutPlanContent() {
+        when(trainingPlanMapper.listActivePlans(any(LocalDate.class), anyInt()))
+                .thenReturn(List.of(buildActivePlan(1L, null)));
 
         PlannedUsersResultVO result = trainingReminderService.listPlannedUsers();
 
@@ -193,35 +161,21 @@ class TrainingReminderServiceImplTest {
      * 构造生效计划。
      *
      * @param userId 用户 ID
-     * @param planId 计划 ID
+     * @param planContent 计划正文，可为 null
      * @return 计划
      */
-    private TrainingPlan buildActivePlan(Long userId, Long planId) {
+    private TrainingPlan buildActivePlan(Long userId, String planContent) {
         TrainingPlan plan = new TrainingPlan();
-        plan.setId(planId);
+        plan.setId(9L);
         plan.setUserId(userId);
         plan.setStatus("ACTIVE");
         plan.setTargetPosition("Java 后端开发");
-        plan.setStartDate(LocalDate.now());
-        plan.setEndDate(LocalDate.now().plusDays(3));
-        plan.setTotalDays(4);
+        plan.setStartDate(LocalDate.now().minusDays(1));
+        plan.setEndDate(LocalDate.now().plusDays(5));
+        plan.setTotalDays(7);
         plan.setDailyMinutes(60);
+        plan.setPlanContent(planContent);
         return plan;
-    }
-
-    /**
-     * 构造一条当天的训练任务。
-     *
-     * @return 任务
-     */
-    private TrainingTask buildTask() {
-        TrainingTask task = new TrainingTask();
-        task.setId(1L);
-        task.setTopic("Redis 分布式锁补齐");
-        task.setQuestionType("八股");
-        task.setDurationMinutes(30);
-        task.setKnowledgePoint("Redis 分布式锁");
-        return task;
     }
 
     /**

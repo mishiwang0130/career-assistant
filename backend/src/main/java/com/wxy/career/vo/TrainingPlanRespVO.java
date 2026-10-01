@@ -2,14 +2,11 @@ package com.wxy.career.vo;
 
 import lombok.Data;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /**
- * 训练计划响应：计划概览 + 按天分组的任务清单 + 今日提醒 + 未读角标。
+ * 训练计划响应：计划概览 + 计划正文 + 今日提醒 + 未读角标。
  *
- * <p>「剩余天数」由截止日期与今天实时算出，不落库、不做定时更新；没有生效计划时 {@code hasPlan=false}，
- * 其余业务字段为空，前端据此展示空状态与生成入口。
+ * <p>「剩余天数」由截止日期与今天实时算出，不落库、不做定时更新；没有生效计划时 {@code hasPlan=false}。
+ * 计划正文是按天的「今天练什么知识点」Markdown，前端直接渲染。
  *
  * @author wxy
  * @date 2026-10-01
@@ -63,9 +60,9 @@ public class TrainingPlanRespVO {
     private Integer remainingDays;
 
     /**
-     * 计划概要正文。
+     * 计划正文：按天一句话概括当天练什么知识点（Markdown）。
      */
-    private String summary;
+    private String planContent;
 
     /**
      * 本次生成的调整原因，首次生成为空。
@@ -76,11 +73,6 @@ public class TrainingPlanRespVO {
      * 生成时间，格式 yyyy-MM-dd HH:mm。
      */
     private String generatedAt;
-
-    /**
-     * 按天分组的任务清单。
-     */
-    private List<TrainingDayRespVO> days = new ArrayList<>();
 
     /**
      * 今日提醒，没有时为空。

@@ -1,8 +1,10 @@
 package com.wxy.career.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wxy.career.common.auth.LoginUser;
 import com.wxy.career.common.auth.LoginUserHolder;
 import com.wxy.career.common.exception.BizException;
+import com.wxy.career.common.sse.SseEmitterSupport;
 import com.wxy.career.config.AgentProperties;
 import com.wxy.career.config.TrainingProperties;
 import com.wxy.career.middleware.PlanConfirmStore;
@@ -17,30 +19,27 @@ import com.wxy.career.vo.TrainingPlanConfirmReqVO;
 import com.wxy.career.vo.TrainingPlanGenerateReqVO;
 import com.wxy.career.vo.TrainingPlanRespVO;
 import com.wxy.career.vo.UserProfileRespVO;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.harness.agent.HarnessAgent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-
-import com.wxy.career.common.sse.SseEmitterSupport;
+import reactor.core.publisher.Flux;
 
 import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-
-import org.mockito.ArgumentCaptor;
-import reactor.core.publisher.Flux;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,16 +47,17 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 计划生成（两阶段 HITL）测试。
+ * 计划生成（确认之后才落库）测试。
  *
- * <p>固定三条口径：未确认时不会调用写工具、待确认状态过期按 1704 拒绝、未填求职目标按 1101 拒绝；同时断言生成链路
- * 没有记忆库依赖——薄弱点只从 MySQL 读。
+ * <p>固定四条口径：**生成的计划先给用户确认、确认之前一个字都不落库**；确认通过才由写工具落库；
+ * 放弃或过期都不落库、不留脏状态；未填求职目标按 1101 拒绝。同时断言生成链路没有记忆库依赖。
  *
  * @author wxy
  * @date 2026-10-01
@@ -125,212 +125,137 @@ class TrainingPlanGenerationServiceImplTest {
     }
 
     /**
-     * 用户放弃覆盖：清掉待确认状态与规划态，不讲不问地保留当前计划。
+     * 生成阶段只下发确认请求与草稿：**确认之前不落库**（首次生成也一样，用户要先看到计划）。
      */
     @Test
-    void shouldKeepCurrentPlanWhenOverwriteRejected() {
-        when(planConfirmStore.takePending(1L)).thenReturn(buildPending());
-        HarnessAgent planner = mock(HarnessAgent.class);
-        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
-
-        TrainingPlanConfirmReqVO reqVO = new TrainingPlanConfirmReqVO();
-        reqVO.setApproved(false);
-
-        assertThat(generationService.confirm(reqVO)).isNotNull();
-
-        verify(planConfirmStore).clearPending(1L);
-        verify(planConfirmStore).releaseGenerating(1L);
-        verify(planner).clearContext("1", "training-plan-1");
-        // 没有调用写工具的入口：未确认就不会覆盖已有计划。
-        verify(trainingPlanService, never()).submitPlan(anyLong(), anyString(), any());
-    }
-
-    /**
-     * 每次生成都从干净的规划态开始：上一次停在「等待确认」时留下的状态必须先清掉。
-     *
-     * <p>复现过的故障：上一次生成停在覆盖确认提示，用户关掉页面或刷新后，待确认状态仍在
-     * {@code (planner, training-plan-{userId})} 槽位上；此时再点一次「生成」，框架会在调用开始就抛
-     * 「Agent is paused for human-in-the-loop confirmation ... This call supplied no confirmation」，
-     * 用户看到的是「计划生成失败」。
-     */
-    @Test
-    void shouldResetPreviousStateBeforeGenerating() {
-        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
-        HarnessAgent planner = mock(HarnessAgent.class);
-        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
-        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
-        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
-        when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.<AgentEvent>empty());
-        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
-        reqVO.setDays(7);
-        reqVO.setDailyMinutes(60);
-
-        assertThat(generationService.generate(reqVO)).isNotNull();
-
-        // 生成前先清掉上一次的待确认快照与规划态，避免框架因为「挂着的待确认调用」直接拒绝本次生成。
-        verify(planConfirmStore).clearPending(1L);
-        verify(planner).clearContext("1", "training-plan-1");
-    }
-
-    /**
-     * 首次生成自动确认时，回填给框架的消息必须带上确认结论与对应的工具调用。
-     *
-     * <p>这是 HITL 停机—恢复链路的契约：少带 metadata 或工具调用 id 对不上，框架都会拒绝恢复
-     * （就是线上报的「This call supplied no confirmation」那一类错误）。
-     */
-    @Test
-    void shouldCarryConfirmResultsWhenAutoConfirmingFirstPlan() {
-        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
-        HarnessAgent planner = mock(HarnessAgent.class);
-        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
-        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
-        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
-        // 第一轮：发出确认请求（暂停）；重订阅那轮：立即结束，产物已由服务层取走。
-        when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.just(buildConfirmEvent()), Flux.<AgentEvent>empty());
-        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
-        reqVO.setDays(7);
-        reqVO.setDailyMinutes(60);
-
-        assertThat(generationService.generate(reqVO)).isNotNull();
-
-        ArgumentCaptor<List<Msg>> captor = ArgumentCaptor.forClass(List.class);
-        // 等两次调用都发生（原始任务 + 带确认结论的重订阅）再读捕获的参数，避免读到第一次的入参。
-        verify(planner, org.mockito.Mockito.timeout(3000).times(2))
-                .streamEvents(captor.capture(), any(io.agentscope.core.agent.RuntimeContext.class));
-        // 两次调用：第一次是原始任务，第二次（最后一条）才是带确认结论的重订阅。
-        List<Msg> confirmMessages = captor.getAllValues().get(captor.getAllValues().size() - 1);
-        Object rawResults = confirmMessages.get(0).getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
-        assertThat(rawResults).isInstanceOf(List.class);
-        List<?> confirmResults = (List<?>) rawResults;
-        assertThat(confirmResults).hasSize(1);
-        assertThat(confirmResults.get(0)).isInstanceOf(ConfirmResult.class);
-        ConfirmResult confirmResult = (ConfirmResult) confirmResults.get(0);
-        assertThat(confirmResult.isConfirmed()).isTrue();
-        assertThat(confirmResult.getToolCall().getId()).isEqualTo("call-1");
-        assertThat(confirmResult.getToolCall().getName()).isEqualTo("submit_training_plan");
-        // 回填消息必须是 USER 角色：框架禁止把 SYSTEM 消息放进本次输入
-        // （Hooks must not inject SYSTEM messages into PreCallEvent.inputMessages）。
-        assertThat(confirmMessages.get(0).getRole()).isEqualTo(MsgRole.USER);
-    }
-
-    /**
-     * 首次生成自动确认后，**上一轮暂停时的流结束不能把重订阅的那次运行掐掉**。
-     *
-     * <p>线上踩过：写工具触发确认时框架会结束当前这轮流，服务端随即用同一状态重订阅继续跑；
-     * 上一轮流的 onComplete 会走 finish(...) 把刚发起的重订阅 dispose 掉，写工具根本没执行，
-     * 用户看到「本次没有生成出可用的计划」，而且按钮一直转圈。这里用「第一次消费产物返回 null、
-     * 第二次返回计划」把这条时序固定下来：只要最终下发了 training_plan 结果、没有下发 error，就说明
-     * 上一轮流的结束被正确忽略。
-     */
-    @Test
-    void shouldIgnorePausedRunCompletionWhenAutoConfirming() {
+    void shouldAskForConfirmationWithoutSaving() {
         when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
         when(planConfirmStore.markGenerating(1L)).thenReturn(true);
         when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
-        HarnessAgent planner = mock(HarnessAgent.class);
+        HarnessAgent planner = mock(HarnessAgent.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        when(planner.getName()).thenReturn("planner");
         when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
-        // 第一轮流：发出确认请求后正常结束（这就是暂停）；重订阅那轮：仍在进行中，
-        // 用来验证它没有被上一轮流的结束掐掉（真实场景里它会继续跑工具与模型）。
-        when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.just(buildConfirmEvent()), Flux.<AgentEvent>never());
-
-        SseEmitterSupport support = mock(SseEmitterSupport.class);
-        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
-        TrainingPlanGenerationServiceImpl spiedService =
-                org.mockito.Mockito.spy(generationService);
-        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
-        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
-        reqVO.setDays(7);
-        reqVO.setDailyMinutes(60);
-
-        assertThat(spiedService.generate(reqVO)).isNotNull();
-
-        // 自动确认的重订阅必须已经发出（否则说明确认链路没走通）。
-        org.mockito.Mockito.verify(planner, org.mockito.Mockito.timeout(3000))
-                .streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class));
-        // 关键断言：上一轮暂停的流结束之后，本轮（重订阅后）仍在进行中，绝不能提前下发失败。
-        org.mockito.Mockito.verify(support, org.mockito.Mockito.after(800).never())
-                .sendError(anyString());
-        org.mockito.Mockito.verify(trainingPlanService, org.mockito.Mockito.never())
-                .consumeSubmittedPlan(1L, "training-plan-1");
-    }
-
-    /**
-     * 待确认状态过期：按 1704 拒绝，要求重新生成。
-     */
-    @Test
-    void shouldRejectConfirmWhenPendingExpired() {
-        when(planConfirmStore.takePending(1L)).thenReturn(null);
-        TrainingPlanConfirmReqVO reqVO = new TrainingPlanConfirmReqVO();
-        reqVO.setApproved(true);
-
-        assertThatThrownBy(() -> generationService.confirm(reqVO))
-                .isInstanceOf(BizException.class)
-                .satisfies(exception -> assertThat(((BizException) exception).getErrorCode().getCode())
-                        .isEqualTo(1704));
-        verify(trainingPlanService, never()).submitPlan(anyLong(), anyString(), any());
-        // 过期时顺带清掉 Agent 里可能残留的待确认状态，否则用户重新生成会被框架拒绝。
-        verify(planConfirmStore).clearPending(1L);
-    }
-
-    /**
-     * 旧规划态不可用时（框架的 SYSTEM 注入守卫 / 挂起的待确认调用）清理状态后自动重试一次。
-     *
-     * <p>线上踩过：计划 Agent 的旧状态会让框架在任何业务动作之前就抛
-     * {@code Hooks must not inject SYSTEM messages...}，用户看到「计划生成失败」，再点一次还是失败。
-     * 这类失败发生在写库之前，清理状态后重试是安全的。
-     */
-    @Test
-    void shouldRetryOnceWhenPlanStateIsUnusable() {
-        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
-        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
-        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
-        HarnessAgent planner = mock(HarnessAgent.class);
-        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
-        // 第一次调用直接被框架的守卫拒绝；重试后正常结束（产物由服务层取走）。
-        when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
-                .thenReturn(Flux.error(new IllegalStateException(
-                                "Hooks must not inject SYSTEM messages into PreCallEvent.inputMessages."
-                                        + " Use event.setSystemMessage() or event.appendSystemContent() instead.")),
-                        Flux.<AgentEvent>empty());
-        TrainingPlanRespVO plan = new TrainingPlanRespVO();
-        plan.setHasPlan(Boolean.TRUE);
-        plan.setPlanId(77L);
-        when(trainingPlanService.consumeSubmittedPlan(1L, "training-plan-1")).thenReturn(plan);
+        when(planner.streamEvents(anyList(), any(RuntimeContext.class)))
+                .thenReturn(Flux.just(buildConfirmEvent()));
         SseEmitterSupport support = mock(SseEmitterSupport.class);
         when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
         TrainingPlanGenerationServiceImpl spiedService = org.mockito.Mockito.spy(generationService);
         org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
-        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
-        reqVO.setDays(7);
-        reqVO.setDailyMinutes(60);
 
-        assertThat(spiedService.generate(reqVO)).isNotNull();
+        assertThat(spiedService.generate(buildRequest())).isNotNull();
 
-        // 先清理旧规划态（清 Redis 里的待确认快照 + Agent 会话状态），再重试并成功下发计划。
-        org.mockito.Mockito.verify(planConfirmStore, org.mockito.Mockito.timeout(3000).atLeastOnce())
-                .clearPending(1L);
-        org.mockito.Mockito.verify(planner, org.mockito.Mockito.timeout(3000).atLeast(2))
-                .clearContext("1", "training-plan-1");
-        org.mockito.Mockito.verify(support, org.mockito.Mockito.timeout(3000))
-                .sendResult(any(Object.class));
-        org.mockito.Mockito.verify(support, org.mockito.Mockito.never()).sendError(anyString());
+        // 确认请求带上了草稿正文与「没有旧计划」的摘要。
+        ArgumentCaptor<Object> payloadCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(support, org.mockito.Mockito.timeout(3000)).sendResult(payloadCaptor.capture());
+        Map<?, ?> payload = (Map<?, ?>) payloadCaptor.getValue();
+        assertThat(payload.get("type")).isEqualTo("plan_confirm_required");
+        assertThat(String.valueOf(payload.get("draftContent"))).contains("Redis 分布式锁");
+        verify(planConfirmStore).savePending(eq(1L), any(PendingPlanConfirmVO.class));
+        // 关键：确认之前没有任何落库动作。
+        verify(trainingPlanService, never()).consumeSubmittedPlan(anyLong(), anyString());
     }
 
     /**
-     * 求职目标未填写的 1101 由服务层直接透出，且不会占用生成占位。
+     * 用户确认之后：回填确认结论继续同一次运行，落库的计划随 result 下发。
+     */
+    @Test
+    void shouldSavePlanAfterApproval() {
+        when(planConfirmStore.takePending(1L)).thenReturn(buildPending());
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        HarnessAgent planner = mock(HarnessAgent.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        when(planner.getName()).thenReturn("planner");
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        when(planner.streamEvents(anyList(), any(RuntimeContext.class))).thenReturn(Flux.<AgentEvent>empty());
+        TrainingPlanRespVO saved = new TrainingPlanRespVO();
+        saved.setHasPlan(Boolean.TRUE);
+        saved.setPlanId(66L);
+        saved.setPlanContent("第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步");
+        when(trainingPlanService.consumeSubmittedPlan(1L, "training-plan-1")).thenReturn(saved);
+        SseEmitterSupport support = mock(SseEmitterSupport.class);
+        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
+        TrainingPlanGenerationServiceImpl spiedService = org.mockito.Mockito.spy(generationService);
+        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
+
+        assertThat(spiedService.confirm(buildConfirm(true))).isNotNull();
+
+        ArgumentCaptor<Object> payloadCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(support, org.mockito.Mockito.timeout(3000)).sendResult(payloadCaptor.capture());
+        Map<?, ?> payload = (Map<?, ?>) payloadCaptor.getValue();
+        assertThat(payload.get("type")).isEqualTo("training_plan");
+        verify(support, never()).sendError(anyString());
+    }
+
+    /**
+     * 回填的确认结论必须是 USER 角色且带 ConfirmResult（框架禁止 SYSTEM 消息进入本次输入）。
+     */
+    @Test
+    void shouldCarryConfirmResultsOnResume() {
+        when(planConfirmStore.takePending(1L)).thenReturn(buildPending());
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        HarnessAgent planner = mock(HarnessAgent.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        when(planner.getName()).thenReturn("planner");
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        when(planner.streamEvents(anyList(), any(RuntimeContext.class))).thenReturn(Flux.<AgentEvent>empty());
+        SseEmitterSupport support = mock(SseEmitterSupport.class);
+        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
+        TrainingPlanGenerationServiceImpl spiedService = org.mockito.Mockito.spy(generationService);
+        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
+
+        spiedService.confirm(buildConfirm(true));
+
+        ArgumentCaptor<List<Msg>> captor = ArgumentCaptor.forClass(List.class);
+        verify(planner, org.mockito.Mockito.timeout(3000))
+                .streamEvents(captor.capture(), any(RuntimeContext.class));
+        Msg confirmMessage = captor.getValue().get(0);
+        assertThat(confirmMessage.getRole()).isEqualTo(MsgRole.USER);
+        Object rawResults = confirmMessage.getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
+        assertThat(rawResults).isInstanceOf(List.class);
+        assertThat(((List<?>) rawResults).get(0)).isInstanceOf(ConfirmResult.class);
+    }
+
+    /**
+     * 用户放弃保存：不恢复 Agent、不落库，只清掉待确认状态与规划态。
+     */
+    @Test
+    void shouldKeepNothingWhenUserRejects() {
+        when(planConfirmStore.takePending(1L)).thenReturn(buildPending());
+        HarnessAgent planner = mock(HarnessAgent.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        when(planner.getName()).thenReturn("planner");
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+
+        assertThat(generationService.confirm(buildConfirm(false))).isNotNull();
+
+        verify(planConfirmStore).clearPending(1L);
+        verify(planConfirmStore).releaseGenerating(1L);
+        verify(planner).clearContext("1", "training-plan-1");
+        // 没有恢复 Agent：一次调用都没有；也没有落库。
+        verify(planner, never()).streamEvents(anyList(), any(RuntimeContext.class));
+        verify(trainingPlanService, never()).submitPlan(anyLong(), anyString(), anyString(), any());
+    }
+
+    /**
+     * 待确认状态过期：按 1704 拒绝并清掉残留规划态，要求重新生成。
+     */
+    @Test
+    void shouldRejectConfirmWhenPendingExpired() {
+        when(planConfirmStore.takePending(1L)).thenReturn(null);
+
+        assertThatThrownBy(() -> generationService.confirm(buildConfirm(true)))
+                .isInstanceOf(BizException.class)
+                .satisfies(exception -> assertThat(((BizException) exception).getErrorCode().getCode())
+                        .isEqualTo(1704));
+        verify(planConfirmStore).clearPending(1L);
+    }
+
+    /**
+     * 求职目标未填写：按 1101 拒绝，且不占用生成占位。
      */
     @Test
     void shouldRejectGenerateWhenProfileMissing() {
         when(userProfileService.getRequiredUserProfile(1L))
                 .thenThrow(new BizException(com.wxy.career.common.result.ErrorConstant.USER_PROFILE_REQUIRED));
-        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
-        reqVO.setDays(7);
-        reqVO.setDailyMinutes(60);
 
-        assertThatThrownBy(() -> generationService.generate(reqVO))
+        assertThatThrownBy(() -> generationService.generate(buildRequest()))
                 .isInstanceOf(BizException.class)
                 .satisfies(exception -> assertThat(((BizException) exception).getErrorCode().getCode())
                         .isEqualTo(1101));
@@ -342,13 +267,9 @@ class TrainingPlanGenerationServiceImplTest {
      */
     @Test
     void shouldRejectGenerateWhenBoundsExceeded() {
-        UserProfileRespVO profile = new UserProfileRespVO();
-        profile.setTargetPosition("Java 后端开发");
-        profile.setWorkYears(3);
-        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(profile);
-        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
+        TrainingPlanGenerateReqVO reqVO = buildRequest();
         reqVO.setDays(9999);
-        reqVO.setDailyMinutes(600);
 
         assertThatThrownBy(() -> generationService.generate(reqVO))
                 .isInstanceOf(BizException.class)
@@ -362,34 +283,105 @@ class TrainingPlanGenerationServiceImplTest {
      */
     @Test
     void shouldRejectConcurrentGeneration() {
-        UserProfileRespVO profile = new UserProfileRespVO();
-        profile.setTargetPosition("Java 开发");
-        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(profile);
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
         when(planConfirmStore.markGenerating(1L)).thenReturn(false);
-        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
-        reqVO.setDays(7);
-        reqVO.setDailyMinutes(60);
 
-        assertThatThrownBy(() -> generationService.generate(reqVO))
+        assertThatThrownBy(() -> generationService.generate(buildRequest()))
                 .isInstanceOf(BizException.class)
                 .satisfies(exception -> assertThat(((BizException) exception).getErrorCode().getCode())
                         .isEqualTo(1703));
     }
 
     /**
+     * 旧规划态不可用（框架 SYSTEM 注入守卫 / 挂起的待确认调用）时清理状态后自动重试一次。
+     */
+    @Test
+    void shouldRetryOnceWhenPlanStateIsUnusable() {
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
+        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        HarnessAgent planner = mock(HarnessAgent.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        when(planner.getName()).thenReturn("planner");
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        when(planner.streamEvents(anyList(), any(RuntimeContext.class)))
+                .thenReturn(
+                        Flux.error(new IllegalStateException(
+                                "Hooks must not inject SYSTEM messages into PreCallEvent.inputMessages.")),
+                        Flux.just(buildConfirmEvent()));
+        SseEmitterSupport support = mock(SseEmitterSupport.class);
+        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
+        TrainingPlanGenerationServiceImpl spiedService = org.mockito.Mockito.spy(generationService);
+        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
+
+        assertThat(spiedService.generate(buildRequest())).isNotNull();
+
+        // 先清理旧规划态，再重试；重试这轮走到确认请求（仍未落库）。
+        verify(planner, org.mockito.Mockito.timeout(3000).atLeast(2))
+                .clearContext("1", "training-plan-1");
+        verify(support, org.mockito.Mockito.timeout(3000)).sendResult(any(Object.class));
+        verify(support, never()).sendError(anyString());
+    }
+
+    /**
      * 计划生成链路没有记忆库依赖：薄弱点只从 MySQL 读（工具白名单里的 get_weak_points）。
      */
     @Test
-    void shouldNotDependOnMemoryRepository() {
+    void shouldNotDependOnMemoryRepositoryInGenerationService() {
         List<Class<?>> dependencies = Arrays.stream(TrainingPlanGenerationServiceImpl.class.getDeclaredFields())
-                .map(Field::getType)
-                .toList();
-        List<Class<?>> planServiceDependencies = Arrays.stream(TrainingPlanServiceImpl.class.getDeclaredFields())
                 .map(Field::getType)
                 .toList();
 
         assertThat(dependencies).doesNotContain(UserMemoryService.class, UserLongTermMemoryAdapter.class);
-        assertThat(planServiceDependencies).doesNotContain(UserMemoryService.class);
+    }
+
+    /**
+     * 构造生成请求。
+     *
+     * @return 生成请求
+     */
+    private TrainingPlanGenerateReqVO buildRequest() {
+        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
+        reqVO.setDays(7);
+        reqVO.setDailyMinutes(60);
+        return reqVO;
+    }
+
+    /**
+     * 构造确认请求。
+     *
+     * @param approved 是否同意保存
+     * @return 确认请求
+     */
+    private TrainingPlanConfirmReqVO buildConfirm(boolean approved) {
+        TrainingPlanConfirmReqVO reqVO = new TrainingPlanConfirmReqVO();
+        reqVO.setApproved(approved);
+        return reqVO;
+    }
+
+    /**
+     * 构造求职目标。
+     *
+     * @return 求职目标
+     */
+    private UserProfileRespVO buildProfile() {
+        UserProfileRespVO profile = new UserProfileRespVO();
+        profile.setTargetPosition("Java 后端开发");
+        profile.setWorkYears(3);
+        return profile;
+    }
+
+    /**
+     * 构造框架抛出的「写工具待确认」事件，入参里带计划正文草稿。
+     *
+     * @return 确认事件
+     */
+    private RequireUserConfirmEvent buildConfirmEvent() {
+        ToolUseBlock toolUse = ToolUseBlock.builder()
+                .id("call-1")
+                .name("submit_training_plan")
+                .input(Map.of("planContent", "第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步"))
+                .build();
+        return new RequireUserConfirmEvent("reply-1", List.of(toolUse));
     }
 
     /**
@@ -401,36 +393,10 @@ class TrainingPlanGenerationServiceImplTest {
         PendingPlanToolCallVO toolCall = new PendingPlanToolCallVO();
         toolCall.setId("call-1");
         toolCall.setName("submit_training_plan");
-        toolCall.setInputJson("{}");
+        toolCall.setInputJson("{\"planContent\":\"第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步\"}");
         PendingPlanConfirmVO pending = new PendingPlanConfirmVO();
         pending.setReplyId("reply-1");
         pending.setToolCalls(List.of(toolCall));
         return pending;
-    }
-
-    /**
-     * 构造框架抛出的「写工具待确认」事件。
-     *
-     * @return 确认事件
-     */
-    private RequireUserConfirmEvent buildConfirmEvent() {
-        ToolUseBlock toolUse = ToolUseBlock.builder()
-                .id("call-1")
-                .name("submit_training_plan")
-                .input(Map.of("plan", Map.of("days", 3)))
-                .build();
-        return new RequireUserConfirmEvent("reply-1", List.of(toolUse));
-    }
-
-    /**
-     * 构造求职目标（生成任务文本需要目标岗位）。
-     *
-     * @return 求职目标
-     */
-    private UserProfileRespVO buildProfile() {
-        UserProfileRespVO profile = new UserProfileRespVO();
-        profile.setTargetPosition("Java 后端开发");
-        profile.setWorkYears(3);
-        return profile;
     }
 }

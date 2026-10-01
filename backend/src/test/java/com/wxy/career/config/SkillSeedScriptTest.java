@@ -26,10 +26,11 @@ class SkillSeedScriptTest {
     private static final Path SCRIPT_PATH = Path.of("..", "sql", "career_assistant.sql");
 
     /**
-     * 验证建库脚本包含 F7 的三张业务表、Quartz 托管表与排期口径技能。
+     * 验证建库脚本包含 F7 的两张业务表、Quartz 托管表与计划正文口径技能。
      *
-     * <p>固定四条契约：计划正文落 MySQL（三张表都在）、Quartz 表一次建全且脚本可重复执行（用 IF NOT EXISTS，
-     * 不带 DROP）、技能写入幂等、任务的模型侧靠 get_weak_points 读 MySQL 而不是记忆库。
+     * <p>固定四条契约：计划正文落 MySQL（`training_plan` + `training_reminder`，没有任务表）、
+     * Quartz 表一次建全且脚本可重复执行（用 IF NOT EXISTS，不带 DROP）、技能写入幂等、
+     * 计划 Agent 靠 get_weak_points 读 MySQL 而不是记忆库。
      *
      * @throws Exception 读取脚本失败
      */
@@ -38,14 +39,16 @@ class SkillSeedScriptTest {
         String script = Files.readString(SCRIPT_PATH, StandardCharsets.UTF_8);
 
         assertThat(script).contains("CREATE TABLE IF NOT EXISTS `training_plan`");
-        assertThat(script).contains("CREATE TABLE IF NOT EXISTS `training_task`");
         assertThat(script).contains("CREATE TABLE IF NOT EXISTS `training_reminder`");
+        // 没有训练任务表：计划就是一份正文（起止日期在计划表里），提醒 Agent 读正文推断今天干什么。
+        assertThat(script).doesNotContain("CREATE TABLE IF NOT EXISTS `training_task`");
+        assertThat(script).contains("`plan_content`");
         // 提醒幂等靠唯一键承载：同一天同一用户只保留一条。
         assertThat(script).contains("uk_training_reminder_user_date");
         // 计划页的未读角标按 (user_id, read_flag) 统计。
         assertThat(script).contains("idx_training_reminder_user_read");
         // 三张表都要带项目公共字段：Mapper 的审计填充与逻辑删除都依赖它们。
-        for (String table : new String[]{"training_plan", "training_task", "training_reminder"}) {
+        for (String table : new String[]{"training_plan", "training_reminder"}) {
             int start = script.indexOf("CREATE TABLE IF NOT EXISTS `" + table + "`");
             assertThat(start).isGreaterThan(0);
             String tableDdl = script.substring(start, script.indexOf(") ENGINE", start));

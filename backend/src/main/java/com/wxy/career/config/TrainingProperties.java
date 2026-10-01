@@ -12,7 +12,7 @@ import org.springframework.validation.annotation.Validated;
 /**
  * 训练计划配置。
  *
- * <p>三块内容：计划生成的可调边界（天数、每日时长、任务数上限）、每日提醒的调度参数（CRON、时区、开关、
+ * <p>三块内容：计划生成的可调边界（天数、每日时长）、每日提醒的调度参数（CRON、时区、开关、
  * 单次处理用户上限）、Quartz 的调度器参数（实例名、线程数、表前缀、是否集群）。全部为非敏感配置，按环境
  * 隔离规范在 {@code application.yml} 与三份 Profile 同步补齐。
  *
@@ -44,7 +44,7 @@ public class TrainingProperties {
     private Quartz quartz = new Quartz();
 
     /**
-     * 计划生成的输入边界与任务规模上限。
+     * 计划生成的输入边界。
      *
      * @author wxy
      * @date 2026-10-01
@@ -73,14 +73,6 @@ public class TrainingProperties {
         @Max(value = 1440, message = "每日时长最多为 1440 分钟")
         private int maxDailyMinutes = 600;
 
-        /**
-         * 一份计划的任务条数上限，默认 200；超出时分配器按天压缩任务数。
-         *
-         * <p>本项目不启用大结果卸载，计划内容要一次性喂给模型并落库，因此必须有明确上限。
-         */
-        @Min(value = 1, message = "任务数上限至少为 1")
-        @Max(value = 2000, message = "任务数上限最多为 2000")
-        private int maxTasks = 200;
     }
 
     /**

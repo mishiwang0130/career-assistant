@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 网页应用、共用一个工作区，落文件会互相覆盖，也不符合「计划正文只落 MySQL」的约定。计划 Agent 本身不派发子 Agent，
  * 因此这里用一个进程内实现替掉默认实现：**不落任何文件**，也不引入新的存储表。
  *
- * <p>它只承载「框架后台任务」这一技术概念；用户的训练任务（业务事实）仍然落在 MySQL 的 {@code training_task}，
+ * <p>它只承载「框架后台任务」这一技术概念；训练计划的业务事实是 MySQL 里的一条正文记录（{@code training_plan}），
  * 规划态与待确认状态随 AgentState 存 Redis。
  *
  * @author wxy

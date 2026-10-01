@@ -88,8 +88,6 @@ app:
       # 每天可练时长的下限与上限（分钟），低于下限排不出有意义的任务。
       min-daily-minutes: 10
       max-daily-minutes: 600
-      # 一份计划的任务条数上限：超出时按天压缩任务数。
-      max-tasks: 200
     reminder:
       # 每天 08:00 触发一次提醒 Agent；CRON 按下面时区解释。
       cron: "${TRAINING_REMINDER_CRON:0 0 8 * * ?}"

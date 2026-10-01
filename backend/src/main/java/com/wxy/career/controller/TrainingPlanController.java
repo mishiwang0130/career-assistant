@@ -1,15 +1,15 @@
 package com.wxy.career.controller;
 
+import com.wxy.career.common.auth.LoginUserHolder;
 import com.wxy.career.common.result.Result;
 import com.wxy.career.service.TrainingPlanGenerationService;
 import com.wxy.career.service.TrainingPlanService;
 import com.wxy.career.service.TrainingReminderService;
-import com.wxy.career.vo.AssistantChatReqVO;
 import com.wxy.career.vo.TrainingPlanConfirmReqVO;
 import com.wxy.career.vo.TrainingPlanGenerateReqVO;
 import com.wxy.career.vo.TrainingPlanRespVO;
 import com.wxy.career.vo.TrainingReminderUnreadRespVO;
-import com.wxy.career.vo.TrainingTaskFinishReqVO;
+import com.wxy.career.vo.AssistantChatReqVO;
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Pattern;
@@ -26,8 +26,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 /**
  * 训练计划接口。
  *
- * <p>计划页的数据入口：读取当前计划、生成/重新规划（含覆盖确认）、勾选任务、提醒未读与已读。用户身份一律取登录态，
- * 所有查询与写入都带 {@code user_id}。
+ * <p>计划页的数据入口：读取当前计划、生成 / 重新规划（含覆盖确认）、提醒未读与已读。用户身份一律取登录态，
+ * 所有查询与写入都带 {@code user_id}。没有「勾选任务」接口——计划就是一份按天正文，没有任务表。
  *
  * @author wxy
  * @date 2026-10-01
@@ -56,9 +56,9 @@ public class TrainingPlanController {
     private TrainingReminderService trainingReminderService;
 
     /**
-     * 查询当前用户的训练计划概览。
+     * 查询当前用户的训练计划（概览 + 正文 + 今日提醒 + 未读角标）。
      *
-     * @return 计划概览（含按天任务、今日提醒与未读角标）
+     * @return 计划
      */
     @GetMapping("/current")
     public Result<TrainingPlanRespVO> current() {
@@ -67,9 +67,6 @@ public class TrainingPlanController {
 
     /**
      * 生成（或重新规划）训练计划。
-     *
-     * <p>该接口不返回统一响应包装：进流前的失败（未登录、未填求职目标、参数非法）仍由全局异常处理返回 Result，
-     * 进流之后只用 error 事件表达失败。
      *
      * @param reqVO 生成参数
      * @return SSE 响应对象
@@ -80,7 +77,7 @@ public class TrainingPlanController {
     }
 
     /**
-     * 回填「是否覆盖已有计划」的确认结论并继续生成。
+     * 回填「是否保存这份计划」的确认结论并继续生成。
      *
      * @param reqVO 确认结果
      * @return SSE 响应对象
@@ -88,22 +85,6 @@ public class TrainingPlanController {
     @PostMapping(value = "/generation/confirm", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter confirmGeneration(@Valid @RequestBody TrainingPlanConfirmReqVO reqVO) {
         return trainingPlanGenerationService.confirm(reqVO);
-    }
-
-    /**
-     * 勾选 / 取消勾选训练任务。
-     *
-     * @param taskId 任务 ID
-     * @param reqVO 目标状态
-     * @return 操作结果
-     */
-    @PostMapping("/tasks/{taskId}/finish")
-    public Result<Void> finishTask(
-            @Pattern(regexp = AssistantChatReqVO.SESSION_ID_REGEXP,
-                    message = "任务 ID 只能为数字") @PathVariable String taskId,
-            @Valid @RequestBody TrainingTaskFinishReqVO reqVO) {
-        trainingPlanService.finishTask(currentUserId(), Long.valueOf(taskId), reqVO.getFinished());
-        return Result.success();
     }
 
     /**
@@ -149,6 +130,6 @@ public class TrainingPlanController {
      * @return 用户 ID
      */
     private Long currentUserId() {
-        return com.wxy.career.common.auth.LoginUserHolder.getUserId();
+        return LoginUserHolder.getUserId();
     }
 }

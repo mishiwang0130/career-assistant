@@ -49,7 +49,6 @@ app:
       max-days: 365
       min-daily-minutes: 10
       max-daily-minutes: 600
-      max-tasks: 200
     reminder:
       cron: "${TRAINING_REMINDER_CRON:0 0 8 * * ?}"
       zone-id: ${TRAINING_REMINDER_ZONE:Asia/Shanghai}

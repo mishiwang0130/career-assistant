@@ -5,10 +5,8 @@ import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.config.TrainingProperties;
 import com.wxy.career.mapper.TrainingPlanMapper;
 import com.wxy.career.mapper.TrainingReminderMapper;
-import com.wxy.career.mapper.TrainingTaskMapper;
 import com.wxy.career.po.TrainingPlan;
 import com.wxy.career.po.TrainingReminder;
-import com.wxy.career.po.TrainingTask;
 import com.wxy.career.service.TrainingReminderService;
 import com.wxy.career.vo.PlannedUserBriefingVO;
 import com.wxy.career.vo.PlannedUsersResultVO;
@@ -54,16 +52,15 @@ public class TrainingReminderServiceImpl implements TrainingReminderService {
     private static final int CONTENT_MAX_LENGTH = 60;
 
     /**
+     * 简报里计划正文的长度上限（字符）：正文按天一句话，正常远小于该上限。
+     */
+    private static final int PLAN_CONTENT_MAX_LENGTH = 2000;
+
+    /**
      * 计划 Mapper。
      */
     @Resource
     private TrainingPlanMapper trainingPlanMapper;
-
-    /**
-     * 任务 Mapper。
-     */
-    @Resource
-    private TrainingTaskMapper trainingTaskMapper;
 
     /**
      * 提醒 Mapper。
@@ -154,28 +151,24 @@ public class TrainingReminderServiceImpl implements TrainingReminderService {
                 today, trainingProperties.getReminder().getMaxUsersPerRun());
         PlannedUsersResultVO result = new PlannedUsersResultVO();
         for (TrainingPlan plan : plans) {
-            List<TrainingTask> todayTasks = trainingTaskMapper.listByPlanAndDate(
-                    plan.getUserId(), plan.getId(), today);
-            if (todayTasks.isEmpty()) {
-                // 今天没有任务的用户不提醒，也不出现在简报里。
+            if (!StringUtils.hasText(plan.getPlanContent())) {
+                // 计划没有正文（异常数据）时不提醒，也不出现在简报里。
                 continue;
             }
             PlannedUserBriefingVO briefing = new PlannedUserBriefingVO();
             briefing.setUserId(String.valueOf(plan.getUserId()));
             briefing.setTargetPosition(plan.getTargetPosition());
             briefing.setRemainingDays(remainingDays(plan.getEndDate(), today));
-            for (TrainingTask task : todayTasks) {
-                briefing.getTodayTasks().add(describeTask(task));
-            }
-            briefing.setYesterdayUnfinishedCount(trainingTaskMapper.countUnfinishedOnDate(
-                    plan.getUserId(), plan.getId(), today.minusDays(1)));
+            briefing.setDayIndex(dayIndex(plan.getStartDate(), today));
+            // 正文按天写「今天练什么」，提醒 Agent 从里面读出今天这一行即可。
+            briefing.setPlanContent(truncateContent(plan.getPlanContent()));
             result.getUsers().add(briefing);
         }
         result.setCount(result.getUsers().size());
         result.setHasData(!result.getUsers().isEmpty());
         result.setMessage(result.getUsers().isEmpty()
                 ? "今天没有需要提醒的用户。"
-                : "共 " + result.getUsers().size() + " 位用户今天有训练任务。");
+                : "共 " + result.getUsers().size() + " 位用户今天在训练期内。");
         log.info("每日提醒简报已准备，用户数={}，上限={}",
                 result.getUsers().size(), trainingProperties.getReminder().getMaxUsersPerRun());
         return result;
@@ -202,8 +195,8 @@ public class TrainingReminderServiceImpl implements TrainingReminderService {
             log.info("跳过提醒写入：目标用户没有生效中的计划，userId={}", targetUserId);
             return false;
         }
-        if (trainingTaskMapper.listByPlanAndDate(targetUserId, plan.getId(), today).isEmpty()) {
-            log.info("跳过提醒写入：目标用户今天没有训练任务，userId={}", targetUserId);
+        if (!StringUtils.hasText(plan.getPlanContent())) {
+            log.info("跳过提醒写入：目标用户的计划没有正文，userId={}", targetUserId);
             return false;
         }
         trainingReminderMapper.upsertDailyReminder(targetUserId, plan.getId(), today, content);
@@ -212,22 +205,30 @@ public class TrainingReminderServiceImpl implements TrainingReminderService {
     }
 
     /**
-     * 把任务描述成提醒文案里可用的一句话。
+     * 算今天是计划的第几天（第 1 天是计划开始日期当天）。
      *
-     * @param task 训练任务
-     * @return 形如「Redis 分布式锁补齐（八股，30 分钟）」的描述
+     * @param startDate 计划开始日期
+     * @param today 今天
+     * @return 第几天；开始日期为空或还没开始时返回 0
      */
-    private String describeTask(TrainingTask task) {
-        StringBuilder text = new StringBuilder();
-        text.append(task.getTopic() == null ? "训练任务" : task.getTopic());
-        text.append("（");
-        text.append(StringUtils.hasText(task.getQuestionType()) ? task.getQuestionType() : "综合");
-        text.append("，").append(task.getDurationMinutes() == null ? 0 : task.getDurationMinutes()).append(" 分钟）");
-        if (task.getKnowledgePoint() != null && !task.getKnowledgePoint().isBlank()
-                && !task.getKnowledgePoint().equals(task.getTopic())) {
-            text.append("，对应知识点：").append(task.getKnowledgePoint());
+    private int dayIndex(LocalDate startDate, LocalDate today) {
+        if (startDate == null) {
+            return 0;
         }
-        return text.toString();
+        long dayIndex = ChronoUnit.DAYS.between(startDate, today) + 1;
+        return dayIndex < 0 ? 0 : (int) dayIndex;
+    }
+
+    /**
+     * 截断过长的计划正文，避免一次提醒把所有用户的长正文都塞进模型上下文。
+     *
+     * @param content 正文
+     * @return 截断后的正文
+     */
+    private String truncateContent(String content) {
+        String trimmed = content.strip();
+        return trimmed.length() <= PLAN_CONTENT_MAX_LENGTH
+                ? trimmed : trimmed.substring(0, PLAN_CONTENT_MAX_LENGTH);
     }
 
     /**
