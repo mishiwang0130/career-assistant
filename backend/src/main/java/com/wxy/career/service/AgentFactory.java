@@ -58,12 +58,38 @@ public interface AgentFactory {
     String REPORT_WRITER_AGENT_NAME = "report-writer";
 
     /**
+     * 计划 Agent 名，F7 冻结。
+     *
+     * <p>由计划页的生成按钮触发，**不是会话**：有自己的提示词、工具白名单、Plan Mode 与 Task List 装配。
+     * 运行标识固定为 {@code training-plan:{userId}}，用于承载规划态与待确认的覆盖确认。
+     */
+    String PLANNER_AGENT_NAME = "planner";
+
+    /**
+     * 提醒 Agent 名，F7 冻结。
+     *
+     * <p>由定时任务（Quartz）每天触发一次，**不是会话**，也不通过 {@link #getAgent(String)} 获取：它由调度器按
+     * {@code AgentConfig} 现场构建，工具只有「列出待提醒用户」与「写入当天提醒」两个。
+     */
+    String REMINDER_AGENT_NAME = "reminder";
+
+    /**
      * 按名字获取 Agent。
      *
      * @param agentName Agent 名
      * @return Agent 实例
      */
     HarnessAgent getAgent(String agentName);
+
+    /**
+     * 构建提醒 Agent 的调度配置。
+     *
+     * <p>提醒 Agent 由 Quartz 调度器现场构建（非会话），因此这里只给出它的名字、提示词、模型与工具集；
+     * 装配集中在工厂里，调度组件不直接接触工具与技能。
+     *
+     * @return 提醒 Agent 的运行时配置
+     */
+    io.agentscope.extensions.scheduler.config.RuntimeAgentConfig buildReminderAgentConfig();
 
     /**
      * 清空指定用户指定会话的 Agent 上下文与持久化会话状态。

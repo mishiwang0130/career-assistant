@@ -43,3 +43,21 @@ app:
   # 专项辅导（F9）：读薄弱点工具单次返回的条数上限，非敏感，生产同样允许按需覆盖。
   tutoring:
     max-weak-points: 20
+  # 训练计划（F7）：计划边界非敏感，生产允许按需覆盖；提醒的调度参数支持用环境变量调整。
+  training:
+    plan:
+      max-days: 365
+      min-daily-minutes: 10
+      max-daily-minutes: 600
+      max-tasks: 200
+    reminder:
+      cron: "${TRAINING_REMINDER_CRON:0 0 8 * * ?}"
+      zone-id: ${TRAINING_REMINDER_ZONE:Asia/Shanghai}
+      enabled: ${TRAINING_REMINDER_ENABLED:true}
+      max-users-per-run: 200
+    quartz:
+      instance-name: ${TRAINING_QUARTZ_INSTANCE_NAME:career-assistant-quartz}
+      thread-count: 5
+      table-prefix: QRTZ_
+      clustered: false
+      auto-start: true

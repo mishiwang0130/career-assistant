@@ -153,6 +153,36 @@ public final class ErrorConstant {
     public static final ErrorCode INTERVIEW_REPORT_GENERATING = new ErrorCode(1602, "报告正在生成中，请稍后再试");
 
     /**
+     * 没有生效中的训练计划。
+     *
+     * <p>F7 训练计划引入（1700-1799 段）：用户还没生成过计划、计划已结束或按计划 ID 查不到本人计划时按本码拒绝；
+     * 跨账号访问他人资源仍统一走 1051。
+     */
+    public static final ErrorCode TRAINING_PLAN_NOT_FOUND = new ErrorCode(1701, "没有生效中的训练计划");
+
+    /**
+     * 训练任务不存在。
+     *
+     * <p>F7 训练计划引入：勾选的任务不属于当前用户或已被重规划替换时按本码拒绝。
+     */
+    public static final ErrorCode TRAINING_TASK_NOT_FOUND = new ErrorCode(1702, "训练任务不存在");
+
+    /**
+     * 计划正在生成中。
+     *
+     * <p>F7 训练计划引入：同一用户已有一次生成在跑，重复触发时按本码提示稍后再试，避免两轮生成互相覆盖。
+     */
+    public static final ErrorCode TRAINING_PLAN_GENERATING = new ErrorCode(1703, "计划正在生成中，请稍后再试");
+
+    /**
+     * 待确认的生成已失效。
+     *
+     * <p>F7 训练计划引入：覆盖确认有有效期，用户确认时已经拿不到待确认状态（超时、已被处理或应用重启）时按本码
+     * 提示重新生成，避免用一份过期的计划覆盖当前计划。
+     */
+    public static final ErrorCode TRAINING_PLAN_CONFIRM_EXPIRED = new ErrorCode(1704, "待确认的计划已失效，请重新生成");
+
+    /**
      * 工具类禁止实例化。
      */
     private ErrorConstant() {

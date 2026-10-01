@@ -109,6 +109,16 @@
             <groupId>io.agentscope</groupId>
             <artifactId>agentscope-extensions-mem0</artifactId>
         </dependency>
+        <!-- 定时任务：F7 第 5 批引入（Quartz JDBC 共库），会话归档总结复用 -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-scheduler-quartz</artifactId>
+        </dependency>
+        <!-- 调度扩展的公共构件：quartz 构件声明为 provided + optional，不传递，必须显式声明 -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-scheduler-common</artifactId>
+        </dependency>
 
         <!-- 接口文档 -->
         <dependency>

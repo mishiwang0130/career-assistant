@@ -551,3 +551,298 @@ VALUES ('tutoring',
 5. 用户可见的正文里不出现工具名、技能名、内部字段或分数公式，也不写「接下来我将」「已加载」「已读取」这类过程话术。',
         'f9-tutoring')
 ON DUPLICATE KEY UPDATE `name` = `name`;
+
+-- =====================================================================
+-- F7 训练计划（第 5 批）：训练计划 / 训练任务 / 训练提醒 + Quartz 存储 + 排期口径技能
+-- =====================================================================
+-- 本段只追加自己的表、框架托管表与技能行，不改 F2/F3/F5/F6/F9 的任何一行。
+-- 三条业务规则（写死）：
+--   1. 计划正文存 MySQL，不写服务器工作区：多用户共用一个工作区会互相覆盖，Plan Mode 只借「只读规划 + 人工确认」语义；
+--   2. 「还有几天」是生成计划时的一次性输入，存进 training_plan.end_date，页面剩余天数由它实时算出；
+--   3. 每日提醒写入 training_reminder，靠 (user_id, reminder_date) 唯一键保证同一天同一用户只有一条。
+
+-- 训练计划表：一个用户同一时刻只有一份生效计划；重规划是覆盖生成，旧计划标记 ENDED 保留（不物理删除）。
+CREATE TABLE IF NOT EXISTS `training_plan` (
+    `id`                BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`           BIGINT       NOT NULL COMMENT '用户ID',
+    `status`            VARCHAR(16)  NOT NULL COMMENT '计划状态：ACTIVE-生效中，ENDED-已结束（被重规划替换）',
+    `target_position`   VARCHAR(200) DEFAULT NULL COMMENT '生成时的目标岗位快照，页面概览展示这一份',
+    `total_days`        INT          NOT NULL COMMENT '计划总天数，即生成时输入的「还有几天」',
+    `daily_minutes`     INT          NOT NULL COMMENT '每天可练时长（分钟）',
+    `start_date`        DATE         NOT NULL COMMENT '计划开始日期（生成当天）',
+    `end_date`          DATE         NOT NULL COMMENT '计划截止日期，由「还有几天」一次算出',
+    `plan_summary`      TEXT         DEFAULT NULL COMMENT '计划概要：总体思路与取舍说明',
+    `adjustment_reason` VARCHAR(500) DEFAULT NULL COMMENT '调整原因，重新规划时写清依据；首次生成为空',
+    `generated_at`      DATETIME     DEFAULT NULL COMMENT '生成时间',
+    `create_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`         BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`         BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`         TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    KEY `idx_training_plan_user_status` (`user_id`, `status`),
+    KEY `idx_training_plan_user_start` (`user_id`, `start_date`),
+    KEY `idx_training_plan_status_end` (`status`, `end_date`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '训练计划表';
+
+-- 训练任务表：按天分组的每日任务，用户在计划页逐条勾选。
+CREATE TABLE IF NOT EXISTS `training_task` (
+    `id`               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`          BIGINT       NOT NULL COMMENT '用户ID',
+    `plan_id`          BIGINT       NOT NULL COMMENT '所属计划ID，关联 training_plan.id（逻辑关联，不建物理外键）',
+    `day_index`        INT          NOT NULL COMMENT '第几天，从 1 开始',
+    `task_date`        DATE         NOT NULL COMMENT '任务日期，由计划开始日期加 day_index 算出',
+    `topic`            VARCHAR(200) NOT NULL COMMENT '训练主题',
+    `question_type`    VARCHAR(32)  NOT NULL COMMENT '题型：八股/项目/综合等',
+    `difficulty`       INT          NOT NULL COMMENT '难度，取值 1-5，按天递进',
+    `duration_minutes` INT          NOT NULL COMMENT '预计时长（分钟），当天合计不超过每日时长',
+    `knowledge_point`  VARCHAR(200) DEFAULT NULL COMMENT '对应知识点名称，用于核对主题是否对上薄弱点',
+    `sort_order`       INT          NOT NULL DEFAULT 1 COMMENT '同一天内的排序号',
+    `finished`         TINYINT      NOT NULL DEFAULT 0 COMMENT '是否完成：0-未完成，1-已完成',
+    `finish_time`      DATETIME     DEFAULT NULL COMMENT '完成时间，未完成时为空',
+    `create_time`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`        BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`        BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`        TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    KEY `idx_training_task_user_plan_day` (`user_id`, `plan_id`, `day_index`),
+    KEY `idx_training_task_user_date` (`user_id`, `task_date`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '训练任务表';
+
+-- 训练提醒表：每个用户每天最多一条，唯一键承载幂等；提醒只做站内展示。
+CREATE TABLE IF NOT EXISTS `training_reminder` (
+    `id`            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`       BIGINT       NOT NULL COMMENT '用户ID',
+    `plan_id`       BIGINT       DEFAULT NULL COMMENT '生成提醒时该用户的生效计划ID',
+    `reminder_date` DATE         NOT NULL COMMENT '提醒日期',
+    `content`       VARCHAR(200) NOT NULL COMMENT '提醒正文，整条不超过 60 字',
+    `read_flag`     TINYINT      NOT NULL DEFAULT 0 COMMENT '是否已读：0-未读，1-已读',
+    `read_time`     DATETIME     DEFAULT NULL COMMENT '已读时间，未读时为空',
+    `create_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `create_by`     BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
+    `update_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `update_by`     BIGINT       NOT NULL DEFAULT 0 COMMENT '更新人ID，0表示系统或未登录',
+    `is_delete`     TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_training_reminder_user_date` (`user_id`, `reminder_date`),
+    KEY `idx_training_reminder_user_read` (`user_id`, `read_flag`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = '训练提醒表';
+
+-- ---------------------------------------------------------------------
+-- Quartz 调度存储（框架托管表，不套项目公共字段约定）
+-- ---------------------------------------------------------------------
+-- 来源：Quartz 2.5.2 自带的 tables_mysql_innodb.sql（把 DROP 去掉、改成 CREATE TABLE IF NOT EXISTS，
+-- 二级索引内联进建表语句，保证脚本可重复执行）。这里一次建全 11 张表：
+-- 「会话归档总结」模块后续复用同一套 Quartz 存储加自己的 job，不需要再改本段。
+-- 调度参数见 application*.yml 的 app.training.quartz.*（JobStoreTX + tablePrefix=QRTZ_ + 与业务共库）。
+CREATE TABLE IF NOT EXISTS `QRTZ_JOB_DETAILS` (
+    `SCHED_NAME`        VARCHAR(120) NOT NULL,
+    `JOB_NAME`          VARCHAR(190) NOT NULL,
+    `JOB_GROUP`         VARCHAR(190) NOT NULL,
+    `DESCRIPTION`       VARCHAR(250) NULL,
+    `JOB_CLASS_NAME`    VARCHAR(250) NOT NULL,
+    `IS_DURABLE`        VARCHAR(1)   NOT NULL,
+    `IS_NONCONCURRENT`  VARCHAR(1)   NOT NULL,
+    `IS_UPDATE_DATA`    VARCHAR(1)   NOT NULL,
+    `REQUESTS_RECOVERY` VARCHAR(1)   NOT NULL,
+    `JOB_DATA`          BLOB         NULL,
+    PRIMARY KEY (`SCHED_NAME`, `JOB_NAME`, `JOB_GROUP`),
+    KEY `IDX_QRTZ_J_REQ_RECOVERY` (`SCHED_NAME`, `REQUESTS_RECOVERY`),
+    KEY `IDX_QRTZ_J_GRP` (`SCHED_NAME`, `JOB_GROUP`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 任务明细表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_TRIGGERS` (
+    `SCHED_NAME`     VARCHAR(120) NOT NULL,
+    `TRIGGER_NAME`   VARCHAR(190) NOT NULL,
+    `TRIGGER_GROUP`  VARCHAR(190) NOT NULL,
+    `JOB_NAME`       VARCHAR(190) NOT NULL,
+    `JOB_GROUP`      VARCHAR(190) NOT NULL,
+    `DESCRIPTION`    VARCHAR(250) NULL,
+    `NEXT_FIRE_TIME` BIGINT       NULL,
+    `PREV_FIRE_TIME` BIGINT       NULL,
+    `PRIORITY`       INT          NULL,
+    `TRIGGER_STATE`  VARCHAR(16)  NOT NULL,
+    `TRIGGER_TYPE`   VARCHAR(8)   NOT NULL,
+    `START_TIME`     BIGINT       NOT NULL,
+    `END_TIME`       BIGINT       NULL,
+    `CALENDAR_NAME`  VARCHAR(190) NULL,
+    `MISFIRE_INSTR`  SMALLINT     NULL,
+    `JOB_DATA`       BLOB         NULL,
+    PRIMARY KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`),
+    KEY `IDX_QRTZ_T_J` (`SCHED_NAME`, `JOB_NAME`, `JOB_GROUP`),
+    KEY `IDX_QRTZ_T_JG` (`SCHED_NAME`, `JOB_GROUP`),
+    KEY `IDX_QRTZ_T_C` (`SCHED_NAME`, `CALENDAR_NAME`),
+    KEY `IDX_QRTZ_T_G` (`SCHED_NAME`, `TRIGGER_GROUP`),
+    KEY `IDX_QRTZ_T_STATE` (`SCHED_NAME`, `TRIGGER_STATE`),
+    KEY `IDX_QRTZ_T_N_STATE` (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`, `TRIGGER_STATE`),
+    KEY `IDX_QRTZ_T_N_G_STATE` (`SCHED_NAME`, `TRIGGER_GROUP`, `TRIGGER_STATE`),
+    KEY `IDX_QRTZ_T_NEXT_FIRE_TIME` (`SCHED_NAME`, `NEXT_FIRE_TIME`),
+    KEY `IDX_QRTZ_T_NFT_ST` (`SCHED_NAME`, `TRIGGER_STATE`, `NEXT_FIRE_TIME`),
+    KEY `IDX_QRTZ_T_NFT_MISFIRE` (`SCHED_NAME`, `MISFIRE_INSTR`, `NEXT_FIRE_TIME`),
+    KEY `IDX_QRTZ_T_NFT_ST_MISFIRE` (`SCHED_NAME`, `MISFIRE_INSTR`, `NEXT_FIRE_TIME`, `TRIGGER_STATE`),
+    KEY `IDX_QRTZ_T_NFT_ST_MISFIRE_GRP` (`SCHED_NAME`, `MISFIRE_INSTR`, `NEXT_FIRE_TIME`, `TRIGGER_GROUP`, `TRIGGER_STATE`),
+    CONSTRAINT `FK_QRTZ_TRIGGERS_QRTZ_JOB_DETAILS`
+        FOREIGN KEY (`SCHED_NAME`, `JOB_NAME`, `JOB_GROUP`)
+            REFERENCES `QRTZ_JOB_DETAILS` (`SCHED_NAME`, `JOB_NAME`, `JOB_GROUP`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 触发器表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_SIMPLE_TRIGGERS` (
+    `SCHED_NAME`      VARCHAR(120) NOT NULL,
+    `TRIGGER_NAME`    VARCHAR(190) NOT NULL,
+    `TRIGGER_GROUP`   VARCHAR(190) NOT NULL,
+    `REPEAT_COUNT`    BIGINT       NOT NULL,
+    `REPEAT_INTERVAL` BIGINT       NOT NULL,
+    `TIMES_TRIGGERED` BIGINT       NOT NULL,
+    PRIMARY KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`),
+    CONSTRAINT `FK_QRTZ_SIMPLE_TRIGGERS_QRTZ_TRIGGERS`
+        FOREIGN KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`)
+            REFERENCES `QRTZ_TRIGGERS` (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 简单触发器表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_CRON_TRIGGERS` (
+    `SCHED_NAME`      VARCHAR(120) NOT NULL,
+    `TRIGGER_NAME`    VARCHAR(190) NOT NULL,
+    `TRIGGER_GROUP`   VARCHAR(190) NOT NULL,
+    `CRON_EXPRESSION` VARCHAR(120) NOT NULL,
+    `TIME_ZONE_ID`    VARCHAR(80)  NULL,
+    PRIMARY KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`),
+    CONSTRAINT `FK_QRTZ_CRON_TRIGGERS_QRTZ_TRIGGERS`
+        FOREIGN KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`)
+            REFERENCES `QRTZ_TRIGGERS` (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz CRON 触发器表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_SIMPROP_TRIGGERS` (
+    `SCHED_NAME`    VARCHAR(120) NOT NULL,
+    `TRIGGER_NAME`  VARCHAR(190) NOT NULL,
+    `TRIGGER_GROUP` VARCHAR(190) NOT NULL,
+    `STR_PROP_1`    VARCHAR(512) NULL,
+    `STR_PROP_2`    VARCHAR(512) NULL,
+    `STR_PROP_3`    VARCHAR(512) NULL,
+    `INT_PROP_1`    INT          NULL,
+    `INT_PROP_2`    INT          NULL,
+    `LONG_PROP_1`   BIGINT       NULL,
+    `LONG_PROP_2`   BIGINT       NULL,
+    `DEC_PROP_1`    NUMERIC(13, 4) NULL,
+    `DEC_PROP_2`    NUMERIC(13, 4) NULL,
+    `BOOL_PROP_1`   VARCHAR(1)   NULL,
+    `BOOL_PROP_2`   VARCHAR(1)   NULL,
+    PRIMARY KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`),
+    CONSTRAINT `FK_QRTZ_SIMPROP_TRIGGERS_QRTZ_TRIGGERS`
+        FOREIGN KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`)
+            REFERENCES `QRTZ_TRIGGERS` (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 扩展属性触发器表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_BLOB_TRIGGERS` (
+    `SCHED_NAME`    VARCHAR(120) NOT NULL,
+    `TRIGGER_NAME`  VARCHAR(190) NOT NULL,
+    `TRIGGER_GROUP` VARCHAR(190) NOT NULL,
+    `BLOB_DATA`     BLOB         NULL,
+    PRIMARY KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`),
+    KEY `IDX_QRTZ_BT_TRIGGER` (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`),
+    CONSTRAINT `FK_QRTZ_BLOB_TRIGGERS_QRTZ_TRIGGERS`
+        FOREIGN KEY (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`)
+            REFERENCES `QRTZ_TRIGGERS` (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz BLOB 触发器表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_CALENDARS` (
+    `SCHED_NAME`    VARCHAR(120) NOT NULL,
+    `CALENDAR_NAME` VARCHAR(190) NOT NULL,
+    `CALENDAR`      BLOB         NOT NULL,
+    PRIMARY KEY (`SCHED_NAME`, `CALENDAR_NAME`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 日历表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_PAUSED_TRIGGER_GRPS` (
+    `SCHED_NAME`    VARCHAR(120) NOT NULL,
+    `TRIGGER_GROUP` VARCHAR(190) NOT NULL,
+    PRIMARY KEY (`SCHED_NAME`, `TRIGGER_GROUP`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 已暂停触发组表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_FIRED_TRIGGERS` (
+    `SCHED_NAME`        VARCHAR(120) NOT NULL,
+    `ENTRY_ID`          VARCHAR(95)  NOT NULL,
+    `TRIGGER_NAME`      VARCHAR(190) NOT NULL,
+    `TRIGGER_GROUP`     VARCHAR(190) NOT NULL,
+    `INSTANCE_NAME`     VARCHAR(190) NOT NULL,
+    `FIRED_TIME`        BIGINT       NOT NULL,
+    `SCHED_TIME`        BIGINT       NOT NULL,
+    `PRIORITY`          INT          NOT NULL,
+    `STATE`             VARCHAR(16)  NOT NULL,
+    `JOB_NAME`          VARCHAR(190) NULL,
+    `JOB_GROUP`         VARCHAR(190) NULL,
+    `IS_NONCONCURRENT`  VARCHAR(1)   NULL,
+    `REQUESTS_RECOVERY` VARCHAR(1)   NULL,
+    PRIMARY KEY (`SCHED_NAME`, `ENTRY_ID`),
+    KEY `IDX_QRTZ_FT_TRIG_INST_NAME` (`SCHED_NAME`, `INSTANCE_NAME`),
+    KEY `IDX_QRTZ_FT_INST_JOB_REQ_RCVRY` (`SCHED_NAME`, `INSTANCE_NAME`, `REQUESTS_RECOVERY`),
+    KEY `IDX_QRTZ_FT_J_G` (`SCHED_NAME`, `JOB_NAME`, `JOB_GROUP`),
+    KEY `IDX_QRTZ_FT_JG` (`SCHED_NAME`, `JOB_GROUP`),
+    KEY `IDX_QRTZ_FT_T_G` (`SCHED_NAME`, `TRIGGER_NAME`, `TRIGGER_GROUP`),
+    KEY `IDX_QRTZ_FT_TG` (`SCHED_NAME`, `TRIGGER_GROUP`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 已触发触发器表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_SCHEDULER_STATE` (
+    `SCHED_NAME`        VARCHAR(120) NOT NULL,
+    `INSTANCE_NAME`     VARCHAR(190) NOT NULL,
+    `LAST_CHECKIN_TIME` BIGINT       NOT NULL,
+    `CHECKIN_INTERVAL`  BIGINT       NOT NULL,
+    PRIMARY KEY (`SCHED_NAME`, `INSTANCE_NAME`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 调度器状态表（框架托管）';
+
+CREATE TABLE IF NOT EXISTS `QRTZ_LOCKS` (
+    `SCHED_NAME` VARCHAR(120) NOT NULL,
+    `LOCK_NAME`  VARCHAR(40)  NOT NULL,
+    PRIMARY KEY (`SCHED_NAME`, `LOCK_NAME`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci
+  COMMENT = 'Quartz 锁表（框架托管）';
+
+-- 幂等写入 F7 的默认 Skill：training-planning（排期与配比口径）。
+-- 重复执行不产生重复数据，也不覆盖人工在表里临时调整过的规则（命中唯一键时只做同值更新）。
+-- 数值口径与 Java 纯函数 TrainingPlanAllocator 一致，**以代码为准**。
+INSERT INTO `agentscope_skills` (`name`, `description`, `skill_content`, `source`)
+VALUES ('training-planning',
+        '训练计划排期口径：每天时长如何分配到任务、题型配比、难度推进阶梯、薄弱点到训练主题的映射',
+        '你正在执行「训练计划排期口径」：把「还有几天、每天能练多久」翻成具体可执行的按天任务。口径如下，不要输出本规范的标题或内部字段。\n\n# 一、每天排几个任务、每个多长（与平台算法一致）\n1. 每天任务数 = 把「每天可练时长 ÷ 30 分钟」四舍五入，最少 1 个、最多 6 个；每天可练时长不超过 10 分钟时固定 1 个任务。\n2. 每个任务的时长按 5 分钟取整，同一天各任务时长之和不超过当天可练时长；某个主题特别薄弱时，把当天多出来的分钟优先给它。\n3. 任务总数上限 200：超了先减少每天的任务数（最少每天 1 个），仍然超出时只给前 200 天排任务，剩下的时间留给复习，并在概要里说明压缩原因。\n4. 平台会在任务文本里给出「每日任务时长骨架」，你排的任务数与时长得跟骨架一致，不要自己加时长。\n\n# 二、主题怎么选（薄弱点优先）\n1. 先看只读工具返回的薄弱点与掌握度：薄弱（掌握度 < 60 或最近一次判定答错）的知识点排在前面，占用更多天与更多任务。\n2. 掌握度 60-74 的主题安排少量巩固；75 分以上的主题每天最多安排 1 个复习任务，不重复堆题。\n3. 每个薄弱点都要落到一条任务：主题写清「补什么」（例如「Redis 分布式锁：锁误删与续期」），并在知识字段里带上对应的知识点名称。\n4. 没有薄弱点记录时，按目标岗位的常见考点安排，并说明「还没有练习记录，本计划以目标岗位为准」，不要编造薄弱点。\n\n# 三、题型与难度怎么排\n1. 题型配比：八股与项目题为主（约各占三到四成），综合场景题占两到三成；目标岗位偏工程时项目题多一点。\n2. 难度按天递进：第 1-2 天以基础与回忆为主（难度 1-2），中段进入应用与对比（3-4），最后集中在综合场景与表达（4-5）。\n3. 同一天里不要把最难的任务排在第一个：先热身再攻坚，把最难的放在当天时长最多的那一条上。\n\n# 四、重新规划怎么办\n1. 说清依据：哪几个知识点被标记成新的薄弱点、哪些主题掌握度上来了、剩余时间还剩多少。\n2. 保留原计划的痕迹：仍需要补的主题继续排，只是调整顺序、时长或难度；不要推倒重来。\n3. 把依据写进调整原因字段，用户要能在计划页看到「为什么改了」。\n\n# 五、底线\n1. 不编造用户的经历、可用时长与练习记录；用户说几天就几天。\n2. 不承诺「包过」「必中」这类结果，也不提供刷题量承诺。\n3. 用户可见的正文里不出现工具名、内部字段名与分数公式，也不写「接下来我将」「已加载」「已读取」这类过程话术。',
+        'f7-training-planning')
+ON DUPLICATE KEY UPDATE `name` = `name`;

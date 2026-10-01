@@ -79,6 +79,33 @@ app:
   # 本项目不启用大结果卸载，返回长度由工具自己控，因此上限是防止长列表撑上下文的主要手段。
   tutoring:
     max-weak-points: 20
+  # 训练计划（F7）：计划生成边界、每日提醒 CRON/时区与 Quartz 存储参数；
+  # 三份 Profile 同步补齐，全部非敏感（prod 允许用环境变量覆盖 CRON、时区与开关）。
+  training:
+    plan:
+      # 还有几天的上限，超过按参数错误拒绝。
+      max-days: 365
+      # 每天可练时长的下限与上限（分钟），低于下限排不出有意义的任务。
+      min-daily-minutes: 10
+      max-daily-minutes: 600
+      # 一份计划的任务条数上限：超出时按天压缩任务数。
+      max-tasks: 200
+    reminder:
+      # 每天 08:00 触发一次提醒 Agent；CRON 按下面时区解释。
+      cron: "${TRAINING_REMINDER_CRON:0 0 8 * * ?}"
+      zone-id: ${TRAINING_REMINDER_ZONE:Asia/Shanghai}
+      enabled: ${TRAINING_REMINDER_ENABLED:true}
+      # 单次提醒最多处理的用户数，防止一次运行撑爆模型上下文。
+      max-users-per-run: 200
+    quartz:
+      # Quartz 调度器实例名与线程数；单实例部署，集群开关保持 false。
+      instance-name: career-assistant-quartz
+      thread-count: 5
+      # 框架托管表统一用 QRTZ_ 前缀，建表脚本见 sql/career_assistant.sql 的 F7 段。
+      table-prefix: QRTZ_
+      clustered: false
+      # 测试环境可关掉自动启动，避免真起调度线程。
+      auto-start: true
 
 logging:
   level:

@@ -5,23 +5,31 @@ import com.wxy.career.common.result.ErrorConstant;
 import com.wxy.career.config.AgentProperties;
 import com.wxy.career.config.InterviewProperties;
 import com.wxy.career.middleware.MetricsMiddleware;
+import com.wxy.career.middleware.InMemoryTaskRepository;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.middleware.UserLongTermMemoryAdapter;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.GetWeakPointsTool;
+import com.wxy.career.tool.ListPlannedUsersTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
+import com.wxy.career.tool.SaveTrainingReminderTool;
 import com.wxy.career.tool.SubmitAnswerEvaluationTool;
 import com.wxy.career.tool.SubmitInterviewReportTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
+import com.wxy.career.tool.SubmitTrainingPlanTool;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.memory.LongTermMemory;
 import io.agentscope.core.memory.LongTermMemoryMode;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.permission.PermissionBehavior;
+import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.permission.PermissionMode;
+import io.agentscope.core.permission.PermissionRule;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.tool.Toolkit;
@@ -32,6 +40,8 @@ import io.agentscope.harness.agent.subagent.DefaultAgentManager;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.SubagentFactory;
 import io.agentscope.harness.agent.tools.ToolsConfig;
+import io.agentscope.extensions.scheduler.config.ModelConfig;
+import io.agentscope.extensions.scheduler.config.RuntimeAgentConfig;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -277,8 +287,9 @@ public class AgentFactoryImpl implements AgentFactory {
             // 业务异常统一返回 HTTP 200，失败语义由 code 表达。
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
-        // F5 起面试会话有自己的专属 Agent；其它未登记的 Agent 名仍按 404 拒绝。
-        if (!MAIN_AGENT_NAME.equals(agentName) && !INTERVIEWER_AGENT_NAME.equals(agentName)) {
+        // F5 起面试会话有自己的专属 Agent，F7 起计划页也有自己的专属 Agent；其它未登记的 Agent 名仍按 404 拒绝。
+        if (!MAIN_AGENT_NAME.equals(agentName) && !INTERVIEWER_AGENT_NAME.equals(agentName)
+                && !PLANNER_AGENT_NAME.equals(agentName)) {
             throw new BizException(ErrorConstant.NOT_FOUND);
         }
         return agentCache.computeIfAbsent(agentName, this::buildAgent);
@@ -328,6 +339,10 @@ public class AgentFactoryImpl implements AgentFactory {
         // F5 模拟面试：面试场景用专属 Agent（专属提示词、工具白名单、评分子 Agent 与上下文压缩）。
         if (INTERVIEWER_AGENT_NAME.equals(agentName)) {
             return buildInterviewerAgent();
+        }
+        // F7 训练计划：计划 Agent 有自己的提示词、工具白名单与 Plan Mode / Task List / HITL 装配。
+        if (PLANNER_AGENT_NAME.equals(agentName)) {
+            return buildPlannerAgent();
         }
         // 业务工具在工厂里集中注册：读简历助手与子 Agent 共用，提交诊断结论只给子 Agent 用。
         // 用户背景（昵称、求职目标）仍由 SystemPromptMiddleware 注入提示词，不注册业务工具。
@@ -952,5 +967,262 @@ public class AgentFactoryImpl implements AgentFactory {
             }
         }
         agentManager.replaceAgents(entries);
+    }
+
+    // ==================== F7 训练计划 ====================
+
+    /**
+     * 计划 Agent 描述：说明它在什么场景下被调用、产出什么。
+     */
+    private static final String PLANNER_AGENT_DESCRIPTION =
+            "训练规划师：按用户「还有几天、每天能练多久」生成一份按天可执行的训练计划，"
+                    + "重规划时说明调整依据。计划由提交工具落库，不写任何文件。";
+
+    /**
+     * 计划 Agent 的步数上限：读薄弱点 + 只读规划 + 提交计划，并为确认后的续跑留出余量。
+     */
+    private static final int PLANNER_MAX_ITERS = 14;
+
+    /**
+     * 计划 Agent 加载的技能名，对应 MySQL 技能仓库里的 training-planning（排期与配比口径）。
+     */
+    private static final String TRAINING_PLANNING_SKILL_NAME = "training-planning";
+
+    /**
+     * 提交训练计划工具名（写工具，受权限管控，触发人工确认）。
+     */
+    private static final String SUBMIT_TRAINING_PLAN_TOOL_NAME = "submit_training_plan";
+
+    /**
+     * 进入只读规划阶段的工具名（框架 Plan Mode）。
+     */
+    private static final String PLAN_ENTER_TOOL_NAME = "plan_enter";
+
+    /**
+     * 结束只读规划阶段的工具名（框架 Plan Mode）。
+     */
+    private static final String PLAN_EXIT_TOOL_NAME = "plan_exit";
+
+    /**
+     * 写计划文件的工具名：本项目多用户共用一个工作区，计划正文只落 MySQL，因此显式禁用。
+     */
+    private static final String PLAN_WRITE_TOOL_NAME = "plan_write";
+
+    /**
+     * 框架 Task List 的工具名：模型用它维护本次规划的待办清单。
+     */
+    private static final String TODO_WRITE_TOOL_NAME = "todo_write";
+
+    /**
+     * 计划 Agent 可见的工具白名单。
+     *
+     * <p>读薄弱点（MySQL，复用 F9 工具）+ 提交计划（写，触发确认）+ 技能加载 + Plan Mode 进出 + Task List；
+     * 不含任何子 Agent 派发工具与平台工具。
+     */
+    private static final List<String> PLANNER_ALLOWED_TOOL_NAMES = List.of(
+            WEAK_POINTS_TOOL_NAME,
+            SUBMIT_TRAINING_PLAN_TOOL_NAME,
+            SKILL_LOAD_TOOL_NAME,
+            PLAN_ENTER_TOOL_NAME,
+            PLAN_EXIT_TOOL_NAME,
+            TODO_WRITE_TOOL_NAME);
+
+    /**
+     * 计划 Agent 需要显式 deny 的工具。
+     *
+     * <p>{@code plan_write} 会把计划写到服务器工作区，多用户会互相覆盖，因此本模块只借用 Plan Mode 的
+     * 「只读规划阶段 + 人工确认」语义，落盘工具一律禁用；其余平台工具与子 Agent 派发工具同样不开。
+     */
+    private static final List<String> PLANNER_DENIED_TOOL_NAMES = List.of(
+            PLAN_WRITE_TOOL_NAME, "wait_async_results", "web_search", "web_fetch",
+            "task_output", "task_list", "task_cancel",
+            SUBAGENT_SPAWN_TOOL_NAME, SUBAGENT_SEND_TOOL_NAME, SUBAGENT_LIST_TOOL_NAME);
+
+    /**
+     * 权限规则来源标识，写进 PermissionRule 便于排查规则来自哪个模块。
+     */
+    private static final String PERMISSION_RULE_SOURCE = "training-plan";
+
+    /**
+     * 提交训练计划工具，只给计划 Agent 用。
+     */
+    @Resource
+    private SubmitTrainingPlanTool submitTrainingPlanTool;
+
+    /**
+     * 列出待提醒用户工具，只给提醒 Agent 用。
+     */
+    @Resource
+    private ListPlannedUsersTool listPlannedUsersTool;
+
+    /**
+     * 写入当天提醒工具，只给提醒 Agent 用。
+     */
+    @Resource
+    private SaveTrainingReminderTool saveTrainingReminderTool;
+
+    /**
+     * 计划 Agent 的子 Agent 任务仓储：用进程内实现替掉框架默认的工作区文件实现，保证不往工作区落任何文件。
+     */
+    @Resource
+    private InMemoryTaskRepository planTaskRepository;
+
+    /**
+     * 构建计划 Agent（非会话，由计划页按钮触发）。
+     *
+     * <p>本批打开三项框架能力：Plan Mode（只借只读规划与人工确认语义，落盘工具禁用）、Task List（模型侧的
+     * 待办清单）、工具权限确认（写计划前必须确认）。文件读写、Shell、工作区上下文、会话转录、记忆工具与大结果
+     * 卸载仍然关闭：计划正文只落 MySQL，不往工作区写任何文件。
+     *
+     * @return 计划 Agent 实例
+     */
+    HarnessAgent buildPlannerAgent() {
+        // 计划 Agent 只需要「读薄弱点 + 提交计划」两个业务工具，其余能力由框架工具提供。
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(getWeakPointsTool);
+        toolkit.registerTool(submitTrainingPlanTool);
+        HarnessAgent agent = HarnessAgent.Builder
+                .fromAgent(buildLongTermReactAgent(AgentFactory.PLANNER_AGENT_NAME,
+                        PLANNER_AGENT_DESCRIPTION, toolkit, PLANNER_MAX_ITERS))
+                .name(AgentFactory.PLANNER_AGENT_NAME)
+                .description(PLANNER_AGENT_DESCRIPTION)
+                .model(agentModel)
+                .toolkit(toolkit)
+                .stateStore(agentStateStore)
+                .skillRepository(agentSkillRepository)
+                // 排期口径走 MySQL 技能仓库：改规则不动代码，也不用重新发版。
+                .enableSkills(TRAINING_PLANNING_SKILL_NAME)
+                // 第 5 批能力接入项：Plan Mode 与 Task List。
+                .enablePlanMode()
+                .enableTaskList()
+                // 任务仓储换成进程内实现：框架默认实现会把任务写成工作区文件，多用户会互相覆盖。
+                .taskRepository(planTaskRepository)
+                // 写计划要人工确认：submit_training_plan 不在允许规则里，DEFAULT 模式下降级为 ASK。
+                .permissionContext(buildPlannerPermissionContext())
+                .toolsConfig(buildPlannerToolsConfig())
+                .disableFilesystemTools()
+                .disableShellTool()
+                .disableWorkspaceContext()
+                .disableAtPathExpansion()
+                .disableDynamicSkills()
+                .disableDefaultWorkspaceSkills()
+                .disableTranscript()
+                .disableMemoryTools()
+                .disableMemoryHooks()
+                .disableToolResultEviction()
+                .build();
+        log.info("构建 Agent 完成，agentName={}，tools={}，skills={}",
+                agent.getName(), agent.getToolkit().getToolNames(), agent.getSkillRepositories().size());
+        return agent;
+    }
+
+    /**
+     * 构建计划 Agent 的工具白名单配置。
+     *
+     * @return 工具白名单配置
+     */
+    ToolsConfig buildPlannerToolsConfig() {
+        ToolsConfig toolsConfig = new ToolsConfig();
+        toolsConfig.setAllow(PLANNER_ALLOWED_TOOL_NAMES);
+        toolsConfig.setDeny(PLANNER_DENIED_TOOL_NAMES);
+        return toolsConfig;
+    }
+
+    /**
+     * 构建计划 Agent 的权限上下文。
+     *
+     * <p>DEFAULT 模式下，没有允许规则的写工具会被框架判为「需要确认」，因此这里只给只读与规划类工具放行，
+     * {@code submit_training_plan} 故意不列——它必须在人工确认后才执行，这是「未确认不覆盖已有计划」的第一层保证。
+     *
+     * @return 权限上下文
+     */
+    PermissionContextState buildPlannerPermissionContext() {
+        PermissionContextState.Builder builder = PermissionContextState.builder()
+                .mode(PermissionMode.DEFAULT);
+        for (String toolName : PLANNER_ALLOWED_TOOL_NAMES) {
+            if (SUBMIT_TRAINING_PLAN_TOOL_NAME.equals(toolName)) {
+                continue;
+            }
+            builder.addAllowRule(toolName, new PermissionRule(
+                    toolName, null, PermissionBehavior.ALLOW, PERMISSION_RULE_SOURCE));
+        }
+        // 显式声明「提交计划必须确认」：不依赖默认模式，规则一旦生效，写工具就只能经人工确认后才执行。
+        builder.addAskRule(SUBMIT_TRAINING_PLAN_TOOL_NAME, new PermissionRule(
+                SUBMIT_TRAINING_PLAN_TOOL_NAME, null, PermissionBehavior.ASK, PERMISSION_RULE_SOURCE));
+        return builder.build();
+    }
+
+    /**
+     * 构建提醒 Agent 的调度配置（非会话，由 Quartz 每天触发一次）。
+     *
+     * <p>调度器按本配置现场构建一个 ReActAgent：提示词取 {@code prompts/reminder.md}，工具只有
+     * 「列出待提醒用户」与「写入当天提醒」两个，因此它看不到任何会话侧工具。
+     *
+     * @return 提醒 Agent 的运行时配置
+     */
+    @Override
+    public RuntimeAgentConfig buildReminderAgentConfig() {
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(listPlannedUsersTool);
+        toolkit.registerTool(saveTrainingReminderTool);
+        return RuntimeAgentConfig.builder()
+                .name(AgentFactory.REMINDER_AGENT_NAME)
+                .sysPrompt(systemPromptProvider.prompt(AgentFactory.REMINDER_AGENT_NAME))
+                .modelConfig(new ProjectModelConfig(agentModel, agentProperties.getModel()))
+                .toolkit(toolkit)
+                .build();
+    }
+
+    /**
+     * 项目模型配置：把 Spring 里装配好的模型实例交给框架调度器使用。
+     *
+     * <p>调度扩展要求通过 {@link ModelConfig#createModel()} 取得模型实例，而本项目的模型由
+     * {@code AgentScopeConfiguration} 统一装配（含 API Key 校验），因此这里只做桥接，不重复建模型。
+     *
+     * @author wxy
+     * @date 2026-10-01
+     */
+    static final class ProjectModelConfig implements ModelConfig {
+
+        /**
+         * 已装配的模型实例。
+         */
+        private final Model model;
+
+        /**
+         * 模型名，用于日志与框架展示。
+         */
+        private final String modelName;
+
+        /**
+         * 构造模型配置。
+         *
+         * @param model 模型实例
+         * @param modelName 模型名
+         */
+        ProjectModelConfig(Model model, String modelName) {
+            this.model = model;
+            this.modelName = modelName;
+        }
+
+        /**
+         * 获取模型名。
+         *
+         * @return 模型名
+         */
+        @Override
+        public String getModelName() {
+            return modelName;
+        }
+
+        /**
+         * 获取模型实例。
+         *
+         * @return 模型实例
+         */
+        @Override
+        public Model createModel() {
+            return model;
+        }
     }
 }

@@ -42,6 +42,24 @@ app:
   # 专项辅导（F9）：读薄弱点工具单次返回的条数上限，与公共配置保持一致，测试环境可自行调整。
   tutoring:
     max-weak-points: 20
+  # 训练计划（F7）：测试环境默认值，与公共配置保持一致；验证提醒时可临时把 CRON 调到近处。
+  training:
+    plan:
+      max-days: 365
+      min-daily-minutes: 10
+      max-daily-minutes: 600
+      max-tasks: 200
+    reminder:
+      cron: "${TRAINING_REMINDER_CRON:0 0 8 * * ?}"
+      zone-id: ${TRAINING_REMINDER_ZONE:Asia/Shanghai}
+      enabled: ${TRAINING_REMINDER_ENABLED:true}
+      max-users-per-run: 200
+    quartz:
+      instance-name: career-assistant-quartz
+      thread-count: 5
+      table-prefix: QRTZ_
+      clustered: false
+      auto-start: true
 
 logging:
   level:

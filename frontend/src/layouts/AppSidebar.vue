@@ -77,6 +77,19 @@
       >
         我的简历
       </div>
+      <!-- F7 训练计划：资料库页面，带未读提醒角标（未读数来自 training_reminder） -->
+      <div
+        class="nav-item"
+        :class="{ 'nav-item--active': isPlanRoute }"
+        @click="handleOpenPlans"
+      >
+        <span>训练计划</span>
+        <el-badge
+          v-if="planStore.unreadCount > 0"
+          :value="planStore.unreadCount"
+          class="nav-item__badge"
+        />
+      </div>
     </div>
 
     <div class="sidebar__section">求职目标</div>
@@ -109,6 +122,7 @@ import { Delete, EditPen } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { useAssistantStore } from '@/stores/assistant'
+import { usePlanStore } from '@/stores/plan'
 import { useProfileStore } from '@/stores/profile'
 import { useSessionStore } from '@/stores/session'
 import { useUserStore } from '@/stores/user'
@@ -128,6 +142,7 @@ const sessionStore = useSessionStore()
 const assistantStore = useAssistantStore()
 const userStore = useUserStore()
 const profileStore = useProfileStore()
+const planStore = usePlanStore()
 
 /** 滚动分页关闭条件：正在加载或已经没有更多会话。 */
 const infiniteScrollDisabled = computed(() => sessionStore.loadingMore || !sessionStore.hasMore)
@@ -139,6 +154,9 @@ const isResumeRoute = computed(
 
 /** 求职目标页是否处于选中态。 */
 const isProfileRoute = computed(() => route.name === 'ProfileView')
+
+/** 训练计划页是否处于选中态。 */
+const isPlanRoute = computed(() => route.name === 'TrainingPlanView')
 
 /** 是否正在新建面试会话，避免连点建出多场。 */
 const startingInterview = ref(false)
@@ -174,6 +192,8 @@ function isSessionActive(sessionId: string): boolean {
 onMounted(async () => {
   // 侧栏红点需要知道求职目标是否填写；store 内部只取一次，登录提醒窗与引导卡片共用这份状态。
   void profileStore.ensureLoaded()
+  // 训练计划的未读角标：只取轻量的未读数接口，不拉整份计划。
+  void planStore.loadUnreadCount()
   try {
     await sessionStore.loadSessions()
   } catch {
@@ -342,12 +362,24 @@ async function handleOpenProfile(): Promise<void> {
 }
 
 /**
+ * 打开资料库中的训练计划页。
+ */
+async function handleOpenPlans(): Promise<void> {
+  emit('navigate')
+  if (isPlanRoute.value) {
+    return
+  }
+  await router.push({ name: 'TrainingPlanView' })
+}
+
+/**
  * 退出登录：先清空会话与消息状态，避免同标签页切换账号后看到上一个账号的数据。
  */
 async function handleLogout(): Promise<void> {
   assistantStore.reset()
   sessionStore.reset()
   profileStore.reset()
+  planStore.reset()
   await userStore.logout()
   ElMessage.success('已退出登录')
   await router.replace('/login')
@@ -494,6 +526,11 @@ function pad(value: number): string {
   height: 8px;
   border-radius: 50%;
   background: #f56c6c;
+}
+
+.nav-item__badge {
+  flex-shrink: 0;
+  margin-right: 6px;
 }
 
 .nav-item:hover,

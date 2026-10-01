@@ -26,6 +26,48 @@ class SkillSeedScriptTest {
     private static final Path SCRIPT_PATH = Path.of("..", "sql", "career_assistant.sql");
 
     /**
+     * 验证建库脚本包含 F7 的三张业务表、Quartz 托管表与排期口径技能。
+     *
+     * <p>固定四条契约：计划正文落 MySQL（三张表都在）、Quartz 表一次建全且脚本可重复执行（用 IF NOT EXISTS，
+     * 不带 DROP）、技能写入幂等、任务的模型侧靠 get_weak_points 读 MySQL 而不是记忆库。
+     *
+     * @throws Exception 读取脚本失败
+     */
+    @Test
+    void shouldSeedTrainingPlanTablesAndSkill() throws Exception {
+        String script = Files.readString(SCRIPT_PATH, StandardCharsets.UTF_8);
+
+        assertThat(script).contains("CREATE TABLE IF NOT EXISTS `training_plan`");
+        assertThat(script).contains("CREATE TABLE IF NOT EXISTS `training_task`");
+        assertThat(script).contains("CREATE TABLE IF NOT EXISTS `training_reminder`");
+        // 提醒幂等靠唯一键承载：同一天同一用户只保留一条。
+        assertThat(script).contains("uk_training_reminder_user_date");
+        // 计划页的未读角标按 (user_id, read_flag) 统计。
+        assertThat(script).contains("idx_training_reminder_user_read");
+        // 三张表都要带项目公共字段：Mapper 的审计填充与逻辑删除都依赖它们。
+        for (String table : new String[]{"training_plan", "training_task", "training_reminder"}) {
+            int start = script.indexOf("CREATE TABLE IF NOT EXISTS `" + table + "`");
+            assertThat(start).isGreaterThan(0);
+            String tableDdl = script.substring(start, script.indexOf(") ENGINE", start));
+            assertThat(tableDdl).contains(
+                    "`create_time`", "`create_by`", "`update_time`", "`update_by`", "`is_delete`");
+        }
+
+        // Quartz 托管表一次建全 11 张，供会话归档总结复用；脚本可重复执行，不带 DROP。
+        for (String table : new String[]{
+                "QRTZ_JOB_DETAILS", "QRTZ_TRIGGERS", "QRTZ_SIMPLE_TRIGGERS", "QRTZ_CRON_TRIGGERS",
+                "QRTZ_SIMPROP_TRIGGERS", "QRTZ_BLOB_TRIGGERS", "QRTZ_CALENDARS",
+                "QRTZ_PAUSED_TRIGGER_GRPS", "QRTZ_FIRED_TRIGGERS", "QRTZ_SCHEDULER_STATE", "QRTZ_LOCKS"}) {
+            assertThat(script).contains("CREATE TABLE IF NOT EXISTS `" + table + "`");
+        }
+        assertThat(script).doesNotContain("DROP TABLE IF EXISTS QRTZ_");
+
+        // 排期口径走 MySQL 技能仓库，幂等写入且以代码为准。
+        assertThat(script).contains("'training-planning'");
+        assertThat(script).contains("'f7-training-planning'");
+    }
+
+    /**
      * 验证建库脚本包含幂等的 resume-analysis 技能与框架要求的技能表。
      *
      * @throws Exception 读取脚本失败
@@ -178,10 +220,13 @@ class SkillSeedScriptTest {
         assertThat(script).contains("'tutoring'");
         assertThat(script).contains("'f9-tutoring'");
 
-        // F9 是脚本末尾的独立分隔段，从这里截到脚本结尾就是本模块的全部改动范围。
+        // F9 是独立分隔段：截到下一个模块分隔段（F7）或脚本结尾，就是本模块的全部改动范围。
         int sectionStart = script.indexOf("F9 专项辅导");
         assertThat(sectionStart).isGreaterThan(0);
-        String tutoringSection = script.substring(sectionStart);
+        int nextSection = script.indexOf("F7 训练计划", sectionStart);
+        String tutoringSection = nextSection > sectionStart
+                ? script.substring(sectionStart, nextSection)
+                : script.substring(sectionStart);
 
         assertThat(tutoringSection).doesNotContain("CREATE TABLE");
         assertThat(tutoringSection)

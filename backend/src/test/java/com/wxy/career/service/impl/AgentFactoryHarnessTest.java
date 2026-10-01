@@ -6,6 +6,7 @@ import com.wxy.career.config.AgentProperties;
 import com.wxy.career.config.InterviewProperties;
 import com.wxy.career.config.MemoryProperties;
 import com.wxy.career.middleware.MetricsMiddleware;
+import com.wxy.career.middleware.InMemoryTaskRepository;
 import com.wxy.career.middleware.SystemPromptMiddleware;
 import com.wxy.career.middleware.UserLongTermMemoryAdapter;
 import com.wxy.career.mapper.SysUserMapper;
@@ -16,25 +17,33 @@ import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.UserProfileRespVO;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.GetWeakPointsTool;
+import com.wxy.career.tool.ListPlannedUsersTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
+import com.wxy.career.tool.SaveTrainingReminderTool;
 import com.wxy.career.tool.SubmitAnswerEvaluationTool;
 import com.wxy.career.tool.SubmitInterviewReportTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
+import com.wxy.career.tool.SubmitTrainingPlanTool;
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ToolSchema;
+import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
+import io.agentscope.extensions.scheduler.config.RuntimeAgentConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -42,6 +51,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -122,6 +132,13 @@ class AgentFactoryHarnessTest {
                         .description("专项辅导讲解规范")
                         .skillContent("先定位、再类比、再举例、最后出一道练习")
                         .build());
+        // F7：排期口径技能，与 sql/career_assistant.sql 里写入的 training-planning 同名。
+        when(agentSkillRepository.getSkill("training-planning"))
+                .thenReturn(AgentSkill.builder()
+                        .name("training-planning")
+                        .description("训练计划排期口径")
+                        .skillContent("每天任务数按每日时长分配，薄弱点优先")
+                        .build());
         // 技能清单由 getAllSkills 渲染进系统提示词，因此必须一起打桩，否则技能过滤在测试里看不出效果。
         when(agentSkillRepository.getAllSkills()).thenReturn(List.of(
                 AgentSkill.builder().name("resume-analysis").description("简历分析规范")
@@ -129,7 +146,9 @@ class AgentFactoryHarnessTest {
                 AgentSkill.builder().name("job-match").description("岗位匹配规范")
                         .skillContent("岗位匹配规范").build(),
                 AgentSkill.builder().name("tutoring").description("专项辅导讲解规范")
-                        .skillContent("先定位、再类比、再举例、最后出一道练习").build()));
+                        .skillContent("先定位、再类比、再举例、最后出一道练习").build(),
+                AgentSkill.builder().name("training-planning").description("训练计划排期口径")
+                        .skillContent("每天任务数按每日时长分配，薄弱点优先").build()));
 
         RedisUtil redisUtil = mock(RedisUtil.class);
         when(redisUtil.getHash(anyString(), anyString(), eq(Long.class))).thenReturn(null);
@@ -162,6 +181,84 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(userLongTermMemoryAdapter, "memoryProperties", memoryProperties);
         ReflectionTestUtils.setField(agentFactory, "userLongTermMemoryAdapter", userLongTermMemoryAdapter);
         ReflectionTestUtils.setField(agentFactory, "submitInterviewReportTool", new SubmitInterviewReportTool());
+        // F7：计划 Agent 的提交工具与提醒 Agent 的两个工具都要装配上。
+        ReflectionTestUtils.setField(agentFactory, "submitTrainingPlanTool", new SubmitTrainingPlanTool());
+        ReflectionTestUtils.setField(agentFactory, "listPlannedUsersTool", new ListPlannedUsersTool());
+        ReflectionTestUtils.setField(agentFactory, "saveTrainingReminderTool", new SaveTrainingReminderTool());
+        // 计划 Agent 的任务仓储用进程内实现：测试链路同样不往工作区落文件。
+        ReflectionTestUtils.setField(agentFactory, "planTaskRepository", new InMemoryTaskRepository());
+    }
+
+    /**
+     * 验证计划 Agent 的工具白名单：读薄弱点（MySQL）+ 提交计划 + 技能加载 + Plan Mode 进出 + Task List，
+     * 而写工作区文件的 plan_write 与平台工具、子 Agent 派发工具都被挡住（计划正文只落 MySQL）。
+     */
+    @Test
+    void shouldExposeOnlyPlannerToolsAndDenyWorkspaceWrites() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME);
+
+        assertThat(agent).isInstanceOf(HarnessAgent.class);
+        assertThat(agent.getName()).isEqualTo(AgentFactory.PLANNER_AGENT_NAME);
+        Set<String> toolNames = agent.getToolkit().getToolNames();
+        assertThat(toolNames).contains(
+                "get_weak_points", "submit_training_plan", "load_skill_through_path", "todo_write");
+        assertThat(toolNames).doesNotContain(
+                "plan_write", "read_resume", "submit_resume_diagnosis", "web_search", "web_fetch",
+                "wait_async_results", "task_output", "task_list", "task_cancel",
+                "agent_spawn", "agent_send", "agent_list");
+    }
+
+    /**
+     * 验证写计划必须人工确认：允许规则只覆盖只读与规划类工具，提交计划被显式标记为 ASK。
+     */
+    @Test
+    void shouldRequireConfirmBeforeSubmittingPlan() {
+        var permissionContext = agentFactory.buildPlannerPermissionContext();
+
+        assertThat(permissionContext.getMode()).isEqualTo(PermissionMode.DEFAULT);
+        assertThat(permissionContext.getAllowRules().keySet()).contains(
+                "get_weak_points", "load_skill_through_path", "plan_enter", "plan_exit", "todo_write");
+        assertThat(permissionContext.getAllowRules().keySet()).doesNotContain("submit_training_plan");
+        assertThat(permissionContext.getAskRules().keySet()).contains("submit_training_plan");
+    }
+
+    /**
+     * 验证框架真的会在写计划前停下来等确认：模型调用 submit_training_plan 时事件流里出现确认请求。
+     *
+     * <p>这是 HITL 的行为断言，不依赖提示词：只要确认事件出现就说明写工具被权限闸门挡住，未确认不会落库。
+     */
+    @Test
+    void shouldEmitConfirmRequestWhenModelTriesToWritePlan() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME);
+        capturingModel.withToolCall("submit_training_plan", Map.of("plan", Map.of("days", 3)));
+        RuntimeContext runtimeContext = RuntimeContext.builder()
+                .userId("1")
+                .sessionId("training-plan-1")
+                .build();
+
+        List<AgentEvent> events = agent.streamEvents(
+                        Msg.builder().role(MsgRole.USER).textContent("生成训练计划").build(),
+                        runtimeContext)
+                .collectList()
+                .block();
+
+        assertThat(events).isNotNull();
+        assertThat(events).anyMatch(event -> event instanceof RequireUserConfirmEvent);
+        capturingModel.resetToolCall();
+    }
+
+    /**
+     * 验证提醒 Agent 的调度配置：名字固定、提示词取提醒 Agent 自己的文件、工具只有两个。
+     */
+    @Test
+    void shouldBuildReminderAgentConfigWithOnlyReminderTools() {
+        RuntimeAgentConfig config = agentFactory.buildReminderAgentConfig();
+
+        assertThat(config.getName()).isEqualTo(AgentFactory.REMINDER_AGENT_NAME);
+        assertThat(config.getSysPrompt()).contains(AgentFactory.REMINDER_AGENT_NAME);
+        assertThat(config.getToolkit().getToolNames())
+                .containsExactlyInAnyOrder("list_planned_users", "save_training_reminder");
+        assertThat(config.getModel()).isSameAs(capturingModel);
     }
 
     /**
@@ -581,6 +678,35 @@ class AgentFactoryHarnessTest {
         private final List<Msg> received = new ArrayList<>();
 
         /**
+         * 让桩模型下一次返回的工具调用名，为空时返回纯文本。
+         */
+        private String toolCallName;
+
+        /**
+         * 工具调用入参。
+         */
+        private Map<String, Object> toolCallInput = Map.of();
+
+        /**
+         * 设置桩模型返回的工具调用，用于验证 HITL 等需要模型发起工具调用的链路。
+         *
+         * @param name 工具名
+         * @param input 工具入参
+         */
+        void withToolCall(String name, Map<String, Object> input) {
+            this.toolCallName = name;
+            this.toolCallInput = input;
+        }
+
+        /**
+         * 清除工具调用设置，避免影响后续用例。
+         */
+        void resetToolCall() {
+            this.toolCallName = null;
+            this.toolCallInput = Map.of();
+        }
+
+        /**
          * 清空记录。
          */
         void reset() {
@@ -612,6 +738,16 @@ class AgentFactoryHarnessTest {
         @Override
         public Flux<ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
             received.addAll(messages);
+            if (toolCallName != null) {
+                return Flux.just(ChatResponse.builder()
+                        .id("stub-tool-call")
+                        .content(List.of(ToolUseBlock.builder()
+                                .id("call-1")
+                                .name(toolCallName)
+                                .input(toolCallInput)
+                                .build()))
+                        .build());
+            }
             return Flux.just(ChatResponse.builder()
                     .id("stub-text")
                     .content(List.of(TextBlock.builder().text("桩模型回复").build()))
