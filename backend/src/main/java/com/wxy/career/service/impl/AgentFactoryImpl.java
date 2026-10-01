@@ -10,6 +10,7 @@ import com.wxy.career.middleware.UserLongTermMemoryAdapter;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.tool.GetInterviewStateTool;
+import com.wxy.career.tool.GetWeakPointsTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
 import com.wxy.career.tool.SubmitAnswerEvaluationTool;
@@ -122,14 +123,32 @@ public class AgentFactoryImpl implements AgentFactory {
      */
     private static final String RESUME_ANALYSIS_SKILL_NAME = "resume-analysis";
 
+    // ==================== F9 专项辅导 ====================
+
+    /**
+     * 读薄弱点工具名。
+     */
+    private static final String WEAK_POINTS_TOOL_NAME = "get_weak_points";
+
+    /**
+     * 助手 Agent 加载的技能名，对应 MySQL 技能仓库里的 tutoring（讲解规范）。
+     *
+     * <p>F9 只给助手这一个技能：讲解就是助手的对话能力，不拆子 Agent。助手侧的技能范围显式收窄到本技能，
+     * 避免模型绕过「派发子 Agent」直接去用简历分析、岗位匹配等属于其它角色的规则。
+     */
+    private static final String TUTORING_SKILL_NAME = "tutoring";
+
     /**
      * 助手 Agent 可见的工具白名单。
      *
-     * <p>助手自己只会用到读简历（转发给子 Agent 之前的定位），派发子 Agent 的三个工具由框架注入；
-     * 提交诊断结论只属于子 Agent，不在这里，模型侧看不到它。
+     * <p>助手自己只会用到读简历（转发给子 Agent 之前的定位）与读薄弱点（F9 讲解前先定位该讲哪块），
+     * 派发子 Agent 的三个工具由框架注入；提交诊断结论、评分结论、报告结论都只属于子 Agent，不在这里。
+     * F9 起助手要加载讲解规范技能，因此技能加载工具也必须在白名单里（否则技能清单可见、却取不到正文）。
      */
     private static final List<String> ASSISTANT_ALLOWED_TOOL_NAMES = List.of(
             READ_RESUME_TOOL_NAME,
+            WEAK_POINTS_TOOL_NAME,
+            SKILL_LOAD_TOOL_NAME,
             SUBAGENT_SPAWN_TOOL_NAME,
             SUBAGENT_SEND_TOOL_NAME,
             SUBAGENT_LIST_TOOL_NAME);
@@ -241,6 +260,12 @@ public class AgentFactoryImpl implements AgentFactory {
     private SubmitResumeDiagnosisTool submitResumeDiagnosisTool;
 
     /**
+     * 读薄弱点工具（F9），只给助手用：讲解前先定位该讲哪一块，读的是 MySQL 的 knowledge_mastery。
+     */
+    @Resource
+    private GetWeakPointsTool getWeakPointsTool;
+
+    /**
      * 按名字获取 Agent。
      *
      * @param agentName Agent 名
@@ -309,6 +334,8 @@ public class AgentFactoryImpl implements AgentFactory {
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(readResumeTool);
         toolkit.registerTool(submitResumeDiagnosisTool);
+        // F9 读薄弱点工具：声明式子 Agent 只按各自声明的 tools 继承，因此它不会漏到子 Agent 上。
+        toolkit.registerTool(getWeakPointsTool);
         // 长期记忆只能挂到底层 ReActAgent 上（HarnessAgent.Builder 没有 longTermMemory 入口），
         // 因此先建 ReActAgent 再用 fromAgent 包成 HarnessAgent，见 docs/技术约定.md「长期记忆（Mem0）」。
         HarnessAgent agent = HarnessAgent.Builder
@@ -321,6 +348,8 @@ public class AgentFactoryImpl implements AgentFactory {
                 .stateStore(agentStateStore)
                 // 技能正文存 MySQL；子 Agent 用声明（下面一行）而不是工作区里的 subagents/*.md。
                 .skillRepository(agentSkillRepository)
+                // F9：助手只加载讲解规范这一个技能，技能加载工具已在上面白名单里，否则技能清单可见但取不到正文。
+                .enableSkills(TUTORING_SKILL_NAME)
                 .subagent(buildResumeAnalystDeclaration())
                 .subagent(buildJobMatchDeclaration())
                 .toolsConfig(buildToolsConfig())

@@ -21,6 +21,7 @@ import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.UserProfileService;
 import com.wxy.career.service.impl.AgentFactoryImpl;
 import com.wxy.career.service.impl.AssistantServiceImpl;
+import com.wxy.career.tool.GetWeakPointsTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import com.wxy.career.vo.ResumeDiagnosisResultVO;
@@ -166,6 +167,8 @@ class AssistantControllerSseTest {
         ReflectionTestUtils.setField(agentFactory, "readResumeTool", new ReadResumeTool());
         ReflectionTestUtils.setField(
                 agentFactory, "submitResumeDiagnosisTool", new SubmitResumeDiagnosisTool());
+        // F9：读薄弱点工具在助手 Toolkit 上注册，缺它助手装配会直接失败。
+        ReflectionTestUtils.setField(agentFactory, "getWeakPointsTool", new GetWeakPointsTool());
 
         assistantMessageService = mock(AssistantMessageService.class);
         chatSessionService = mock(ChatSessionService.class);

@@ -75,6 +75,10 @@ app:
       api-key: ${MEM0_API_KEY:}
       api-type: ${MEM0_API_TYPE:SELF_HOSTED}
       timeout-ms: ${MEM0_TIMEOUT_MS:60000}
+  # 专项辅导（F9）：读薄弱点工具单次返回的条数上限，三份 Profile 同步补齐，非敏感配置可按环境调整。
+  # 本项目不启用大结果卸载，返回长度由工具自己控，因此上限是防止长列表撑上下文的主要手段。
+  tutoring:
+    max-weak-points: 20
 
 logging:
   level:

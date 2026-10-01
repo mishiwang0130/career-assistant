@@ -14,8 +14,9 @@ import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.UserProfileRespVO;
-import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.GetInterviewStateTool;
+import com.wxy.career.tool.GetWeakPointsTool;
+import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
 import com.wxy.career.tool.SubmitAnswerEvaluationTool;
 import com.wxy.career.tool.SubmitInterviewReportTool;
@@ -71,6 +72,11 @@ class AgentFactoryHarnessTest {
     private CapturingModel capturingModel;
 
     /**
+     * 技能仓库 stub，用于校验助手与子 Agent 各自能看到的技能集合。
+     */
+    private AgentSkillRepository agentSkillRepository;
+
+    /**
      * 初始化工厂依赖。
      */
     @BeforeEach
@@ -96,7 +102,7 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(systemPromptMiddleware, "sysUserMapper", sysUserMapper);
         ReflectionTestUtils.setField(systemPromptMiddleware, "userProfileService", userProfileService);
 
-        AgentSkillRepository agentSkillRepository = mock(AgentSkillRepository.class);
+        agentSkillRepository = mock(AgentSkillRepository.class);
         when(agentSkillRepository.getSkill("resume-analysis"))
                 .thenReturn(AgentSkill.builder()
                         .name("resume-analysis")
@@ -109,6 +115,21 @@ class AgentFactoryHarnessTest {
                         .description("岗位匹配规范")
                         .skillContent("岗位匹配规范")
                         .build());
+        // F9：讲解规范技能，与 sql/career_assistant.sql 里写入的 tutoring 同名。
+        when(agentSkillRepository.getSkill("tutoring"))
+                .thenReturn(AgentSkill.builder()
+                        .name("tutoring")
+                        .description("专项辅导讲解规范")
+                        .skillContent("先定位、再类比、再举例、最后出一道练习")
+                        .build());
+        // 技能清单由 getAllSkills 渲染进系统提示词，因此必须一起打桩，否则技能过滤在测试里看不出效果。
+        when(agentSkillRepository.getAllSkills()).thenReturn(List.of(
+                AgentSkill.builder().name("resume-analysis").description("简历分析规范")
+                        .skillContent("简历分析规范").build(),
+                AgentSkill.builder().name("job-match").description("岗位匹配规范")
+                        .skillContent("岗位匹配规范").build(),
+                AgentSkill.builder().name("tutoring").description("专项辅导讲解规范")
+                        .skillContent("先定位、再类比、再举例、最后出一道练习").build()));
 
         RedisUtil redisUtil = mock(RedisUtil.class);
         when(redisUtil.getHash(anyString(), anyString(), eq(Long.class))).thenReturn(null);
@@ -126,6 +147,8 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(agentFactory, "agentSkillRepository", agentSkillRepository);
         ReflectionTestUtils.setField(agentFactory, "readResumeTool", new ReadResumeTool());
         ReflectionTestUtils.setField(agentFactory, "submitResumeDiagnosisTool", new SubmitResumeDiagnosisTool());
+        // F9：读薄弱点工具只给助手用，装配断言要能构建出它。
+        ReflectionTestUtils.setField(agentFactory, "getWeakPointsTool", new GetWeakPointsTool());
         ReflectionTestUtils.setField(agentFactory, "getInterviewStateTool", new GetInterviewStateTool());
         ReflectionTestUtils.setField(
                 agentFactory, "recordInterviewAnswerTool", new RecordInterviewAnswerTool());
@@ -156,8 +179,8 @@ class AgentFactoryHarnessTest {
     }
 
     /**
-     * 验证助手 Agent 的工具白名单：只有读简历与框架的子 Agent 派发工具，框架默认工具
-     * （文件、Shell、Web、异步等待等）与只属于子 Agent 的提交诊断结论工具都没有混入。
+     * 验证助手 Agent 的工具白名单：读简历 + F9 读薄弱点 + 技能加载 + 框架的子 Agent 派发工具；
+     * 框架默认工具（文件、Shell、Web、异步等待等）与只属于子 Agent 的提交类工具都没有混入。
      */
     @Test
     void shouldExposeOnlyAssistantTools() {
@@ -165,9 +188,70 @@ class AgentFactoryHarnessTest {
 
         Set<String> toolNames = agent.getToolkit().getToolNames();
         // 白名单是精确集合：只多一个框架默认工具或业务工具都说明 allow / deny 没配好。
+        // F9 起助手多了 get_weak_points（读薄弱点）与技能加载工具，两者都是 F9 讲解链路必需。
         assertThat(toolNames).containsExactlyInAnyOrder(
-                "read_resume", "agent_spawn", "agent_send", "agent_list");
+                "read_resume", "get_weak_points", "load_skill_through_path",
+                "agent_spawn", "agent_send", "agent_list");
         assertThat(toolNames).doesNotContain("submit_resume_diagnosis");
+        // F9 对记忆只有读：助手不得持有任何写记忆或记忆检索类工具。
+        assertThat(toolNames).doesNotContain(
+                "memory_save", "memory_search", "memory_get", "remember_fact");
+    }
+
+    /**
+     * 验证助手只加载讲解规范技能：技能清单里只出现 tutoring，其它模块的技能不会漏给助手。
+     *
+     * <p>助手的技能过滤在构建期收窄到 tutoring；声明式子 Agent 的技能由各自的声明单独决定，
+     * 因此这里同时确认 F2/F3 的子 Agent 技能没有被上级过滤影响。
+     */
+    @Test
+    void shouldExposeOnlyTutoringSkillToAssistant() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId("1").sessionId("100").build();
+
+        capturingModel.reset();
+        agent.streamEvents(Msg.builder().role(MsgRole.USER).textContent("Redis 分布式锁再讲一遍").build(),
+                runtimeContext).blockLast();
+
+        // 只断言技能清单块：同一份提示词里还有「可用子 Agent」清单，里面本来就会出现子 Agent 的名字。
+        String systemPrompt = capturingModel.systemPrompt();
+        String availableSkills = systemPrompt.substring(
+                systemPrompt.indexOf("<available_skills>"), systemPrompt.indexOf("</available_skills>"));
+        assertThat(availableSkills).contains("<name>tutoring</name>");
+        assertThat(availableSkills).doesNotContain("resume-analysis", "job-match");
+
+        // 子 Agent 的技能由声明决定，不受助手侧的收窄影响。
+        assertThat(agentFactory.buildResumeAnalystDeclaration().getSkills())
+                .containsExactly("resume-analysis");
+        assertThat(agentFactory.buildJobMatchDeclaration().getSkills())
+                .containsExactly("job-match");
+    }
+
+    /**
+     * 验证 Mem0 不可用时助手的讲解链路照常可用：记忆关闭不影响工具集与一轮对话。
+     *
+     * <p>F9 的薄弱点是 MySQL 的精确查询，记忆只用于「接着上次讲」的召回；因此记忆降级时讲解、
+     * 举例与出题必须照常，不能因为召回失败就答不出话。
+     */
+    @Test
+    void shouldKeepTutoringAvailableWhenMemoryDisabled() {
+        // 显式把记忆关掉：本次断言的就是「Mem0 不可用时讲解链路照常」。
+        MemoryProperties memoryProperties = new MemoryProperties();
+        memoryProperties.setEnabled(false);
+        UserLongTermMemoryAdapter adapter = new UserLongTermMemoryAdapter();
+        ReflectionTestUtils.setField(adapter, "memoryProperties", memoryProperties);
+        ReflectionTestUtils.setField(agentFactory, "userLongTermMemoryAdapter", adapter);
+
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.MAIN_AGENT_NAME);
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId("1").sessionId("101").build();
+
+        assertThat(agent.getToolkit().getToolNames()).contains("get_weak_points");
+
+        capturingModel.reset();
+        agent.streamEvents(Msg.builder().role(MsgRole.USER).textContent("讲讲我的薄弱点").build(),
+                runtimeContext).blockLast();
+
+        assertThat(capturingModel.systemPrompt()).contains("tutoring");
     }
 
     /**
