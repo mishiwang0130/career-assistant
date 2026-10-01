@@ -3,18 +3,15 @@ import { describe, expect, it } from 'vitest'
 import type { TrainingPlanRespVO } from '@/types/plan'
 import {
   buildPlanCardPreview,
-  buildPlanProgress,
   countRemainingDays,
-  describeExistingPlan,
   describeGenerationProgress,
   isConfirmRequired,
   isGenerationTerminalEvent,
   nextStreamText,
   parsePlanResultEvent,
-  summarizePlan,
 } from '@/utils/plan'
 
-/** 计划桩数据：两天各两条任务，其中一条已完成。 */
+/** 计划桩数据：一份三天、每天 60 分钟的按天正文计划，没有任务列表。 */
 const PLAN: TrainingPlanRespVO = {
   hasPlan: true,
   planId: 9,
@@ -25,47 +22,9 @@ const PLAN: TrainingPlanRespVO = {
   totalDays: 3,
   dailyMinutes: 60,
   remainingDays: 3,
-  summary: '先补薄弱点',
+  planContent: '第 1 天：Redis 分布式锁\n第 2 天：JVM 内存模型\n第 3 天：MySQL 索引',
   adjustmentReason: null,
   generatedAt: '2026-10-01 09:00',
-  days: [
-    {
-      dayIndex: 1,
-      taskDate: '2026-10-01',
-      totalMinutes: 60,
-      finishedCount: 1,
-      tasks: [
-        {
-          id: 1,
-          planId: 9,
-          dayIndex: 1,
-          taskDate: '2026-10-01',
-          topic: 'Redis 分布式锁',
-          questionType: '八股',
-          difficulty: 2,
-          durationMinutes: 30,
-          knowledgePoint: 'Redis 分布式锁',
-          sortOrder: 1,
-          finished: true,
-          finishTime: '2026-10-01 09:30',
-        },
-        {
-          id: 2,
-          planId: 9,
-          dayIndex: 1,
-          taskDate: '2026-10-01',
-          topic: '项目难点复盘',
-          questionType: '项目',
-          difficulty: 3,
-          durationMinutes: 30,
-          knowledgePoint: null,
-          sortOrder: 2,
-          finished: false,
-          finishTime: null,
-        },
-      ],
-    },
-  ],
   todayReminder: null,
   unreadReminderCount: 2,
 }
@@ -90,33 +49,16 @@ describe('训练计划工具函数', () => {
     expect(countRemainingDays('今天', new Date(2026, 9, 1))).toBe(0)
   })
 
-  it('完成进度按任务条数统计', () => {
-    expect(buildPlanProgress(PLAN)).toEqual({ total: 2, finished: 1, percent: 50 })
-    expect(buildPlanProgress(null)).toEqual({ total: 0, finished: 0, percent: 0 })
-  })
-
-  it('计划汇总给出任务数与总时长', () => {
-    expect(summarizePlan(PLAN)).toEqual({ totalTasks: 2, totalMinutes: 60 })
-  })
-
   it('只有 plan_confirm_required 才走确认弹窗分支', () => {
     expect(
-      isConfirmRequired({ type: 'plan_confirm_required', message: '', existingPlan: {} }),
+      isConfirmRequired({
+        type: 'plan_confirm_required',
+        message: '',
+        draftContent: '第 1 天：Redis',
+        existingPlan: {},
+      }),
     ).toBe(true)
     expect(isConfirmRequired({ type: 'plan_confirm_rejected', message: '' })).toBe(false)
-  })
-
-  it('确认文案带上目标岗位与进度', () => {
-    const text = describeExistingPlan({
-      planId: 9,
-      targetPosition: 'Java 后端开发',
-      remainingDays: 4,
-      totalTasks: 8,
-      finishedTasks: 3,
-    })
-    expect(text).toContain('Java 后端开发')
-    expect(text).toContain('剩余 4 天')
-    expect(text).toContain('3/8')
   })
 
   it('result 事件按协议取外层 data 里的结构化产物', () => {
@@ -127,15 +69,24 @@ describe('训练计划工具函数', () => {
 
     expect(payload?.type).toBe('training_plan')
     expect(payload && 'plan' in payload ? payload.plan.planId : null).toBe(9)
+    expect(payload && 'plan' in payload ? payload.plan.planContent : null).toContain('第 1 天')
   })
 
-  it('覆盖确认与放弃覆盖的结果都能解析出来', () => {
+  it('确认草稿与放弃保存的结果都能解析出来', () => {
     const confirmRaw = JSON.stringify({
-      data: { type: 'plan_confirm_required', message: '已有计划', existingPlan: { planId: 9 } },
+      data: {
+        type: 'plan_confirm_required',
+        message: '确认后才会保存',
+        draftContent: '第 1 天：Redis 分布式锁',
+        existingPlan: { planId: 9 },
+      },
     })
     const rejectedRaw = JSON.stringify({ data: { type: 'plan_confirm_rejected', message: '已保留' } })
 
-    expect(parsePlanResultEvent(confirmRaw)?.type).toBe('plan_confirm_required')
+    const confirmPayload = parsePlanResultEvent(confirmRaw)
+    expect(confirmPayload?.type).toBe('plan_confirm_required')
+    expect(confirmPayload && 'draftContent' in confirmPayload ? confirmPayload.draftContent : '')
+      .toContain('第 1 天')
     expect(parsePlanResultEvent(rejectedRaw)?.type).toBe('plan_confirm_rejected')
   })
 
@@ -155,7 +106,7 @@ describe('训练计划工具函数', () => {
     expect(describeGenerationProgress('tool', JSON.stringify({
       name: 'submit_training_plan',
       status: 'START',
-    }))).toBe('正在整理按天计划…')
+    }))).toBe('正在整理计划正文…')
     // 工具结束事件不改变进度文案。
     expect(describeGenerationProgress('tool', JSON.stringify({
       name: 'get_weak_points',
@@ -193,10 +144,10 @@ describe('训练计划工具函数', () => {
     expect(nextStreamText({ thinking: 'a', answer: 'b' }, 'delta', '{"content":""}')).toBeNull()
   })
 
-  it('计划说明卡片默认只露前几行', () => {
-    const summary = '第一行\n\n第二行\n第三行\n第四行\n第五行'
+  it('计划正文卡片默认只露前几行', () => {
+    const content = '第一行\n\n第二行\n第三行\n第四行\n第五行'
 
-    const preview = buildPlanCardPreview(summary)
+    const preview = buildPlanCardPreview(content)
 
     expect(preview).toContain('第一行')
     expect(preview).toContain('第四行')

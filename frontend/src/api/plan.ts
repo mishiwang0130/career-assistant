@@ -47,16 +47,6 @@ export function confirmGeneration(
 }
 
 /**
- * 勾选或取消勾选训练任务。
- *
- * @param taskId 任务 ID
- * @param finished 目标状态
- */
-export function finishTask(taskId: number, finished: boolean): Promise<void> {
-  return post<void>(`/plans/tasks/${taskId}/finish`, { finished })
-}
-
-/**
  * 查询未读提醒数（侧栏角标）。
  */
 export function getUnreadCount(): Promise<TrainingReminderUnreadRespVO> {

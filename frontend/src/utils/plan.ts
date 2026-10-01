@@ -1,18 +1,4 @@
-import type {
-  ExistingPlanSummary,
-  TrainingPlanRespVO,
-  TrainingPlanResultPayload,
-} from '@/types/plan'
-
-/** 计划进度：任务总数、已完成数与完成百分比。 */
-export interface TrainingPlanProgress {
-  /** 任务总数。 */
-  total: number
-  /** 已完成任务数。 */
-  finished: number
-  /** 完成百分比，0-100 的整数。 */
-  percent: number
-}
+import type { TrainingPlanResultPayload } from '@/types/plan'
 
 /**
  * 把 yyyy-MM-dd 解析成本地时区的当天零点。
@@ -55,25 +41,7 @@ export function countRemainingDays(endDate: string | null | undefined, today: Da
 }
 
 /**
- * 统计计划完成进度。
- *
- * @param plan 计划
- * @returns 进度
- */
-export function buildPlanProgress(plan: TrainingPlanRespVO | null): TrainingPlanProgress {
-  const days = plan?.days ?? []
-  let total = 0
-  let finished = 0
-  for (const day of days) {
-    total += day.tasks.length
-    finished += day.tasks.filter((task) => task.finished).length
-  }
-  const percent = total === 0 ? 0 : Math.round((finished / total) * 100)
-  return { total, finished, percent }
-}
-
-/**
- * 判断一条 SSE result 载荷是否要求用户确认覆盖已有计划。
+ * 判断一条 SSE result 载荷是否要求用户确认保存计划。
  *
  * @param payload result 载荷
  * @returns 需要确认时返回 true
@@ -102,12 +70,11 @@ export function parsePlanResultEvent(raw: string): TrainingPlanResultPayload | n
     return null
   }
   const payload = unwrapResultPayload(parsed)
-  if (!payload || typeof payload !== 'object') {
+  if (!payload) {
     return null
   }
-  const type = (payload as { type?: unknown }).type
+  const type = payload.type
   if (type === 'plan_confirm_required' || type === 'training_plan' || type === 'plan_confirm_rejected') {
-    // 已按 type 收窄到三个取值，这里显式经 unknown 转换，避免 TS 认为两个类型不重叠。
     return payload as unknown as TrainingPlanResultPayload
   }
   return null
@@ -123,8 +90,7 @@ function unwrapResultPayload(parsed: unknown): Record<string, unknown> | null {
   if (parsed === null || typeof parsed !== 'object') {
     return null
   }
-  const envelope = parsed as { data?: unknown }
-  const inner = envelope.data
+  const inner = (parsed as { data?: unknown }).data
   if (inner !== null && typeof inner === 'object') {
     return inner as Record<string, unknown>
   }
@@ -158,7 +124,7 @@ export function describeGenerationProgress(event: string, data: string): string 
     return '正在读取你的薄弱点…'
   }
   if (parsed.name === 'submit_training_plan') {
-    return '正在整理按天计划…'
+    return '正在整理计划正文…'
   }
   return '正在排计划…'
 }
@@ -177,7 +143,7 @@ export function isGenerationTerminalEvent(event: string): boolean {
 export interface GenerationStreamText {
   /** 思考增量累积的文本；正文一开始产出就丢弃，不再补回。 */
   thinking: string
-  /** 正文（计划说明）增量累积的文本。 */
+  /** 正文增量累积的文本。 */
   answer: string
 }
 
@@ -217,17 +183,17 @@ export function nextStreamText(
 }
 
 /**
- * 生成计划说明卡片的折叠预览：取前若干行，避免整段 Markdown 直接把页面撑长。
+ * 计划正文卡片的折叠预览：取前若干行，避免整篇正文直接把页面撑长。
  *
- * @param summary 计划说明（支持 Markdown）
+ * @param content 计划正文（支持 Markdown）
  * @param maxLines 预览行数，默认 4
- * @returns 预览文本，说明为空时返回空串
+ * @returns 预览文本，正文为空时返回空串
  */
-export function buildPlanCardPreview(summary: string | null | undefined, maxLines = 4): string {
-  if (!summary) {
+export function buildPlanCardPreview(content: string | null | undefined, maxLines = 4): string {
+  if (!content) {
     return ''
   }
-  const lines = summary
+  const lines = content
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0)
@@ -235,43 +201,4 @@ export function buildPlanCardPreview(summary: string | null | undefined, maxLine
     return lines.join('\n')
   }
   return `${lines.slice(0, maxLines).join('\n')}\n\n……`
-}
-
-/**
- * 把确认请求里的现有计划摘要拼成一句人话。
- *
- * @param summary 现有计划摘要
- * @returns 说明文字
- */
-export function describeExistingPlan(summary: ExistingPlanSummary | undefined): string {
-  if (!summary || !summary.planId) {
-    return '当前已有生效中的训练计划'
-  }
-  const position = summary.targetPosition ? `目标岗位「${summary.targetPosition}」` : '当前计划'
-  const remaining = typeof summary.remainingDays === 'number' ? `剩余 ${summary.remainingDays} 天` : ''
-  const progress =
-    typeof summary.totalTasks === 'number'
-      ? `已完成 ${summary.finishedTasks ?? 0}/${summary.totalTasks} 个任务`
-      : ''
-  return [position, remaining, progress].filter((part) => part).join('，')
-}
-
-/**
- * 汇总计划里的任务，便于渲染统计行。
- *
- * @param plan 计划
- * @returns 任务总数与当天任务数
- */
-export function summarizePlan(plan: TrainingPlanRespVO | null): {
-  totalTasks: number
-  totalMinutes: number
-} {
-  const days = plan?.days ?? []
-  let totalTasks = 0
-  let totalMinutes = 0
-  for (const day of days) {
-    totalTasks += day.tasks.length
-    totalMinutes += day.totalMinutes
-  }
-  return { totalTasks, totalMinutes }
 }

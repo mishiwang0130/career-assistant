@@ -9,12 +9,11 @@ import type { TrainingPlanRespVO } from '@/types/plan'
 vi.mock('@/api/plan')
 
 /**
- * 构造计划桩数据。
+ * 构造计划桩数据：一份按天正文的计划，没有任务列表。
  *
- * @param finished 第一条任务是否已完成
  * @returns 计划
  */
-function buildPlan(finished: boolean): TrainingPlanRespVO {
+function buildPlan(): TrainingPlanRespVO {
   return {
     hasPlan: true,
     planId: 3,
@@ -25,33 +24,9 @@ function buildPlan(finished: boolean): TrainingPlanRespVO {
     totalDays: 2,
     dailyMinutes: 60,
     remainingDays: 2,
-    summary: '概要',
+    planContent: '第 1 天：Redis 分布式锁\n第 2 天：JVM 内存模型',
     adjustmentReason: null,
     generatedAt: '2026-10-01 09:00',
-    days: [
-      {
-        dayIndex: 1,
-        taskDate: '2026-10-01',
-        totalMinutes: 30,
-        finishedCount: finished ? 1 : 0,
-        tasks: [
-          {
-            id: 11,
-            planId: 3,
-            dayIndex: 1,
-            taskDate: '2026-10-01',
-            topic: 'Redis 分布式锁',
-            questionType: '八股',
-            difficulty: 2,
-            durationMinutes: 30,
-            knowledgePoint: 'Redis 分布式锁',
-            sortOrder: 1,
-            finished,
-            finishTime: null,
-          },
-        ],
-      },
-    ],
     todayReminder: {
       id: 5,
       reminderDate: '2026-10-01',
@@ -70,43 +45,19 @@ describe('训练计划状态', () => {
   })
 
   it('加载计划时同步未读角标', async () => {
-    vi.mocked(planApi.getCurrentPlan).mockResolvedValue(buildPlan(false))
+    vi.mocked(planApi.getCurrentPlan).mockResolvedValue(buildPlan())
     const store = usePlanStore()
 
     await store.loadPlan()
 
     expect(store.plan?.planId).toBe(3)
     expect(store.unreadCount).toBe(1)
-    expect(store.progress).toEqual({ total: 1, finished: 0, percent: 0 })
-  })
-
-  it('勾选任务先本地更新，落库失败回滚', async () => {
-    vi.mocked(planApi.getCurrentPlan).mockResolvedValue(buildPlan(false))
-    vi.mocked(planApi.finishTask).mockRejectedValue(new Error('网络异常'))
-    const store = usePlanStore()
-    await store.loadPlan()
-
-    const success = await store.toggleTask(11, true)
-
-    expect(success).toBe(false)
-    expect(store.plan?.days[0].tasks[0].finished).toBe(false)
-    expect(store.plan?.days[0].finishedCount).toBe(0)
-  })
-
-  it('勾选成功后完成数与进度同步更新', async () => {
-    vi.mocked(planApi.getCurrentPlan).mockResolvedValue(buildPlan(false))
-    vi.mocked(planApi.finishTask).mockResolvedValue()
-    const store = usePlanStore()
-    await store.loadPlan()
-
-    await store.toggleTask(11, true)
-
-    expect(store.plan?.days[0].tasks[0].finished).toBe(true)
-    expect(store.progress).toEqual({ total: 1, finished: 1, percent: 100 })
+    expect(store.hasPlan).toBe(true)
+    expect(store.plan?.planContent).toContain('第 1 天')
   })
 
   it('进入计划页清零未读角标', async () => {
-    vi.mocked(planApi.getCurrentPlan).mockResolvedValue(buildPlan(false))
+    vi.mocked(planApi.getCurrentPlan).mockResolvedValue(buildPlan())
     vi.mocked(planApi.readAllReminders).mockResolvedValue()
     const store = usePlanStore()
     await store.loadPlan()
@@ -120,7 +71,7 @@ describe('训练计划状态', () => {
   it('轻量刷新未读角标失败时保留旧值', async () => {
     vi.mocked(planApi.getUnreadCount).mockRejectedValue(new Error('网络异常'))
     const store = usePlanStore()
-    store.applyPlan(buildPlan(false))
+    store.applyPlan(buildPlan())
 
     await store.loadUnreadCount()
 
@@ -129,35 +80,54 @@ describe('训练计划状态', () => {
 
   it('生成流的 result 事件按协议解析后写回计划，页面随即有内容', () => {
     const store = usePlanStore()
-    const event = JSON.stringify({ data: { type: 'training_plan', plan: buildPlan(false) } })
+    const event = JSON.stringify({ data: { type: 'training_plan', plan: buildPlan() } })
 
     const payload = store.applyGenerationEvent('result', event)
 
     expect(payload?.type).toBe('training_plan')
     // 这条断言正是「F12 里能看到结果事件、页面却什么都没有」的回归保护：状态必须被写回。
     expect(store.plan?.planId).toBe(3)
-    expect(store.plan?.days[0].tasks[0].topic).toBe('Redis 分布式锁')
-    expect(store.progress).toEqual({ total: 1, finished: 0, percent: 0 })
+    expect(store.plan?.planContent).toContain('Redis 分布式锁')
   })
 
-  it('覆盖确认与放弃覆盖不写回计划内容，只回传结果类型', () => {
+  it('待确认与放弃保存都不写回计划内容，只回传结果类型', () => {
     const store = usePlanStore()
     const confirmEvent = JSON.stringify({
-      data: { type: 'plan_confirm_required', message: '已有计划', existingPlan: { planId: 3 } },
+      data: {
+        type: 'plan_confirm_required',
+        message: '确认后才会保存',
+        draftContent: '第 1 天：Redis 分布式锁',
+        existingPlan: { planId: 3 },
+      },
     })
     const rejectedEvent = JSON.stringify({ data: { type: 'plan_confirm_rejected', message: '已保留' } })
 
-    expect(store.applyGenerationEvent('result', confirmEvent)?.type).toBe('plan_confirm_required')
+    const confirm = store.applyGenerationEvent('result', confirmEvent)
+
+    expect(confirm?.type).toBe('plan_confirm_required')
+    expect(confirm && 'draftContent' in confirm ? confirm.draftContent : '').toContain('第 1 天')
     expect(store.applyGenerationEvent('result', rejectedEvent)?.type).toBe('plan_confirm_rejected')
+    // 未确认就不该有任何计划被写进状态：确认前一个字都没保存。
     expect(store.plan).toBeNull()
   })
 
   it('非 result 事件与非法 JSON 一律忽略，状态不受影响', () => {
     const store = usePlanStore()
-    store.applyPlan(buildPlan(false))
+    store.applyPlan(buildPlan())
 
     expect(store.applyGenerationEvent('delta', '{"content":"x"}')).toBeNull()
     expect(store.applyGenerationEvent('result', '{oops')).toBeNull()
     expect(store.plan?.planId).toBe(3)
+  })
+
+  it('退出登录重置计划与角标', () => {
+    const store = usePlanStore()
+    store.applyPlan(buildPlan())
+
+    store.reset()
+
+    expect(store.plan).toBeNull()
+    expect(store.unreadCount).toBe(0)
+    expect(store.hasPlan).toBe(false)
   })
 })

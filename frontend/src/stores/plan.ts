@@ -2,14 +2,14 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import * as planApi from '@/api/plan'
-import type { TrainingDayRespVO, TrainingPlanRespVO, TrainingPlanResultPayload } from '@/types/plan'
-import { buildPlanProgress, parsePlanResultEvent, type TrainingPlanProgress } from '@/utils/plan'
+import type { TrainingPlanRespVO, TrainingPlanResultPayload } from '@/types/plan'
+import { parsePlanResultEvent } from '@/utils/plan'
 
 /**
  * 训练计划状态。
  *
- * 只保留计划快照与未读角标：计划页与侧栏入口共用这份状态，勾选任务先本地更新再落库，失败时回滚，
- * 避免整页重新拉取造成闪烁。
+ * 只保留计划快照与未读角标：计划页与侧栏入口共用这份状态。计划没有任务表——正文就是按天的「今天练什么知识点」，
+ * 因此这里没有勾选/进度这类状态。
  */
 export const usePlanStore = defineStore('plan', () => {
   /** 当前计划，null 表示还没加载过。 */
@@ -21,8 +21,8 @@ export const usePlanStore = defineStore('plan', () => {
   /** 未读提醒数，侧栏角标与计划页共用。 */
   const unreadCount = ref(0)
 
-  /** 计划完成进度。 */
-  const progress = computed<TrainingPlanProgress>(() => buildPlanProgress(plan.value))
+  /** 是否有生效中的计划。 */
+  const hasPlan = computed(() => Boolean(plan.value?.hasPlan))
 
   /**
    * 拉取当前计划并同步未读角标。
@@ -49,37 +49,6 @@ export const usePlanStore = defineStore('plan', () => {
       }
     } catch {
       // 角标失败不影响页面，保持上一次的数字。
-    }
-  }
-
-  /**
-   * 勾选 / 取消勾选一条任务。
-   *
-   * 先本地更新（界面立即响应），落库失败再回滚。
-   *
-   * @param taskId 任务 ID
-   * @param finished 目标状态
-   * @returns 是否成功落库
-   */
-  async function toggleTask(taskId: number, finished: boolean): Promise<boolean> {
-    const day = findDayOfTask(taskId)
-    if (!day) {
-      return false
-    }
-    const task = day.tasks.find((item) => item.id === taskId)
-    if (!task) {
-      return false
-    }
-    const previousFinished = task.finished
-    task.finished = finished
-    day.finishedCount += finished ? 1 : -1
-    try {
-      await planApi.finishTask(taskId, finished)
-      return true
-    } catch {
-      task.finished = previousFinished
-      day.finishedCount += finished ? -1 : 1
-      return false
     }
   }
 
@@ -115,11 +84,9 @@ export const usePlanStore = defineStore('plan', () => {
   }
 
   /**
-   * 处理生成流的 `result` 事件：命中训练计划结果时把计划写回状态。
+   * 处理生成流的 `result` 事件：命中「计划已保存」时把计划写回状态。
    *
-   * 解析口径固定在 {@link parsePlanResultEvent}（data 行是 `{"data": 结构化产物}`）。放在 store 里是为了让
-   * 「result 事件 → 状态 → 页面渲染」这条链有单测覆盖：之前把 data 行直接当产物解析，F12 里能看到结果事件，
-   * 页面却一直显示空状态。
+   * 解析口径固定在 {@link parsePlanResultEvent}（data 行是 `{"data": 结构化产物}`）。
    *
    * @param event 事件名
    * @param data 事件的 data 行
@@ -140,21 +107,6 @@ export const usePlanStore = defineStore('plan', () => {
   }
 
   /**
-   * 找到某条任务所在的当天分组。
-   *
-   * @param taskId 任务 ID
-   * @returns 当天分组，找不到时返回 null
-   */
-  function findDayOfTask(taskId: number): TrainingDayRespVO | null {
-    for (const day of plan.value?.days ?? []) {
-      if (day.tasks.some((task) => task.id === taskId)) {
-        return day
-      }
-    }
-    return null
-  }
-
-  /**
    * 退出登录或切换账号时重置，避免下一个账号看到上一个账号的计划与角标。
    */
   function reset(): void {
@@ -167,10 +119,9 @@ export const usePlanStore = defineStore('plan', () => {
     plan,
     loading,
     unreadCount,
-    progress,
+    hasPlan,
     loadPlan,
     loadUnreadCount,
-    toggleTask,
     markAllRead,
     applyPlan,
     applyGenerationEvent,
