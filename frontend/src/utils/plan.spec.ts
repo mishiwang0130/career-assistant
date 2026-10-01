@@ -5,7 +5,9 @@ import {
   buildPlanProgress,
   countRemainingDays,
   describeExistingPlan,
+  describeGenerationProgress,
   isConfirmRequired,
+  isGenerationTerminalEvent,
   parsePlanResultEvent,
   summarizePlan,
 } from '@/utils/plan'
@@ -141,5 +143,30 @@ describe('训练计划工具函数', () => {
     expect(parsePlanResultEvent(JSON.stringify({ type: 'training_plan' }))).toBeNull()
     expect(parsePlanResultEvent('')).toBeNull()
     expect(parsePlanResultEvent('{oops')).toBeNull()
+  })
+
+  it('工具事件翻译成用户能看懂的进度，不暴露工具名', () => {
+    expect(describeGenerationProgress('tool', JSON.stringify({
+      name: 'get_weak_points',
+      status: 'START',
+    }))).toBe('正在读取你的薄弱点…')
+    expect(describeGenerationProgress('tool', JSON.stringify({
+      name: 'submit_training_plan',
+      status: 'START',
+    }))).toBe('正在整理按天计划…')
+    // 工具结束事件不改变进度文案。
+    expect(describeGenerationProgress('tool', JSON.stringify({
+      name: 'get_weak_points',
+      status: 'END',
+    }))).toBeNull()
+    expect(describeGenerationProgress('thinking', '{"content":"x"}')).toBeNull()
+    expect(describeGenerationProgress('tool', '{oops')).toBeNull()
+  })
+
+  it('只有 done 与 error 是生成流的终态事件', () => {
+    expect(isGenerationTerminalEvent('done')).toBe(true)
+    expect(isGenerationTerminalEvent('error')).toBe(true)
+    expect(isGenerationTerminalEvent('result')).toBe(false)
+    expect(isGenerationTerminalEvent('tool')).toBe(false)
   })
 })

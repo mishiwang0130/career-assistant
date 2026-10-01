@@ -132,6 +132,48 @@ function unwrapResultPayload(parsed: unknown): Record<string, unknown> | null {
 }
 
 /**
+ * 把工具事件的进度翻译成用户能看懂的一句话。
+ *
+ * <p>计划页是非会话页面，模型思考与工具调用都是内部过程，界面不展示工具名；但整轮生成要几十秒，
+ * 完全没反馈会让人以为卡住了。这里只给「正在做什么」的量级信息，不暴露任何工具名与内部字段。
+ *
+ * @param event 事件名
+ * @param data 事件的 data 行
+ * @returns 进度文案，无需展示时返回 null
+ */
+export function describeGenerationProgress(event: string, data: string): string | null {
+  if (event !== 'tool') {
+    return null
+  }
+  let parsed: { name?: unknown; status?: unknown }
+  try {
+    parsed = JSON.parse(data) as { name?: unknown; status?: unknown }
+  } catch {
+    return null
+  }
+  if (parsed.status !== 'START' || typeof parsed.name !== 'string') {
+    return null
+  }
+  if (parsed.name === 'get_weak_points') {
+    return '正在读取你的薄弱点…'
+  }
+  if (parsed.name === 'submit_training_plan') {
+    return '正在整理按天计划…'
+  }
+  return '正在排计划…'
+}
+
+/**
+ * 判断事件是否为生成流的终态（收到后就不该再转圈）。
+ *
+ * @param event 事件名
+ * @returns 终态返回 true
+ */
+export function isGenerationTerminalEvent(event: string): boolean {
+  return event === 'done' || event === 'error'
+}
+
+/**
  * 把确认请求里的现有计划摘要拼成一句人话。
  *
  * @param summary 现有计划摘要

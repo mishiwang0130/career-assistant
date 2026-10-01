@@ -31,9 +31,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SystemPromptProviderImpl implements SystemPromptProvider {
 
     /**
-     * 子 Agent 的提示词文件位置，与 {@code docs/功能模块清单.md} 第 6.4 节的提示词清单保持一致。
+     * 非助手 Agent（子 Agent 与非会话 Agent）的提示词文件位置，与 {@code docs/功能模块清单.md} 第 6.4 节的
+     * 提示词清单保持一致。
      *
-     * <p>只有助手 Agent 的提示词位置来自配置项（历史原因，正文同样在文件里）；子 Agent 的提示词
+     * <p>只有助手 Agent 的提示词位置来自配置项（历史原因，正文同样在文件里）；其余 Agent 的提示词
      * 与代码一一对应，直接在这里登记，避免为一个新增文件就要同步三份 Profile 配置。
      */
     private static final Map<String, String> SUB_AGENT_PROMPT_LOCATIONS = Map.of(
@@ -44,7 +45,11 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
             // F3：岗位匹配子 Agent 与代码一一对应，同样直接在这里登记。
             AgentFactory.JOB_MATCH_AGENT_NAME, "classpath:prompts/sub-job-match.md",
             // F6：报告子 Agent 与代码一一对应，由平台后台派发，同样直接在这里登记。
-            AgentFactory.REPORT_WRITER_AGENT_NAME, "classpath:prompts/sub-report-writer.md");
+            AgentFactory.REPORT_WRITER_AGENT_NAME, "classpath:prompts/sub-report-writer.md",
+            // F7：计划 Agent 与提醒 Agent 都不是会话型，但各有一份提示词，必须在这里登记：
+            // 漏登记会静默退回助手兜底提示词（日志里的「Agent 未登记提示词位置」），模型就不再按本模块的规则走。
+            AgentFactory.PLANNER_AGENT_NAME, "classpath:prompts/planner.md",
+            AgentFactory.REMINDER_AGENT_NAME, "classpath:prompts/reminder.md");
 
     /**
      * 提示词文件缺失或读取失败时使用的兜底提示词。
@@ -171,6 +176,44 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
                提交后正文只回一句「报告完成」。""";
 
     /**
+     * 计划 Agent 的兜底提示词。
+     *
+     * <p>与 {@code prompts/planner.md} 同一套底线：先只读规划再一次性提交、不进工作区文件、不提工具名。
+     * 落到助手提示词会变成闲聊，计划就出不来，因此必须有独立兜底。
+     */
+    private static final String DEFAULT_PLANNER_PROMPT = """
+            你是一名训练规划师：把「还有几天、每天能练多久」翻译成一份按天可执行的训练计划，使用简体中文。
+            要求：
+            1. 先进入只读规划阶段（用待办清单维护步骤），读一次薄弱点工具拿到历史薄弱点与掌握度，
+               再排主题、题型、难度；没有薄弱点记录就按目标岗位安排，并说明「还没有练习记录」，不许编造；
+            2. 排期按任务文本给出的「每日任务时长骨架」来：每天的任务数、每条时长与骨架一致，
+               当天时长合计不超过每天可练时长；难度按天递进；薄弱点主题排在前面、占更多时间；
+            3. 规划完成后调用 submit_training_plan **一次性**提交整份计划：days、dailyMinutes、summary、
+               adjustmentReason（重新规划时写清依据）、tasks（每条含 dayIndex、topic、questionType、
+               difficulty、durationMinutes、knowledgePoint）。字段名用 camelCase；
+            4. 提交被拒绝时按返回的原因改正后立即重新提交一次，不要只解释不提交；
+            5. 计划只通过提交工具落库：不写任何文件、不往工作区落盘，也不要输出文件路径；
+            6. 给用户的正文只写取舍与调整依据，不重现整份计划，不出现工具名、字段名，
+               也不写「接下来我将」「已加载」「已读取」这类过程话术。""";
+
+    /**
+     * 提醒 Agent 的兜底提示词。
+     *
+     * <p>与 {@code prompts/reminder.md} 同一套底线：只为今天有训练任务的用户生成一条不超过 60 字的站内提醒，
+     * 不编造任务与进度，不动用户业务数据。
+     */
+    private static final String DEFAULT_REMINDER_PROMPT = """
+            你是每日训练提醒的生成器，由定时任务在每天早上触发一次，使用简体中文，不和用户对话。
+            要求：
+            1. 先调用 list_planned_users 拿到今天需要提醒的用户简报；简报为空就直接结束，不要编造用户或提醒；
+            2. 对简报里的每个用户调用一次 save_training_reminder，userId 原样使用简报里的值；
+            3. 提醒一句话讲清今天练什么（主题 + 题型 + 预计时长），昨天有没完成的任务时用半句话带上；
+               语气克制直接，不加 emoji、不用感叹号堆砌，整条不超过 60 个字；
+            4. 用户没有训练计划、今天没有任务、计划已结束的一律跳过，不要为了发提醒而编内容；
+            5. 只写站内提醒：不勾选任务、不改计划、不涉及外部推送渠道，一个用户的数据不得出现在另一个用户的提醒里；
+               不出现工具名与内部字段名。""";
+
+    /**
      * Agent 配置，提供提示词文件位置。
      */
     @Resource
@@ -272,6 +315,13 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
         // F6：报告子 Agent 必须退回自己的兜底提示词，不能落到助手那套角色设定。
         if (AgentFactory.REPORT_WRITER_AGENT_NAME.equals(agentId)) {
             return DEFAULT_REPORT_WRITER_PROMPT;
+        }
+        // F7：计划与提醒是非会话 Agent，缺文件时也不能落到助手的角色设定上。
+        if (AgentFactory.PLANNER_AGENT_NAME.equals(agentId)) {
+            return DEFAULT_PLANNER_PROMPT;
+        }
+        if (AgentFactory.REMINDER_AGENT_NAME.equals(agentId)) {
+            return DEFAULT_REMINDER_PROMPT;
         }
         return DEFAULT_PROMPT;
     }

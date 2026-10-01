@@ -239,16 +239,35 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
     /**
      * 订阅一次 Agent 事件流。
      *
+     * <p>HITL 重订阅时必须忽略「上一次订阅的后续事件」：写入工具触发确认时，框架会先结束当前这轮流
+     * （抛 RequestStopEvent 并 complete），而服务端紧接着用同一份状态重订阅去继续这次运行。如果不做隔离，
+     * 上一轮流结束时的 onComplete 会走 {@code finish(...)}：它会把刚发起的那次重订阅 dispose 掉
+     * （框架侧表现为 status=CANCEL），写工具根本没执行，用户看到的就是「本次没有生成出可用的计划」。
+     * 这里用自增的 epoch 给每次订阅编号，只有编号最新的事件回调才允许处理。
+     *
      * @param state 流式状态
      * @param events 事件流
      */
     private void subscribe(StreamState state, reactor.core.publisher.Flux<AgentEvent> events) {
+        int epoch = state.epoch.incrementAndGet();
         Disposable subscription = events
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe(
-                        event -> onNext(state, event),
-                        error -> onError(state, error),
-                        () -> onComplete(state));
+                        event -> {
+                            if (state.epoch.get() == epoch) {
+                                onNext(state, event);
+                            }
+                        },
+                        error -> {
+                            if (state.epoch.get() == epoch) {
+                                onError(state, error);
+                            }
+                        },
+                        () -> {
+                            if (state.epoch.get() == epoch) {
+                                onComplete(state);
+                            }
+                        });
         state.subscription.set(subscription);
     }
 
@@ -772,6 +791,11 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
          * 自动确认次数。
          */
         private final AtomicInteger autoConfirmCount = new AtomicInteger();
+
+        /**
+         * 订阅代次：每次（重）订阅自增，只有最新一代的事件会改变流的状态。
+         */
+        private final AtomicInteger epoch = new AtomicInteger();
 
         /**
          * 本轮是否已结束（终态事件已下发）；用原子标记保证「确认请求」与「流结束」不会重复下发终态。

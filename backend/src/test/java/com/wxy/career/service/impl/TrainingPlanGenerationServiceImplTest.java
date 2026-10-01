@@ -15,6 +15,7 @@ import com.wxy.career.vo.PendingPlanConfirmVO;
 import com.wxy.career.vo.PendingPlanToolCallVO;
 import com.wxy.career.vo.TrainingPlanConfirmReqVO;
 import com.wxy.career.vo.TrainingPlanGenerateReqVO;
+import com.wxy.career.vo.TrainingPlanRespVO;
 import com.wxy.career.vo.UserProfileRespVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -28,6 +29,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import com.wxy.career.common.sse.SseEmitterSupport;
 
 import java.lang.reflect.Field;
 import java.util.Arrays;
@@ -203,6 +207,50 @@ class TrainingPlanGenerationServiceImplTest {
         assertThat(confirmResult.isConfirmed()).isTrue();
         assertThat(confirmResult.getToolCall().getId()).isEqualTo("call-1");
         assertThat(confirmResult.getToolCall().getName()).isEqualTo("submit_training_plan");
+    }
+
+    /**
+     * 首次生成自动确认后，**上一轮暂停时的流结束不能把重订阅的那次运行掐掉**。
+     *
+     * <p>线上踩过：写工具触发确认时框架会结束当前这轮流，服务端随即用同一状态重订阅继续跑；
+     * 上一轮流的 onComplete 会走 finish(...) 把刚发起的重订阅 dispose 掉，写工具根本没执行，
+     * 用户看到「本次没有生成出可用的计划」，而且按钮一直转圈。这里用「第一次消费产物返回 null、
+     * 第二次返回计划」把这条时序固定下来：只要最终下发了 training_plan 结果、没有下发 error，就说明
+     * 上一轮流的结束被正确忽略。
+     */
+    @Test
+    void shouldIgnorePausedRunCompletionWhenAutoConfirming() {
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
+        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        HarnessAgent planner = mock(HarnessAgent.class);
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        // 第一轮流：发出确认请求后正常结束（这就是暂停）。
+        when(planner.streamEvents(any(Msg.class), any(io.agentscope.core.agent.RuntimeContext.class)))
+                .thenReturn(Flux.just(buildConfirmEvent()));
+        // 重订阅那轮流：仍在进行中（真实场景里它会继续跑工具与模型），用来验证它没有被上一轮流掐掉。
+        when(planner.streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class)))
+                .thenReturn(Flux.<AgentEvent>never());
+
+        SseEmitterSupport support = mock(SseEmitterSupport.class);
+        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
+        TrainingPlanGenerationServiceImpl spiedService =
+                org.mockito.Mockito.spy(generationService);
+        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
+        TrainingPlanGenerateReqVO reqVO = new TrainingPlanGenerateReqVO();
+        reqVO.setDays(7);
+        reqVO.setDailyMinutes(60);
+
+        assertThat(spiedService.generate(reqVO)).isNotNull();
+
+        // 自动确认的重订阅必须已经发出（否则说明确认链路没走通）。
+        org.mockito.Mockito.verify(planner, org.mockito.Mockito.timeout(3000))
+                .streamEvents(anyList(), any(io.agentscope.core.agent.RuntimeContext.class));
+        // 关键断言：上一轮暂停的流结束之后，本轮（重订阅后）仍在进行中，绝不能提前下发失败。
+        org.mockito.Mockito.verify(support, org.mockito.Mockito.after(800).never())
+                .sendError(anyString());
+        org.mockito.Mockito.verify(trainingPlanService, org.mockito.Mockito.never())
+                .consumeSubmittedPlan(1L, "training-plan-1");
     }
 
     /**

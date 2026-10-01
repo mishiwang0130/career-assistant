@@ -270,6 +270,43 @@ class SystemPromptProviderImplTest {
     }
 
     /**
+     * 校验计划 Agent 与提醒 Agent 各读各的提示词文件，缺文件时也不会落到助手那一套。
+     *
+     * <p>线上踩过：这两个非会话 Agent 没在 {@code SUB_AGENT_PROMPT_LOCATIONS} 里登记，运行日志出现
+     * 「Agent 未登记提示词位置，使用兜底提示词，agentId=planner」，模型拿到的是助手提示词——
+     * 计划规则（字段名、先只读规划、不落文件）全部失效，生成自然出不来结果。这里固定登记关系与兜底角色。
+     *
+     * @throws Exception 读取配置文件失败
+     */
+    @Test
+    @DisplayName("计划与提醒提示词各取各的且兜底不串角色")
+    void shouldLoadTrainingPromptsSeparately() throws Exception {
+        SystemPromptProviderImpl provider = newProvider(PROMPT_LOCATION);
+        String plannerPrompt = provider.prompt(AgentFactory.PLANNER_AGENT_NAME);
+        String reminderPrompt = provider.prompt(AgentFactory.REMINDER_AGENT_NAME);
+
+        assertEquals(readPromptFile("prompts/planner.md").strip(), plannerPrompt,
+                "计划 Agent 应原样读到自己的提示词文件");
+        assertEquals(readPromptFile("prompts/reminder.md").strip(), reminderPrompt,
+                "提醒 Agent 应原样读到自己的提示词文件");
+        assertTrue(plannerPrompt.contains("submit_training_plan"), "计划提示词要写明提交工具");
+        assertTrue(plannerPrompt.contains("camelCase"), "计划提示词要写清字段名命名（避坑 snake_case）");
+        assertTrue(plannerPrompt.contains("不要写任何文件"), "计划提示词要禁止往工作区落盘");
+        assertTrue(reminderPrompt.contains("list_planned_users"), "提醒提示词要写明读取简报的工具");
+        assertTrue(reminderPrompt.contains("save_training_reminder"), "提醒提示词要写明写入工具");
+
+        // 提示词文件整体缺失时，两个 Agent 也必须退回各自角色的兜底，而不是助手提示词。
+        SystemPromptProviderImpl fallbackProvider = newProvider("classpath:prompts/not-exists.md");
+        String fallbackPlanner = fallbackProvider.prompt(AgentFactory.PLANNER_AGENT_NAME);
+        String fallbackReminder = fallbackProvider.prompt(AgentFactory.REMINDER_AGENT_NAME);
+        assertTrue(fallbackPlanner.contains("训练规划师"), "缺文件时计划 Agent 应退回计划兜底提示词");
+        assertTrue(fallbackPlanner.contains("camelCase"), "计划兜底要写清字段名命名");
+        assertTrue(fallbackReminder.contains("每日训练提醒"), "缺文件时提醒 Agent 应退回提醒兜底提示词");
+        assertFalse(fallbackPlanner.contains("求职智能助手"), "计划兜底不能变成助手角色");
+        assertFalse(fallbackReminder.contains("求职智能助手"), "提醒兜底不能变成助手角色");
+    }
+
+    /**
      * 构造只注入必要依赖的提示词提供者。
      *
      * @param location 提示词文件位置

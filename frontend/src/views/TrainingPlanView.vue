@@ -126,10 +126,23 @@ import { BizError } from '@/api/request'
 import { usePlanStore } from '@/stores/plan'
 import { useProfileStore } from '@/stores/profile'
 import type { TrainingPlanConfirmRequiredResult } from '@/types/plan'
-import { countRemainingDays, describeExistingPlan, parsePlanResultEvent } from '@/utils/plan'
+import {
+  countRemainingDays,
+  describeExistingPlan,
+  describeGenerationProgress,
+  isGenerationTerminalEvent,
+  parsePlanResultEvent,
+} from '@/utils/plan'
 
 /** 求职目标未填写的业务错误码，与后端 ErrorConstant.USER_PROFILE_REQUIRED 一致。 */
 const PROFILE_REQUIRED_CODE = 1101
+
+/**
+ * 客户端等待上限（毫秒）。
+ *
+ * 后端流超时是 300 秒，这里留一点余量：超时后主动断开并复位按钮，避免连接异常时一直转圈。
+ */
+const GENERATION_TIMEOUT_MS = 6 * 60 * 1000
 
 const planStore = usePlanStore()
 const profileStore = useProfileStore()
@@ -150,6 +163,9 @@ const generationForm = reactive({
 
 /** 流式过程中的文本，用于给用户即时反馈。 */
 const progressText = ref('')
+
+/** 本次生成的取消句柄，超时或用户关闭弹窗时中断等待。 */
+let generationAbort: AbortController | null = null
 
 /** 剩余天数：按截止日期与今天实时算出，刷新页面会随日期变化。 */
 const remainingDays = computed(() => {
@@ -194,14 +210,21 @@ function handleGenerate(): void {
 async function handleSubmitGeneration(): Promise<void> {
   generating.value = true
   progressText.value = '正在按你的薄弱点排计划…'
+  generationAbort = new AbortController()
+  const timer = window.setTimeout(() => {
+    generationAbort?.abort()
+  }, GENERATION_TIMEOUT_MS)
   try {
     await planApi.generatePlan(
       { days: generationForm.days, dailyMinutes: generationForm.dailyMinutes },
       onGenerationEvent,
+      generationAbort.signal,
     )
   } catch (error) {
     handleGenerationError(error)
   } finally {
+    window.clearTimeout(timer)
+    generationAbort = null
     generating.value = false
   }
 }
@@ -215,6 +238,16 @@ async function handleSubmitGeneration(): Promise<void> {
 function onGenerationEvent(event: string, data: string): void {
   if (event === 'delta') {
     return
+  }
+  // 工具事件只用来给一个「正在做什么」的进度，不展示工具名；thinking 属于内部过程，不展示。
+  const progress = describeGenerationProgress(event, data)
+  if (progress) {
+    progressText.value = progress
+    return
+  }
+  if (isGenerationTerminalEvent(event)) {
+    // 收到终态事件就复位按钮：不再等连接关闭，避免异常情况下一直转圈。
+    generating.value = false
   }
   if (event === 'error') {
     progressText.value = ''
@@ -230,6 +263,7 @@ function onGenerationEvent(event: string, data: string): void {
     return
   }
   if (payload.type === 'plan_confirm_required') {
+    progressText.value = '等待你确认是否覆盖当前计划…'
     void handleConfirmRequired(payload)
     return
   }
@@ -265,11 +299,19 @@ async function handleConfirmRequired(payload: TrainingPlanConfirmRequiredResult)
     approved = false
   }
   progressText.value = approved ? '正在重新规划…' : ''
+  generating.value = approved
+  generationAbort = new AbortController()
+  const timer = window.setTimeout(() => {
+    generationAbort?.abort()
+  }, GENERATION_TIMEOUT_MS)
   try {
-    await planApi.confirmGeneration({ approved }, onGenerationEvent)
+    await planApi.confirmGeneration({ approved }, onGenerationEvent, generationAbort.signal)
   } catch (error) {
     handleGenerationError(error)
   } finally {
+    window.clearTimeout(timer)
+    generationAbort = null
+    generating.value = false
     if (!approved) {
       generationDialogVisible.value = false
     }
@@ -295,6 +337,11 @@ async function handleToggle(taskId: number, finished: boolean): Promise<void> {
  * @param error 异常
  */
 function handleGenerationError(error: unknown): void {
+  // 客户端主动断开（等待超时）走这里：给一句可理解的说明，而不是笼统的失败提示。
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    ElMessage.warning('生成用时过长，已停止等待；可以稍后重试')
+    return
+  }
   if (error instanceof BizError) {
     if (error.code === PROFILE_REQUIRED_CODE) {
       void router.replace({ name: 'ProfileView', query: { redirect: route.fullPath } })
