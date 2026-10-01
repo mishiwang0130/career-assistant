@@ -161,4 +161,37 @@ class SkillSeedScriptTest {
                 .contains("submit_interview_report");
         assertThat(reportSection.length()).isGreaterThan(500);
     }
+
+    /**
+     * 验证建库脚本幂等追加了 F9 的讲解规范技能，且 F9 段只写技能行。
+     *
+     * <p>真实取数同样需要 MySQL，因此这里只固定脚本契约：技能名与助手装配里的 tutoring 一致、
+     * 用幂等写法写入、正文覆盖「先定位 / 再类比 / 再举例 / 一道练习 / 怎么算答得好」与跨会话「接着讲」，
+     * 且段内不重复建技能表（表由 F2 段建立，重复建会掩盖框架托管表的真实结构）。
+     *
+     * @throws Exception 读取脚本失败
+     */
+    @Test
+    void shouldSeedTutoringSkillIdempotently() throws Exception {
+        String script = Files.readString(SCRIPT_PATH, StandardCharsets.UTF_8);
+
+        assertThat(script).contains("'tutoring'");
+        assertThat(script).contains("'f9-tutoring'");
+
+        // F9 是脚本末尾的独立分隔段，从这里截到脚本结尾就是本模块的全部改动范围。
+        int sectionStart = script.indexOf("F9 专项辅导");
+        assertThat(sectionStart).isGreaterThan(0);
+        String tutoringSection = script.substring(sectionStart);
+
+        assertThat(tutoringSection).doesNotContain("CREATE TABLE");
+        assertThat(tutoringSection)
+                .contains("先定位")
+                .contains("再类比")
+                .contains("再举例")
+                .contains("一道练习")
+                .contains("怎么算答得好")
+                .contains("接着讲")
+                .contains("ON DUPLICATE KEY UPDATE");
+        assertThat(tutoringSection.length()).isGreaterThan(500);
+    }
 }

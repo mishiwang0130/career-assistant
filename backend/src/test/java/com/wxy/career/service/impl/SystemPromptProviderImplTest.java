@@ -78,6 +78,20 @@ class SystemPromptProviderImplTest {
             "差距补齐建议");
 
     /**
+     * 助手提示词与助手兜底提示词都必须包含的 F9 讲解规则（F9 追加，不改上面几条的语义）。
+     *
+     * <p>这几条固定的是用户可感知的行为：就薄弱点提问时先读薄弱点再直接讲解、不推给别的入口、
+     * 不反问「你想听哪个知识点」、没有数据时照实说明而不是编造、有历史片段时接着上次的进度讲。
+     */
+    private static final List<String> TUTORING_REQUIRED_SNIPPETS = List.of(
+            "get_weak_points",
+            "不推给别的入口",
+            "不要反问「你想听哪个知识点」",
+            "照实说明",
+            "不要编造薄弱点",
+            "接着上次的进度讲");
+
+    /**
      * 校验提示词文件可读取、内容完整，且能原样返回给 Agent。
      *
      * @throws Exception 读取配置文件失败
@@ -224,6 +238,35 @@ class SystemPromptProviderImplTest {
         assertTrue(fallbackInterviewer.contains("面试官"), "缺文件时面试 Agent 应退回面试官兜底提示词");
         assertFalse(fallbackInterviewer.contains("求职智能助手"), "面试兜底不能变成助手角色");
         assertFalse(fallbackInterviewer.contains("简历分析专家"), "面试兜底不能变成简历分析角色");
+    }
+
+    /**
+     * 校验助手提示词与助手兜底提示词都固定了 F9 的讲解规则。
+     *
+     * <p>F9 是助手会话内的一次对话能力：就薄弱点提问时先读薄弱点、再按讲解规范直接讲解，
+     * 不推给别的入口、不反问「你想听哪个知识点」，没有数据时照实说明并建议先练一场。
+     * 这几条一旦被删掉，行为会静默退化（模型重新开始反问），因此文件版与兜底版都要断言。
+     *
+     * @throws Exception 读取配置文件失败
+     */
+    @Test
+    @DisplayName("助手提示词与兜底都固定 F9 的讲解规则")
+    void shouldKeepTutoringRulesInAssistantPrompt() throws Exception {
+        String filePrompt = readPromptFile("prompts/assistant.md");
+        TUTORING_REQUIRED_SNIPPETS.forEach(snippet ->
+                assertTrue(filePrompt.contains(snippet), "助手提示词缺少 F9 规则片段：" + snippet));
+
+        SystemPromptProviderImpl provider = newProvider(PROMPT_LOCATION);
+        String configuredPrompt = provider.prompt(AgentFactory.MAIN_AGENT_NAME);
+        TUTORING_REQUIRED_SNIPPETS.forEach(snippet ->
+                assertTrue(configuredPrompt.contains(snippet), "已配置的助手提示词缺少 F9 规则片段：" + snippet));
+
+        // 提示词文件缺失时兜底生效，兜底同样不能丢这几条规则。
+        String fallback = newProvider("classpath:prompts/not-exists.md")
+                .prompt(AgentFactory.MAIN_AGENT_NAME);
+        TUTORING_REQUIRED_SNIPPETS.forEach(snippet ->
+                assertTrue(fallback.contains(snippet), "助手兜底提示词缺少 F9 规则片段：" + snippet));
+        assertFalse(fallback.contains("简历分析专家"), "助手兜底不能变成子 Agent 角色");
     }
 
     /**
