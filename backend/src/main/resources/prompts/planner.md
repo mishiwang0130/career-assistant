@@ -6,8 +6,11 @@
 【工作方式：先只读规划，再一次性提交】
 1. 先进入只读规划阶段：读薄弱点、排主题与难度，这一阶段不要写任何数据；
 2. 用待办清单维护本次规划步骤，一步只推进一件事；
-3. 规划完成后调用 submit_training_plan 一次性提交整份计划（提交前会有一次人工确认，用户不同意就不会落库）；
-4. 提交成功后只说明本次取舍或调整依据，不要重复整份计划。
+3. 排好一天就用 add_training_task **逐条登记**当天的任务（一次只报一条：第几天、主题、题型、难度、时长、知识点），
+   把第 1 天到第 N 天的任务都登记完；
+4. 最后调用 submit_training_plan 提交概要与调整原因（它会把你登记的任务一起落库；提交前会有一次人工确认，
+   用户不同意就不会落库）；
+5. 提交成功后只说明本次取舍或调整依据，不要重复整份计划。
 
 【计划怎么排】
 1. 时间不够时明确说出取舍：优先保哪些主题，砍掉哪些，以及为什么砍；
@@ -24,8 +27,8 @@
 
 【输出结构】
 1. 提交一段计划概要：目标岗位、总天数、每天时长、总体思路；
-2. 按天提交任务，字段名照工具 schema 的 camelCase 写：tasks[].dayIndex、topic、questionType、difficulty、
-   durationMinutes、knowledgePoint（不要写 day_index 这类 snake_case，会解析不到）；
+2. 按天用 add_training_task 逐条登记任务：参数是扁平的 dayIndex、topic、questionType、difficulty、
+   durationMinutes、knowledgePoint 六个简单值，一次一条，不要拼成大 JSON；
 3. 调整原因：只在重新规划时填写。
 
 【底线】

@@ -32,6 +32,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -154,6 +156,13 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
     private final Map<String, BufferedFailure> submitFailures = new ConcurrentHashMap<>();
 
     /**
+     * 模型逐条报上来的任务（未落库），键为 {@code userId/sessionId}。
+     *
+     * <p>不让模型一次性吐整份嵌套 JSON：单条任务的参数小、类型简单，稳定性高得多。
+     */
+    private final Map<String, List<TrainingTaskSubmitVO>> stagedTasks = new ConcurrentHashMap<>();
+
+    /**
      * 查询当前用户生效中的计划。
      *
      * @param userId 用户 ID
@@ -205,7 +214,57 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
         generationInputs.put(key, new BufferedInput(days, dailyMinutes, System.currentTimeMillis()));
         // 新一轮开始，清掉上一轮的失败原因，避免失败提示串到本次。
         submitFailures.remove(key);
+        // 新一轮开始也清掉上一轮暂存的任务。
+        stagedTasks.remove(key);
         cleanExpiredBuffer();
+    }
+
+    /**
+     * 暂存一条按天任务。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 计划 Agent 的运行标识
+     * @param task 单条任务
+     */
+    @Override
+    public void stageTrainingTask(Long userId, String sessionId, TrainingTaskSubmitVO task) {
+        requireUserId(userId);
+        if (!StringUtils.hasText(sessionId) || task == null
+                || task.getDayIndex() == null || task.getDayIndex() < 1) {
+            throw paramError("任务缺少第几天，请按「第几天 + 主题 + 题型 + 时长」逐条报任务");
+        }
+        String key = bufferKey(userId, sessionId);
+        stagedTasks.computeIfAbsent(key, ignored -> Collections.synchronizedList(new ArrayList<>())).add(task);
+        log.info("暂存训练任务，userId={}，dayIndex={}，topic={}，durationMinutes={}，stagedCount={}",
+                userId, task.getDayIndex(), task.getTopic(), task.getDurationMinutes(),
+                stagedTasks.get(key).size());
+    }
+
+    /**
+     * 把暂存的任务连同概要提交落库。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 计划 Agent 的运行标识
+     * @param summary 计划概要
+     * @param adjustmentReason 调整原因
+     */
+    @Override
+    public void submitStagedPlan(Long userId, String sessionId, String summary, String adjustmentReason) {
+        requireUserId(userId);
+        if (!StringUtils.hasText(sessionId)) {
+            throw new BizException(ErrorConstant.PARAM_ERROR);
+        }
+        String key = bufferKey(userId, sessionId);
+        List<TrainingTaskSubmitVO> staged = stagedTasks.get(key);
+        TrainingPlanSubmitVO submitVO = new TrainingPlanSubmitVO();
+        submitVO.setSummary(summary);
+        submitVO.setAdjustmentReason(adjustmentReason);
+        // 按天排序后再落库：模型是逐条报的，顺序不一定与天数一致。
+        submitVO.setTasks(staged == null ? List.of()
+                : staged.stream().sorted(Comparator.comparing(TrainingTaskSubmitVO::getDayIndex)).toList());
+        submitPlan(userId, sessionId, submitVO);
+        // 落库成功即清空暂存，避免重复提交时多写一份。
+        stagedTasks.remove(key);
     }
 
     /**
@@ -355,6 +414,7 @@ public class TrainingPlanServiceImpl implements TrainingPlanService {
         // 本次运行结束：输入与失败原因都清掉，避免串到下一轮。
         generationInputs.remove(key);
         submitFailures.remove(key);
+        stagedTasks.remove(key);
         if (buffered == null) {
             return null;
         }

@@ -471,10 +471,12 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
                     .append(System.lineSeparator());
         }
         text.append("【提交要求】字段名照 schema 的 camelCase 写（tasks 里是 dayIndex、topic、questionType、")
-                .append("difficulty、durationMinutes、knowledgePoint）；days 填 ").append(days)
-                .append("、dailyMinutes 填 ").append(dailyMinutes)
-                .append("（这两个值以用户本次输入为准，服务端会覆盖）；每天至少要有一条任务；")
-                .append("当天任务时长合计不要超过每日时长；难度按天递进；")
+                .append("difficulty、durationMinutes、knowledgePoint）；天数 ").append(days)
+                .append(" 天、每天 ").append(dailyMinutes).append(" 分钟已由用户给定，服务端按它校验。")
+                .append("请用 add_training_task **逐条**登记任务（一次只报一条，参数是扁平简单值），")
+                .append("把第 1 天到第 ").append(days).append(" 天都登记完；")
+                .append("当天任务时长合计不要超过每天时长；难度按天递进；")
+                .append("最后调用 submit_training_plan 提交概要与调整原因，")
                 .append("提交成功后只简要说明取舍，不要重复整份计划。");
         return text.toString();
     }

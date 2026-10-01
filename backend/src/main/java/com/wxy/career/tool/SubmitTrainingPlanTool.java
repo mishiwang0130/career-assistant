@@ -3,7 +3,6 @@ package com.wxy.career.tool;
 import com.wxy.career.common.exception.BizException;
 import com.wxy.career.service.TrainingPlanService;
 import com.wxy.career.util.RuntimeContextUserUtil;
-import com.wxy.career.vo.TrainingPlanSubmitVO;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
@@ -27,12 +26,11 @@ import org.springframework.stereotype.Component;
 public class SubmitTrainingPlanTool {
 
     /**
-     * 校验失败时补充的字段口径提示，避免模型反复提交同一份不完整结论。
+     * 校验失败时补充的口径提示，避免模型反复提交同一份不完整结论。
      */
     private static final String FIELD_HINT =
-            "字段名用 schema 里的 camelCase：plan.tasks[].dayIndex、topic、questionType、difficulty、"
-                    + "durationMinutes、knowledgePoint。请检查：每天至少一条任务；同一天时长合计不超过每天时长；"
-                    + "dayIndex 从 1 开始且不超过总天数；topic 与 questionType 非空。"
+            "请检查：每一天（第 1 天到第 N 天）都用 add_training_task 登记过任务；"
+                    + "同一天各条时长合计不超过每天可练时长。"
                     + "修正后请**立即重新调用 submit_training_plan** 提交一次。";
 
     /**
@@ -44,41 +42,39 @@ public class SubmitTrainingPlanTool {
     /**
      * 提交训练计划结论。
      *
-     * @param plan 计划结论
+     * <p>参数只有两个短文本：任务已经用 {@code add_training_task} 逐条登记过，这里只提交概要与调整原因，
+     * 避免让模型一次性吐一整份嵌套 JSON。
+     *
+     * @param summary 计划概要，一句话说明总体思路
+     * @param adjustmentReason 调整原因，重新规划时写清依据；首次生成留空
      * @param runtimeContext 运行时上下文，由框架注入
      * @return 提交结果说明，失败时给出可读原因
      */
     @Tool(name = "submit_training_plan",
-            description = "提交本次生成的训练计划（按天任务清单）。只提交一次；提交成功后只简要说明取舍，"
-                    + "不要重复整份计划。",
+            description = "提交本次生成的训练计划（用 add_training_task 登记好的任务会一起落库）。"
+                    + "只提交一次；提交成功后只简要说明取舍，不要重复整份计划。",
             readOnly = false)
     public String submitTrainingPlan(
-            @ToolParam(name = "plan", required = true,
-                    description = "计划结论：days、dailyMinutes、summary、adjustmentReason（重新规划时写清依据）、"
-                            + "tasks（每条含 dayIndex、topic、questionType、difficulty、durationMinutes、"
-                            + "knowledgePoint）。字段名与 schema 一致，不要写 snake_case")
-            TrainingPlanSubmitVO plan,
+            @ToolParam(name = "summary", required = false,
+                    description = "计划概要：一两句话说明总体思路与取舍")
+            String summary,
+            @ToolParam(name = "adjustmentReason", required = false,
+                    description = "调整原因：重新规划时写清依据（新增薄弱点/进度落后/时间变化），首次生成留空")
+            String adjustmentReason,
             RuntimeContext runtimeContext) {
         Long userId = RuntimeContextUserUtil.requireUserId(runtimeContext);
-        // 记录模型实际提交的内容概要：工具调用失败时（尤其是框架在入参转换阶段就报错）日志里要能看出模型填了什么。
-        log.info("收到训练计划提交，userId={}，days={}，dailyMinutes={}，taskCount={}",
-                userId, plan == null ? null : plan.getDays(),
-                plan == null ? null : plan.getDailyMinutes(),
-                plan == null || plan.getTasks() == null ? null : plan.getTasks().size());
+        log.info("收到训练计划提交，userId={}，summaryLength={}，hasAdjustmentReason={}",
+                userId, summary == null ? 0 : summary.length(), adjustmentReason != null);
         try {
-            trainingPlanService.submitPlan(userId, runtimeContext.getSessionId(), plan);
+            trainingPlanService.submitStagedPlan(userId, runtimeContext.getSessionId(), summary, adjustmentReason);
             return "训练计划已保存，请用一两句话说明本次的取舍或调整依据。";
         } catch (BizException exception) {
             log.info("提交训练计划失败，userId={}，code={}", userId, exception.getErrorCode().getCode());
             return "提交失败：" + exception.getErrorCode().getMsg() + "。" + FIELD_HINT;
         } catch (Exception exception) {
-            // 兜底：数据库异常、空指针一类非业务异常不能让整轮直接崩（框架会把工具异常标记成 ERROR 并中断这一轮），
-            // 这里转成可读提示让模型改正或重提，同时把堆栈打进日志便于定位。
-            log.error("提交训练计划出现非业务异常，userId={}，days={}，taskCount={}",
-                    userId, plan == null ? null : plan.getDays(),
-                    plan == null || plan.getTasks() == null ? null : plan.getTasks().size(), exception);
+            log.error("提交训练计划出现非业务异常，userId={}", userId, exception);
             return "提交失败：服务端处理计划时出错（" + exception.getClass().getSimpleName()
-                    + "）。请检查字段与本次输入是否一致后重新提交一次。" + FIELD_HINT;
+                    + "）。请稍后重试。" + FIELD_HINT;
         }
     }
 }

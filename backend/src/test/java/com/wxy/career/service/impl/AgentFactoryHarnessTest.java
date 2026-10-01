@@ -17,6 +17,7 @@ import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.UserProfileRespVO;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.GetWeakPointsTool;
+import com.wxy.career.tool.AddTrainingTaskTool;
 import com.wxy.career.tool.ListPlannedUsersTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
@@ -186,6 +187,7 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(agentFactory, "submitInterviewReportTool", new SubmitInterviewReportTool());
         // F7：计划 Agent 的提交工具与提醒 Agent 的两个工具都要装配上。
         ReflectionTestUtils.setField(agentFactory, "submitTrainingPlanTool", new SubmitTrainingPlanTool());
+        ReflectionTestUtils.setField(agentFactory, "addTrainingTaskTool", new AddTrainingTaskTool());
         ReflectionTestUtils.setField(agentFactory, "listPlannedUsersTool", new ListPlannedUsersTool());
         ReflectionTestUtils.setField(agentFactory, "saveTrainingReminderTool", new SaveTrainingReminderTool());
         // 计划 Agent 的任务仓储用进程内实现：测试链路同样不往工作区落文件。
@@ -204,7 +206,8 @@ class AgentFactoryHarnessTest {
         assertThat(agent.getName()).isEqualTo(AgentFactory.PLANNER_AGENT_NAME);
         Set<String> toolNames = agent.getToolkit().getToolNames();
         assertThat(toolNames).contains(
-                "get_weak_points", "submit_training_plan", "load_skill_through_path", "todo_write");
+                "get_weak_points", "add_training_task", "submit_training_plan", "load_skill_through_path",
+                "todo_write");
         assertThat(toolNames).doesNotContain(
                 "plan_write", "read_resume", "submit_resume_diagnosis", "web_search", "web_fetch",
                 "wait_async_results", "task_output", "task_list", "task_cancel",
@@ -220,7 +223,8 @@ class AgentFactoryHarnessTest {
 
         assertThat(permissionContext.getMode()).isEqualTo(PermissionMode.DEFAULT);
         assertThat(permissionContext.getAllowRules().keySet()).contains(
-                "get_weak_points", "load_skill_through_path", "plan_enter", "plan_exit", "todo_write");
+                "get_weak_points", "add_training_task", "load_skill_through_path", "plan_enter", "plan_exit",
+                "todo_write");
         assertThat(permissionContext.getAllowRules().keySet()).doesNotContain("submit_training_plan");
         assertThat(permissionContext.getAskRules().keySet()).contains("submit_training_plan");
     }

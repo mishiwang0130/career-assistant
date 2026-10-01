@@ -290,7 +290,8 @@ class SystemPromptProviderImplTest {
         assertEquals(readPromptFile("prompts/reminder.md").strip(), reminderPrompt,
                 "提醒 Agent 应原样读到自己的提示词文件");
         assertTrue(plannerPrompt.contains("submit_training_plan"), "计划提示词要写明提交工具");
-        assertTrue(plannerPrompt.contains("camelCase"), "计划提示词要写清字段名命名（避坑 snake_case）");
+        assertTrue(plannerPrompt.contains("add_training_task"), "计划提示词要写明逐条登记任务的工具");
+        assertTrue(plannerPrompt.contains("逐条"), "计划提示词要求逐条登记任务（避免一次性拼大 JSON）");
         assertTrue(plannerPrompt.contains("不要写任何文件"), "计划提示词要禁止往工作区落盘");
         assertTrue(reminderPrompt.contains("list_planned_users"), "提醒提示词要写明读取简报的工具");
         assertTrue(reminderPrompt.contains("save_training_reminder"), "提醒提示词要写明写入工具");
@@ -300,7 +301,7 @@ class SystemPromptProviderImplTest {
         String fallbackPlanner = fallbackProvider.prompt(AgentFactory.PLANNER_AGENT_NAME);
         String fallbackReminder = fallbackProvider.prompt(AgentFactory.REMINDER_AGENT_NAME);
         assertTrue(fallbackPlanner.contains("训练规划师"), "缺文件时计划 Agent 应退回计划兜底提示词");
-        assertTrue(fallbackPlanner.contains("camelCase"), "计划兜底要写清字段名命名");
+        assertTrue(fallbackPlanner.contains("add_training_task"), "计划兜底要写明逐条登记任务的工具");
         assertTrue(fallbackReminder.contains("每日训练提醒"), "缺文件时提醒 Agent 应退回提醒兜底提示词");
         assertFalse(fallbackPlanner.contains("求职智能助手"), "计划兜底不能变成助手角色");
         assertFalse(fallbackReminder.contains("求职智能助手"), "提醒兜底不能变成助手角色");

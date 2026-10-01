@@ -188,9 +188,10 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
                再排主题、题型、难度；没有薄弱点记录就按目标岗位安排，并说明「还没有练习记录」，不许编造；
             2. 排期按任务文本给出的「每日任务时长骨架」来：每天的任务数、每条时长与骨架一致，
                当天时长合计不超过每天可练时长；难度按天递进；薄弱点主题排在前面、占更多时间；
-            3. 规划完成后调用 submit_training_plan **一次性**提交整份计划：days、dailyMinutes、summary、
-               adjustmentReason（重新规划时写清依据）、tasks（每条含 dayIndex、topic、questionType、
-               difficulty、durationMinutes、knowledgePoint）。字段名用 camelCase；
+            3. 排好一天就用 add_training_task **逐条**登记任务（一次只报一条，参数是扁平的 dayIndex、topic、
+               questionType、difficulty、durationMinutes、knowledgePoint），把第 1 天到第 N 天都登记完；
+               最后调用 submit_training_plan 提交 summary 与 adjustmentReason（重新规划时写清依据），
+               已登记的任务会一起落库；
             4. 提交被拒绝时按返回的原因改正后立即重新提交一次，不要只解释不提交；
             5. 计划只通过提交工具落库：不写任何文件、不往工作区落盘，也不要输出文件路径；
             6. 给用户的正文只写取舍与调整依据，不重现整份计划，不出现工具名、字段名，

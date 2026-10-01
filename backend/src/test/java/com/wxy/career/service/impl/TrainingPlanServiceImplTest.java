@@ -206,6 +206,71 @@ class TrainingPlanServiceImplTest {
     }
 
     /**
+     * 逐条登记任务后一次性提交：按天排序落库，提交成功后暂存清空。
+     */
+    @Test
+    void shouldSubmitStagedTasks() {
+        List<TrainingTask> insertedTasks = new ArrayList<>();
+        when(trainingPlanMapper.insert(any(TrainingPlan.class))).thenAnswer(invocation -> {
+            TrainingPlan plan = invocation.getArgument(0);
+            plan.setId(101L);
+            return 1;
+        });
+        when(trainingTaskMapper.insert(any(TrainingTask.class))).thenAnswer(invocation -> {
+            insertedTasks.add(invocation.getArgument(0));
+            return 1;
+        });
+        trainingPlanService.recordGenerationInput(1L, "training-plan-1", 2, 60);
+        // 故意打乱顺序登记：第 2 天先报，第 1 天后报。
+        trainingPlanService.stageTrainingTask(1L, "training-plan-1", buildStagedTask(2, 30, "第二天主题"));
+        trainingPlanService.stageTrainingTask(1L, "training-plan-1", buildStagedTask(2, 30, "第二天主题二"));
+        trainingPlanService.stageTrainingTask(1L, "training-plan-1", buildStagedTask(1, 30, "第一天主题"));
+        trainingPlanService.stageTrainingTask(1L, "training-plan-1", buildStagedTask(1, 30, "第一天主题二"));
+
+        trainingPlanService.submitStagedPlan(1L, "training-plan-1", "先补薄弱点", null);
+
+        assertThat(insertedTasks).hasSize(4);
+        // 落库前按天排序：第 1 天的两条在前。
+        assertThat(insertedTasks.get(0).getDayIndex()).isEqualTo(1);
+        assertThat(insertedTasks.get(1).getDayIndex()).isEqualTo(1);
+        assertThat(insertedTasks.get(2).getDayIndex()).isEqualTo(2);
+        // 暂存已清空：再次提交会因为没有任务而被拒。
+        assertThatThrownBy(() -> trainingPlanService.submitStagedPlan(1L, "training-plan-1", "概要", null))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("没有任何任务");
+    }
+
+    /**
+     * 没登记任何任务就提交：给出可读原因（而不是抛空指针）。
+     */
+    @Test
+    void shouldRejectSubmitWithoutStagedTasks() {
+        trainingPlanService.recordGenerationInput(1L, "training-plan-1", 1, 60);
+
+        assertThatThrownBy(() -> trainingPlanService.submitStagedPlan(1L, "training-plan-1", "概要", null))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("没有任何任务");
+    }
+
+    /**
+     * 构造一条暂存任务。
+     *
+     * @param dayIndex 第几天
+     * @param durationMinutes 时长
+     * @param topic 主题
+     * @return 任务
+     */
+    private TrainingTaskSubmitVO buildStagedTask(int dayIndex, int durationMinutes, String topic) {
+        TrainingTaskSubmitVO task = new TrainingTaskSubmitVO();
+        task.setDayIndex(dayIndex);
+        task.setTopic(topic);
+        task.setQuestionType("八股");
+        task.setDifficulty(2);
+        task.setDurationMinutes(durationMinutes);
+        return task;
+    }
+
+    /**
      * 模型用 snake_case 写工具入参时也要能绑定（框架用 Jackson 默认命名策略解析工具入参）。
      *
      * <p>线上踩过：提示词里写的是 {@code daily_minutes}/{@code day_index}，模型照抄，Jackson 按 camelCase 解析

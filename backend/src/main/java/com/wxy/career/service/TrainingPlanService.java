@@ -2,6 +2,7 @@ package com.wxy.career.service;
 
 import com.wxy.career.vo.TrainingPlanRespVO;
 import com.wxy.career.vo.TrainingPlanSubmitVO;
+import com.wxy.career.vo.TrainingTaskSubmitVO;
 
 /**
  * 训练计划服务。
@@ -48,6 +49,29 @@ public interface TrainingPlanService {
      * @param dailyMinutes 本次请求的每日时长（分钟）
      */
     void recordGenerationInput(Long userId, String sessionId, int days, int dailyMinutes);
+
+    /**
+     * 暂存一条按天任务（不落库）。
+     *
+     * <p>计划正文不让模型一次性吐一整份嵌套 JSON：参数越大越容易出问题（截断、转义、类型漂移）。
+     * 模型改为一条一条地报任务，这里按 {@code userId + sessionId} 暂存在运行态缓冲里，等它调用提交工具时
+     * 再统一校验并落库。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 计划 Agent 的运行标识
+     * @param task 单条任务（第几天、主题、题型、难度、时长、知识点）
+     */
+    void stageTrainingTask(Long userId, String sessionId, TrainingTaskSubmitVO task);
+
+    /**
+     * 把暂存的任务连同概要提交落库（写工具的实现路径，受人工确认管控）。
+     *
+     * @param userId 用户 ID
+     * @param sessionId 计划 Agent 的运行标识
+     * @param summary 计划概要，可为空
+     * @param adjustmentReason 调整原因，重新规划时写清依据，可为空
+     */
+    void submitStagedPlan(Long userId, String sessionId, String summary, String adjustmentReason);
 
     /**
      * 勾选或取消勾选一条训练任务。

@@ -17,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
@@ -82,15 +83,11 @@ class TrainingPlanToolTest {
                 .userId("7")
                 .sessionId("training-plan-7")
                 .build();
-        TrainingPlanSubmitVO submit = new TrainingPlanSubmitVO();
-        submit.setDays(3);
-        submit.setDailyMinutes(60);
-        submit.setTasks(List.of());
 
-        String message = submitTrainingPlanTool.submitTrainingPlan(submit, runtimeContext);
+        String message = submitTrainingPlanTool.submitTrainingPlan("先补薄弱点", null, runtimeContext);
 
         assertThat(message).contains("已保存");
-        verify(trainingPlanService).submitPlan(eq(7L), eq("training-plan-7"), any(TrainingPlanSubmitVO.class));
+        verify(trainingPlanService).submitStagedPlan(eq(7L), eq("training-plan-7"), eq("先补薄弱点"), isNull());
     }
 
     /**
@@ -98,15 +95,15 @@ class TrainingPlanToolTest {
      */
     @Test
     void shouldTranslateBizExceptionIntoReadableHint() {
-        // submitPlan 是 void 方法：桩注入失败要用 doThrow。
+        // submitStagedPlan 是 void 方法：桩注入失败要用 doThrow。
         doThrow(new BizException(ErrorConstant.PARAM_ERROR))
-                .when(trainingPlanService).submitPlan(any(), anyString(), any());
+                .when(trainingPlanService).submitStagedPlan(any(), anyString(), any(), any());
         var runtimeContext = io.agentscope.core.agent.RuntimeContext.builder()
                 .userId("7")
                 .sessionId("training-plan-7")
                 .build();
 
-        String message = submitTrainingPlanTool.submitTrainingPlan(new TrainingPlanSubmitVO(), runtimeContext);
+        String message = submitTrainingPlanTool.submitTrainingPlan(null, null, runtimeContext);
 
         assertThat(message).contains("提交失败").contains("参数错误");
     }
@@ -160,14 +157,51 @@ class TrainingPlanToolTest {
     @Test
     void shouldTranslateUnexpectedFailure() {
         doThrow(new IllegalStateException("DB down"))
-                .when(trainingPlanService).submitPlan(any(), anyString(), any());
+                .when(trainingPlanService).submitStagedPlan(any(), anyString(), any(), any());
         var runtimeContext = io.agentscope.core.agent.RuntimeContext.builder()
                 .userId("7")
                 .sessionId("training-plan-7")
                 .build();
 
-        String message = submitTrainingPlanTool.submitTrainingPlan(new TrainingPlanSubmitVO(), runtimeContext);
+        String message = submitTrainingPlanTool.submitTrainingPlan(null, null, runtimeContext);
 
         assertThat(message).contains("提交失败").contains("IllegalStateException");
+    }
+
+    /**
+     * 逐条登记任务：参数是扁平标量，登记成功返回可读说明，服务层负责暂存。
+     */
+    @Test
+    void shouldStageSingleTask() {
+        AddTrainingTaskTool tool = new AddTrainingTaskTool();
+        ReflectionTestUtils.setField(tool, "trainingPlanService", trainingPlanService);
+        var runtimeContext = io.agentscope.core.agent.RuntimeContext.builder()
+                .userId("7")
+                .sessionId("training-plan-7")
+                .build();
+
+        String message = tool.addTrainingTask(1, "Redis 分布式锁", "八股", 2, 30, "Redis 分布式锁", runtimeContext);
+
+        assertThat(message).contains("已登记第 1 天");
+        verify(trainingPlanService).stageTrainingTask(eq(7L), eq("training-plan-7"), any());
+    }
+
+    /**
+     * 登记失败（例如缺天数）返回可读提示，不抛异常。
+     */
+    @Test
+    void shouldTranslateStageFailure() {
+        AddTrainingTaskTool tool = new AddTrainingTaskTool();
+        ReflectionTestUtils.setField(tool, "trainingPlanService", trainingPlanService);
+        doThrow(new BizException(ErrorConstant.PARAM_ERROR))
+                .when(trainingPlanService).stageTrainingTask(any(), anyString(), any());
+        var runtimeContext = io.agentscope.core.agent.RuntimeContext.builder()
+                .userId("7")
+                .sessionId("training-plan-7")
+                .build();
+
+        String message = tool.addTrainingTask(0, "主题", "八股", 2, 30, null, runtimeContext);
+
+        assertThat(message).contains("登记失败").contains("参数错误");
     }
 }

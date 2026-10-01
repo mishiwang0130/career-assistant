@@ -12,6 +12,7 @@ import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
 import com.wxy.career.tool.GetInterviewStateTool;
 import com.wxy.career.tool.GetWeakPointsTool;
+import com.wxy.career.tool.AddTrainingTaskTool;
 import com.wxy.career.tool.ListPlannedUsersTool;
 import com.wxy.career.tool.ReadResumeTool;
 import com.wxy.career.tool.RecordInterviewAnswerTool;
@@ -994,6 +995,11 @@ public class AgentFactoryImpl implements AgentFactory {
     private static final String SUBMIT_TRAINING_PLAN_TOOL_NAME = "submit_training_plan";
 
     /**
+     * 逐条登记训练任务工具名（只读语义：只暂存到运行态缓冲，不写库，因此不需要确认）。
+     */
+    private static final String ADD_TRAINING_TASK_TOOL_NAME = "add_training_task";
+
+    /**
      * 进入只读规划阶段的工具名（框架 Plan Mode）。
      */
     private static final String PLAN_ENTER_TOOL_NAME = "plan_enter";
@@ -1021,6 +1027,7 @@ public class AgentFactoryImpl implements AgentFactory {
      */
     private static final List<String> PLANNER_ALLOWED_TOOL_NAMES = List.of(
             WEAK_POINTS_TOOL_NAME,
+            ADD_TRAINING_TASK_TOOL_NAME,
             SUBMIT_TRAINING_PLAN_TOOL_NAME,
             SKILL_LOAD_TOOL_NAME,
             PLAN_ENTER_TOOL_NAME,
@@ -1048,6 +1055,12 @@ public class AgentFactoryImpl implements AgentFactory {
      */
     @Resource
     private SubmitTrainingPlanTool submitTrainingPlanTool;
+
+    /**
+     * 逐条登记训练任务工具，只给计划 Agent 用。
+     */
+    @Resource
+    private AddTrainingTaskTool addTrainingTaskTool;
 
     /**
      * 列出待提醒用户工具，只给提醒 Agent 用。
@@ -1080,6 +1093,7 @@ public class AgentFactoryImpl implements AgentFactory {
         // 计划 Agent 只需要「读薄弱点 + 提交计划」两个业务工具，其余能力由框架工具提供。
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(getWeakPointsTool);
+        toolkit.registerTool(addTrainingTaskTool);
         toolkit.registerTool(submitTrainingPlanTool);
         HarnessAgent agent = HarnessAgent.Builder
                 // 与助手、面试官共用同一套底层装配：自动召回照常（多一个背景参考），F7 只是不写记忆
