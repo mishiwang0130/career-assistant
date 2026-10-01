@@ -126,4 +126,38 @@ describe('训练计划状态', () => {
 
     expect(store.unreadCount).toBe(1)
   })
+
+  it('生成流的 result 事件按协议解析后写回计划，页面随即有内容', () => {
+    const store = usePlanStore()
+    const event = JSON.stringify({ data: { type: 'training_plan', plan: buildPlan(false) } })
+
+    const payload = store.applyGenerationEvent('result', event)
+
+    expect(payload?.type).toBe('training_plan')
+    // 这条断言正是「F12 里能看到结果事件、页面却什么都没有」的回归保护：状态必须被写回。
+    expect(store.plan?.planId).toBe(3)
+    expect(store.plan?.days[0].tasks[0].topic).toBe('Redis 分布式锁')
+    expect(store.progress).toEqual({ total: 1, finished: 0, percent: 0 })
+  })
+
+  it('覆盖确认与放弃覆盖不写回计划内容，只回传结果类型', () => {
+    const store = usePlanStore()
+    const confirmEvent = JSON.stringify({
+      data: { type: 'plan_confirm_required', message: '已有计划', existingPlan: { planId: 3 } },
+    })
+    const rejectedEvent = JSON.stringify({ data: { type: 'plan_confirm_rejected', message: '已保留' } })
+
+    expect(store.applyGenerationEvent('result', confirmEvent)?.type).toBe('plan_confirm_required')
+    expect(store.applyGenerationEvent('result', rejectedEvent)?.type).toBe('plan_confirm_rejected')
+    expect(store.plan).toBeNull()
+  })
+
+  it('非 result 事件与非法 JSON 一律忽略，状态不受影响', () => {
+    const store = usePlanStore()
+    store.applyPlan(buildPlan(false))
+
+    expect(store.applyGenerationEvent('delta', '{"content":"x"}')).toBeNull()
+    expect(store.applyGenerationEvent('result', '{oops')).toBeNull()
+    expect(store.plan?.planId).toBe(3)
+  })
 })

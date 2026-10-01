@@ -224,7 +224,8 @@ function onGenerationEvent(event: string, data: string): void {
   if (event !== 'result') {
     return
   }
-  const payload = parsePlanResultEvent(data)
+  // 解析与写回状态统一交给 store：data 行是 `{"data": 结构化产物}`，解析口径有单测固定。
+  const payload = planStore.applyGenerationEvent(event, data)
   if (!payload) {
     return
   }
@@ -233,7 +234,6 @@ function onGenerationEvent(event: string, data: string): void {
     return
   }
   if (payload.type === 'training_plan') {
-    planStore.applyPlan(payload.plan)
     generationDialogVisible.value = false
     progressText.value = ''
     ElMessage.success('训练计划已生成')

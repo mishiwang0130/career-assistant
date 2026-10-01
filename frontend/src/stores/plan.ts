@@ -2,8 +2,8 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import * as planApi from '@/api/plan'
-import type { TrainingDayRespVO, TrainingPlanRespVO } from '@/types/plan'
-import { buildPlanProgress, type TrainingPlanProgress } from '@/utils/plan'
+import type { TrainingDayRespVO, TrainingPlanRespVO, TrainingPlanResultPayload } from '@/types/plan'
+import { buildPlanProgress, parsePlanResultEvent, type TrainingPlanProgress } from '@/utils/plan'
 
 /**
  * 训练计划状态。
@@ -115,6 +115,31 @@ export const usePlanStore = defineStore('plan', () => {
   }
 
   /**
+   * 处理生成流的 `result` 事件：命中训练计划结果时把计划写回状态。
+   *
+   * 解析口径固定在 {@link parsePlanResultEvent}（data 行是 `{"data": 结构化产物}`）。放在 store 里是为了让
+   * 「result 事件 → 状态 → 页面渲染」这条链有单测覆盖：之前把 data 行直接当产物解析，F12 里能看到结果事件，
+   * 页面却一直显示空状态。
+   *
+   * @param event 事件名
+   * @param data 事件的 data 行
+   * @returns 训练计划结果载荷，不是计划结果时返回 null
+   */
+  function applyGenerationEvent(event: string, data: string): TrainingPlanResultPayload | null {
+    if (event !== 'result') {
+      return null
+    }
+    const payload = parsePlanResultEvent(data)
+    if (!payload) {
+      return null
+    }
+    if (payload.type === 'training_plan') {
+      applyPlan(payload.plan)
+    }
+    return payload
+  }
+
+  /**
    * 找到某条任务所在的当天分组。
    *
    * @param taskId 任务 ID
@@ -148,6 +173,7 @@ export const usePlanStore = defineStore('plan', () => {
     toggleTask,
     markAllRead,
     applyPlan,
+    applyGenerationEvent,
     reset,
   }
 })
