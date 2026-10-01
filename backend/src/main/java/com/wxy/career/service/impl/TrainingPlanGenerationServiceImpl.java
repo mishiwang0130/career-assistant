@@ -577,6 +577,12 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
      * <p>回填走框架约定的消息元数据 {@code agentscope_confirm_results}：框架据此校验确认结果与待确认调用是否
      * 匹配，匹配后继续执行被挂起的工具调用。
      *
+     * <p>**消息角色必须是 USER**（框架给的示例也是 UserMessage）：框架在 {@code AgentBase.notifyPreCall} 里
+     * 明确禁止调用方 / 钩子把 SYSTEM 消息放进本次输入，一旦放了就抛
+     * 「Hooks must not inject SYSTEM messages into PreCallEvent.inputMessages」。这里之前把自动确认那一条
+     * 写成了 SYSTEM（name=system），于是「首次生成自动确认」这条链路每次都在续跑时被框架拒绝——
+     * 表现就是 thinking 之后报「计划生成失败」，而且后端日志里只有这条 IllegalStateException。
+     *
      * @param pending 待确认快照
      * @param auto 是否为服务端自动确认（首次生成）
      * @return 回填消息
@@ -592,8 +598,8 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
             results.add(new ConfirmResult(true, block));
         }
         return Msg.builder()
-                .name(auto ? "system" : USER_MESSAGE_NAME)
-                .role(auto ? MsgRole.SYSTEM : MsgRole.USER)
+                .name(USER_MESSAGE_NAME)
+                .role(MsgRole.USER)
                 .textContent(auto ? "已确认写入计划" : "用户已确认覆盖当前计划")
                 .metadata(Map.of(Msg.METADATA_CONFIRM_RESULTS, results))
                 .build();

@@ -23,6 +23,7 @@ import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -209,6 +210,9 @@ class TrainingPlanGenerationServiceImplTest {
         assertThat(confirmResult.isConfirmed()).isTrue();
         assertThat(confirmResult.getToolCall().getId()).isEqualTo("call-1");
         assertThat(confirmResult.getToolCall().getName()).isEqualTo("submit_training_plan");
+        // 回填消息必须是 USER 角色：框架禁止把 SYSTEM 消息放进本次输入
+        // （Hooks must not inject SYSTEM messages into PreCallEvent.inputMessages）。
+        assertThat(confirmMessages.get(0).getRole()).isEqualTo(MsgRole.USER);
     }
 
     /**
