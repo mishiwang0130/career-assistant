@@ -25,9 +25,12 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
+import io.agentscope.core.event.ToolResultEndEvent;
+import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.message.ToolResultState;
 import io.agentscope.harness.agent.HarnessAgent;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -43,6 +46,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -106,6 +110,11 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
      * 超过就不再自动放行，直接报错结束本轮，避免任何形式的确认死循环。
      */
     private static final int MAX_REPEAT_SUBMIT = 3;
+
+    /**
+     * 工具返回正文写进日志时的截断长度。
+     */
+    private static final int LOG_RESULT_MAX_LENGTH = 500;
 
     /**
      * Agent 工厂。
@@ -280,6 +289,17 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
     private void onNext(StreamState state, AgentEvent event) {
         if (state.terminated.get()) {
             return;
+        }
+        // 工具结果的正文只以增量事件下发，这里先按 toolCallId 攒起来：工具失败时把它打进日志，
+        // 否则框架只留下 state=ERROR，业务侧看不出模型到底传了什么、框架为什么判失败。
+        if (event instanceof ToolResultTextDeltaEvent toolText) {
+            state.appendToolOutput(toolText.getToolCallId(), toolText.getDelta());
+        }
+        if (event instanceof ToolResultEndEvent toolEnd
+                && toolEnd.getState() != null && toolEnd.getState() != ToolResultState.SUCCESS) {
+            log.warn("计划 Agent 的工具有未成功的返回，userId={}，tool={}，state={}，result={}",
+                    state.userId, toolEnd.getToolCallName(), toolEnd.getState(),
+                    truncateForLog(state.takeToolOutput(toolEnd.getToolCallId())));
         }
         // 写工具触发的权限确认：这就是 HITL 的入口——先把草稿交给用户确认，确认前一个字都不落库。
         if (event instanceof RequireUserConfirmEvent confirmEvent) {
@@ -598,6 +618,21 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
     }
 
     /**
+     * 截断日志里的工具返回正文。
+     *
+     * @param text 工具返回正文
+     * @return 截断后的文本
+     */
+    private String truncateForLog(String text) {
+        if (!StringUtils.hasText(text)) {
+            return "<empty>";
+        }
+        String stripped = text.strip();
+        return stripped.length() <= LOG_RESULT_MAX_LENGTH
+                ? stripped : stripped.substring(0, LOG_RESULT_MAX_LENGTH) + "…";
+    }
+
+    /**
      * 校验天数与每日时长是否落在配置边界内。
      *
      * @param days 天数
@@ -766,6 +801,11 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         private final AtomicInteger repeatSubmitCount = new AtomicInteger();
 
         /**
+         * 按 toolCallId 攒起来的工具返回正文，只在工具失败时取出来写日志。
+         */
+        private final Map<String, StringBuilder> toolOutputs = new ConcurrentHashMap<>();
+
+        /**
          * 订阅代次：每次（重）订阅自增，只有最新一代的事件会改变流的状态。
          */
         private final AtomicInteger epoch = new AtomicInteger();
@@ -817,6 +857,33 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
             this.hasActivePlan = hasActivePlan;
             this.agent = agent;
             this.userApproved = userApproved;
+        }
+
+        /**
+         * 追加一段工具返回正文。
+         *
+         * @param toolCallId 工具调用 ID
+         * @param delta 增量文本
+         */
+        private void appendToolOutput(String toolCallId, String delta) {
+            if (!StringUtils.hasText(toolCallId) || delta == null) {
+                return;
+            }
+            toolOutputs.computeIfAbsent(toolCallId, key -> new StringBuilder()).append(delta);
+        }
+
+        /**
+         * 取走某个工具调用的返回正文（取走即清理，避免长会话里越攒越多）。
+         *
+         * @param toolCallId 工具调用 ID
+         * @return 工具返回正文，没有时返回 null
+         */
+        private String takeToolOutput(String toolCallId) {
+            if (!StringUtils.hasText(toolCallId)) {
+                return null;
+            }
+            StringBuilder builder = toolOutputs.remove(toolCallId);
+            return builder == null ? null : builder.toString();
         }
     }
 }

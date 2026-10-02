@@ -7,9 +7,13 @@ import com.wxy.career.service.TrainingReminderService;
 import com.wxy.career.vo.PlannedUsersResultVO;
 import com.wxy.career.vo.TrainingReminderSubmitVO;
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.tool.Toolkit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -106,6 +110,101 @@ class TrainingPlanToolTest {
         String message = submitTrainingPlanTool.submitTrainingPlan(null, null, runtimeContext);
 
         assertThat(message).contains("提交失败").contains("参数错误").contains("一天一行");
+    }
+
+    /**
+     * 提交工具的入参不能带 JSON Schema 类型约束（回归保护）。
+     *
+     * <p>声明成 {@code String} 时 schema 会带上 {@code type=string}，模型把正文写成数组/对象就会在**进入业务方法之前**
+     * 被框架判成 {@code state=ERROR}，业务日志里什么都没有，模型只能反复重试同一条坏入参。
+     */
+    @Test
+    void shouldKeepPlanContentParameterTypeFree() {
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(submitTrainingPlanTool);
+
+        Map<String, Object> parameters = toolkit.getTool("submit_training_plan").getParameters();
+        @SuppressWarnings("unchecked")
+        Map<Object, Object> properties = (Map<Object, Object>) parameters.get("properties");
+        assertThat(properties).containsKey("planContent");
+        @SuppressWarnings("unchecked")
+        Map<Object, Object> planContentParam = (Map<Object, Object>) properties.get("planContent");
+        assertThat(planContentParam).doesNotContainKey("type");
+    }
+
+    /**
+     * 模型把正文写成数组（一天一条）时也能归一化成正文。
+     *
+     * <p>入参声明成 Object 的目的就是让这些写法都进得来；声明成 String 时框架会在入参校验阶段直接判 ERROR，
+     * 业务日志里什么都看不到，模型只能反复重试同一条坏入参。
+     */
+    @Test
+    void shouldNormalizeContentWrittenAsArray() {
+        RuntimeContext runtimeContext = RuntimeContext.builder()
+                .userId("7")
+                .sessionId("training-plan-7")
+                .build();
+
+        String message = submitTrainingPlanTool.submitTrainingPlan(
+                List.of("第 1 天：Redis 分布式锁", "第 2 天：JVM 内存模型"), null, runtimeContext);
+
+        assertThat(message).contains("已保存");
+        verify(trainingPlanService).submitPlan(eq(7L), eq("training-plan-7"),
+                eq("第 1 天：Redis 分布式锁" + System.lineSeparator() + "第 2 天：JVM 内存模型"), isNull());
+    }
+
+    /**
+     * 模型把正文包在对象里、键名写成 snake_case 时也能取出来。
+     */
+    @Test
+    void shouldNormalizeContentWrappedInSnakeCaseField() {
+        RuntimeContext runtimeContext = RuntimeContext.builder()
+                .userId("7")
+                .sessionId("training-plan-7")
+                .build();
+
+        submitTrainingPlanTool.submitTrainingPlan(
+                Map.of("plan_content", "第 1 天：Redis 分布式锁"), "新增薄弱点", runtimeContext);
+
+        verify(trainingPlanService).submitPlan(eq(7L), eq("training-plan-7"),
+                eq("第 1 天：Redis 分布式锁"), eq("新增薄弱点"));
+    }
+
+    /**
+     * 模型按天给列表（每项是对象）时，拼成「第 N 天：……」的正文。
+     */
+    @Test
+    void shouldNormalizeDayListIntoContent() {
+        RuntimeContext runtimeContext = RuntimeContext.builder()
+                .userId("7")
+                .sessionId("training-plan-7")
+                .build();
+
+        submitTrainingPlanTool.submitTrainingPlan(
+                Map.of("days", List.of(
+                        Map.of("topic", "Redis 分布式锁"),
+                        Map.of("topic", "JVM 内存模型"))),
+                null, runtimeContext);
+
+        verify(trainingPlanService).submitPlan(eq(7L), eq("training-plan-7"),
+                eq("第 1 天：Redis 分布式锁" + System.lineSeparator() + "第 2 天：JVM 内存模型"), isNull());
+    }
+
+    /**
+     * 模型把整份入参写成 JSON 字符串时，先解一层再取正文。
+     */
+    @Test
+    void shouldNormalizeJsonStringPayload() {
+        RuntimeContext runtimeContext = RuntimeContext.builder()
+                .userId("7")
+                .sessionId("training-plan-7")
+                .build();
+
+        submitTrainingPlanTool.submitTrainingPlan(
+                "{\"planContent\":\"第 1 天：Redis 分布式锁\"}", null, runtimeContext);
+
+        verify(trainingPlanService).submitPlan(eq(7L), eq("training-plan-7"),
+                eq("第 1 天：Redis 分布式锁"), isNull());
     }
 
     /**
