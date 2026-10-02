@@ -13,6 +13,7 @@ import com.wxy.career.mapper.SysUserMapper;
 import com.wxy.career.po.SysUser;
 import com.wxy.career.service.AgentFactory;
 import com.wxy.career.service.SystemPromptProvider;
+import com.wxy.career.service.TrainingPlanService;
 import com.wxy.career.service.UserProfileService;
 import com.wxy.career.vo.UserProfileRespVO;
 import com.wxy.career.tool.GetInterviewStateTool;
@@ -27,7 +28,9 @@ import com.wxy.career.tool.SubmitResumeDiagnosisTool;
 import com.wxy.career.tool.SubmitTrainingPlanTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
+import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
@@ -53,11 +56,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -75,6 +80,16 @@ import static org.mockito.Mockito.when;
 class AgentFactoryHarnessTest {
 
     /**
+     * 测试用的计划正文（一天一行里的第 1 天），用于断言 HITL 确认后提交的正文没被改写。
+     */
+    private static final String PLAN_CONTENT = "第 1 天：Redis 分布式锁";
+
+    /**
+     * 与 {@link #PLAN_CONTENT} 对应的模型原始入参 JSON，模拟 DashScope 解析器回填的 ToolUseBlock.content。
+     */
+    private static final String PLAN_CONTENT_JSON = "{\"planContent\":\"" + PLAN_CONTENT + "\"}";
+
+    /**
      * 被测 Agent 工厂。
      */
     private AgentFactoryImpl agentFactory;
@@ -88,6 +103,16 @@ class AgentFactoryHarnessTest {
      * 技能仓库 stub，用于校验助手与子 Agent 各自能看到的技能集合。
      */
     private AgentSkillRepository agentSkillRepository;
+
+    /**
+     * 计划提交工具实例，测试里注入计划服务桩，用于断言 HITL 确认后工具真的执行了。
+     */
+    private SubmitTrainingPlanTool submitTrainingPlanTool;
+
+    /**
+     * 计划服务桩。
+     */
+    private TrainingPlanService trainingPlanService;
 
     /**
      * 初始化工厂依赖。
@@ -185,7 +210,11 @@ class AgentFactoryHarnessTest {
         ReflectionTestUtils.setField(agentFactory, "userLongTermMemoryAdapter", userLongTermMemoryAdapter);
         ReflectionTestUtils.setField(agentFactory, "submitInterviewReportTool", new SubmitInterviewReportTool());
         // F7：计划 Agent 的提交工具与提醒 Agent 的两个工具都要装配上。
-        ReflectionTestUtils.setField(agentFactory, "submitTrainingPlanTool", new SubmitTrainingPlanTool());
+        // 提交工具注入计划服务桩：确认之后的续跑要能断言工具真的被执行，而不是被框架的入参校验挡回来。
+        trainingPlanService = mock(TrainingPlanService.class);
+        submitTrainingPlanTool = new SubmitTrainingPlanTool();
+        ReflectionTestUtils.setField(submitTrainingPlanTool, "trainingPlanService", trainingPlanService);
+        ReflectionTestUtils.setField(agentFactory, "submitTrainingPlanTool", submitTrainingPlanTool);
         ReflectionTestUtils.setField(agentFactory, "listPlannedUsersTool", new ListPlannedUsersTool());
         ReflectionTestUtils.setField(agentFactory, "saveTrainingReminderTool", new SaveTrainingReminderTool());
         // 计划 Agent 的任务仓储用进程内实现：测试链路同样不往工作区落文件。
@@ -248,6 +277,114 @@ class AgentFactoryHarnessTest {
         assertThat(events).isNotNull();
         assertThat(events).anyMatch(event -> event instanceof RequireUserConfirmEvent);
         capturingModel.resetToolCall();
+    }
+
+    /**
+     * 用户确认后工具真的被执行：回填的确认结论必须带上 {@code content}（模型原始入参 JSON）。
+     *
+     * <p>框架会用确认结论里的工具调用**替换**上下文里的原始调用，再拿 {@code content} 做一次入参 schema 校验。
+     * 只带 {@code input} 时 {@code content} 为空，校验阶段就抛
+     * {@code Schema validation error: argument "content" is null}，工具根本进不来——线上表现就是「用户点了确认，
+     * 计划还是存不下去，模型反复重提同一份计划」。
+     */
+    @Test
+    void shouldExecutePlanToolWhenConfirmCarriesRawArguments() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME);
+        capturingModel.withToolCall("submit_training_plan", Map.of("planContent", PLAN_CONTENT));
+        RuntimeContext runtimeContext = RuntimeContext.builder()
+                .userId("1")
+                .sessionId("training-plan-1")
+                .build();
+        ToolUseBlock pending = waitForPlanConfirm(agent, runtimeContext);
+        // 续跑阶段模型只回一句收尾文本，避免它又发起一次工具调用。
+        capturingModel.resetToolCall();
+
+        agent.streamEvents(confirmMessage(resumedBlock(pending, PLAN_CONTENT_JSON)), runtimeContext)
+                .collectList()
+                .block();
+
+        verify(trainingPlanService).submitPlan(1L, "training-plan-1", PLAN_CONTENT, null);
+    }
+
+    /**
+     * 反向断言：回填的工具调用缺 {@code content} 时，框架在进工具之前就判 ERROR，业务一次都不会被调用。
+     *
+     * <p>这条固定住「为什么要带 content」这个约定，避免后续有人图省事只回填结构化入参。
+     */
+    @Test
+    void shouldNotExecutePlanToolWhenConfirmLacksRawArguments() {
+        HarnessAgent agent = agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME);
+        capturingModel.withToolCall("submit_training_plan", Map.of("planContent", PLAN_CONTENT));
+        RuntimeContext runtimeContext = RuntimeContext.builder()
+                .userId("1")
+                .sessionId("training-plan-2")
+                .build();
+        ToolUseBlock pending = waitForPlanConfirm(agent, runtimeContext);
+        capturingModel.resetToolCall();
+
+        List<AgentEvent> events = agent.streamEvents(confirmMessage(resumedBlock(pending, null)), runtimeContext)
+                .collectList()
+                .block();
+
+        assertThat(events).isNotNull();
+        String toolText = events.stream()
+                .filter(ToolResultTextDeltaEvent.class::isInstance)
+                .map(event -> ((ToolResultTextDeltaEvent) event).getDelta())
+                .collect(Collectors.joining());
+        assertThat(toolText).contains("Parameter validation failed");
+        verify(trainingPlanService, never()).submitPlan(anyLong(), anyString(), anyString(), any());
+    }
+
+    /**
+     * 跑第一轮生成，取出框架抛出的待确认工具调用。
+     *
+     * @param agent 计划 Agent
+     * @param runtimeContext 运行时上下文
+     * @return 待确认的工具调用
+     */
+    private ToolUseBlock waitForPlanConfirm(HarnessAgent agent, RuntimeContext runtimeContext) {
+        List<AgentEvent> events = agent.streamEvents(
+                        Msg.builder().name("user").role(MsgRole.USER).textContent("生成训练计划").build(),
+                        runtimeContext)
+                .collectList()
+                .block();
+        assertThat(events).isNotNull();
+        return events.stream()
+                .filter(RequireUserConfirmEvent.class::isInstance)
+                .map(event -> ((RequireUserConfirmEvent) event).getToolCalls().get(0))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("没有等到写工具的确认请求"));
+    }
+
+    /**
+     * 按服务端确认回填的口径重建工具调用。
+     *
+     * @param pending 待确认调用
+     * @param content 要带回的原始入参 JSON，传 null 表示故意不带
+     * @return 重建后的工具调用
+     */
+    private ToolUseBlock resumedBlock(ToolUseBlock pending, String content) {
+        return ToolUseBlock.builder()
+                .id(pending.getId())
+                .name(pending.getName())
+                .content(content)
+                .input(pending.getInput())
+                .build();
+    }
+
+    /**
+     * 组装确认回填消息（与 TrainingPlanGenerationServiceImpl 的确认口径一致）。
+     *
+     * @param block 重建后的工具调用
+     * @return 回填消息
+     */
+    private Msg confirmMessage(ToolUseBlock block) {
+        return Msg.builder()
+                .name("user")
+                .role(MsgRole.USER)
+                .textContent("用户已确认，请保存这份计划")
+                .metadata(Map.of(Msg.METADATA_CONFIRM_RESULTS, List.of(new ConfirmResult(true, block))))
+                .build();
     }
 
     /**

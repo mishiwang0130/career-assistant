@@ -529,16 +529,26 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
      * <p>回填走框架约定的消息元数据 {@code agentscope_confirm_results}，且**消息角色必须是 USER**：
      * 框架在 {@code AgentBase.notifyPreCall} 里禁止本次输入里出现 SYSTEM 消息。
      *
+     * <p>重建的工具调用必须同时带上 {@code content}（模型原始入参 JSON 字符串）：框架会用确认结论里的这个块
+     * **替换**上下文里的原始工具调用，并在真正执行工具前拿 {@code content} 做一次入参 schema 校验。只带
+     * {@code input} 时 {@code content} 为空，校验阶段就抛
+     * {@code Schema validation error: argument "content" is null}，工具根本进不来——表现就是确认之后计划永远
+     * 存不下去、模型反复重提同一条调用。
+     *
      * @param pending 待确认快照
      * @return 回填消息
      */
     private Msg confirmMessage(PendingPlanConfirmVO pending) {
         List<ConfirmResult> results = new ArrayList<>(pending.getToolCalls().size());
         for (PendingPlanToolCallVO toolCall : pending.getToolCalls()) {
+            Map<String, Object> input = readInput(toolCall.getInputJson());
             ToolUseBlock block = ToolUseBlock.builder()
                     .id(toolCall.getId())
                     .name(toolCall.getName())
-                    .input(readInput(toolCall.getInputJson()))
+                    // 快照里没存到原始正文时用结构化入参的序列化结果兜底，保证校验用的 JSON 一定存在。
+                    .content(StringUtils.hasText(toolCall.getContent())
+                            ? toolCall.getContent() : writeInput(input))
+                    .input(input)
                     .build();
             results.add(new ConfirmResult(true, block));
         }
@@ -563,6 +573,8 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
             PendingPlanToolCallVO snapshot = new PendingPlanToolCallVO();
             snapshot.setId(block.getId());
             snapshot.setName(block.getName());
+            // 原始正文与结构化入参都要留：前者给框架做入参校验，后者给工具方法绑定参数。
+            snapshot.setContent(block.getContent());
             snapshot.setInputJson(writeInput(block.getInput()));
             pending.getToolCalls().add(snapshot);
         }

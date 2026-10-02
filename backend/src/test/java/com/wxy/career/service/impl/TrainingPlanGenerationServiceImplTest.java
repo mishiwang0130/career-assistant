@@ -227,6 +227,9 @@ class TrainingPlanGenerationServiceImplTest {
 
     /**
      * 回填的确认结论必须是 USER 角色且带 ConfirmResult（框架禁止 SYSTEM 消息进入本次输入）。
+     *
+     * <p>同时断言重建的工具调用带上了模型原始入参 JSON（{@code content}）：框架执行前拿它做入参 schema 校验，
+     * 只带 {@code input} 时会在校验阶段报 {@code argument "content" is null}，工具永远进不来。
      */
     @Test
     void shouldCarryConfirmResultsOnResume() {
@@ -251,6 +254,38 @@ class TrainingPlanGenerationServiceImplTest {
         Object rawResults = confirmMessage.getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
         assertThat(rawResults).isInstanceOf(List.class);
         assertThat(((List<?>) rawResults).get(0)).isInstanceOf(ConfirmResult.class);
+        ToolUseBlock resumed = ((ConfirmResult) ((List<?>) rawResults).get(0)).getToolCall();
+        assertThat(resumed.getContent()).isNotBlank();
+        assertThat(resumed.getInput()).containsKey("planContent");
+    }
+
+    /**
+     * 快照里没存到模型原始正文时，也要用结构化入参兜底出 {@code content}，否则框架的入参校验同样过不去。
+     */
+    @Test
+    void shouldFallBackToInputJsonWhenSnapshotHasNoRawContent() {
+        PendingPlanConfirmVO pending = buildPending();
+        pending.getToolCalls().get(0).setContent(null);
+        when(planConfirmStore.takePending(1L)).thenReturn(pending);
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        HarnessAgent planner = mock(HarnessAgent.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        when(planner.getName()).thenReturn("planner");
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        when(planner.streamEvents(anyList(), any(RuntimeContext.class))).thenReturn(Flux.<AgentEvent>empty());
+        SseEmitterSupport support = mock(SseEmitterSupport.class);
+        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
+        TrainingPlanGenerationServiceImpl spiedService = org.mockito.Mockito.spy(generationService);
+        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
+
+        spiedService.confirm(buildConfirm(true));
+
+        ArgumentCaptor<List<Msg>> captor = ArgumentCaptor.forClass(List.class);
+        verify(planner, org.mockito.Mockito.timeout(3000))
+                .streamEvents(captor.capture(), any(RuntimeContext.class));
+        Object rawResults = captor.getValue().get(0).getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
+        ToolUseBlock resumed = ((ConfirmResult) ((List<?>) rawResults).get(0)).getToolCall();
+        assertThat(resumed.getContent()).isEqualTo(
+                "{\"planContent\":\"第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步\"}");
     }
 
     /**
@@ -448,6 +483,9 @@ class TrainingPlanGenerationServiceImplTest {
     /**
      * 构造框架抛出的「写工具待确认」事件，入参里带计划正文草稿。
      *
+     * <p>按真实链路填上 {@code content}：模型返回的工具调用由 DashScope 解析器带上原始入参 JSON，
+     * 框架暂停确认前不会做入参校验，所以这一份必须原样留到确认回填时用。
+     *
      * @return 确认事件
      */
     private RequireUserConfirmEvent buildConfirmEvent() {
@@ -455,6 +493,7 @@ class TrainingPlanGenerationServiceImplTest {
                 .id("call-1")
                 .name("submit_training_plan")
                 .input(Map.of("planContent", "第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步"))
+                .content("{\"planContent\":\"第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步\"}")
                 .build();
         return new RequireUserConfirmEvent("reply-1", List.of(toolUse));
     }
@@ -468,6 +507,7 @@ class TrainingPlanGenerationServiceImplTest {
         PendingPlanToolCallVO toolCall = new PendingPlanToolCallVO();
         toolCall.setId("call-1");
         toolCall.setName("submit_training_plan");
+        toolCall.setContent("{\"planContent\":\"第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步\"}");
         toolCall.setInputJson("{\"planContent\":\"第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步\"}");
         PendingPlanConfirmVO pending = new PendingPlanConfirmVO();
         pending.setReplyId("reply-1");
