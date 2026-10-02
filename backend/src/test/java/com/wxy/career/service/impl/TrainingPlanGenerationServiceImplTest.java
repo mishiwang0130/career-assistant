@@ -40,6 +40,7 @@ import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -156,6 +157,45 @@ class TrainingPlanGenerationServiceImplTest {
     }
 
     /**
+     * 收到确认请求时**不能取消框架的事件流**（回归保护）。
+     *
+     * <p>框架把「挂起的待确认调用」写进 AgentState（Redis）发生在这一轮流自然收尾之后；服务端如果在收到
+     * `RequireUserConfirmEvent` 时就把订阅 dispose 掉，状态永远不落库，下一阶段的 confirm 会被框架当成**全新一轮**，
+     * 模型重新规划 → 再弹确认 —— 表现就是「点完确认又弹出确认」的死循环。
+     */
+    @Test
+    void shouldKeepFrameworkStreamAliveWhenAskingForConfirmation() throws Exception {
+        when(userProfileService.getRequiredUserProfile(1L)).thenReturn(buildProfile());
+        when(planConfirmStore.markGenerating(1L)).thenReturn(true);
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        HarnessAgent planner = mock(HarnessAgent.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        when(planner.getName()).thenReturn("planner");
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        // 模拟框架时序：先抛确认事件，随后由框架自己收尾（收尾这一步才是落状态的地方）。
+        AtomicBoolean frameworkFinished = new AtomicBoolean(false);
+        when(planner.streamEvents(anyList(), any(RuntimeContext.class)))
+                .thenReturn(Flux.concat(
+                        Flux.just(buildConfirmEvent()),
+                        Flux.defer(() -> {
+                            frameworkFinished.set(true);
+                            return Flux.empty();
+                        })));
+        SseEmitterSupport support = mock(SseEmitterSupport.class);
+        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
+        TrainingPlanGenerationServiceImpl spiedService = org.mockito.Mockito.spy(generationService);
+        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
+
+        assertThat(spiedService.generate(buildRequest())).isNotNull();
+
+        verify(support, org.mockito.Mockito.timeout(3000)).sendDone();
+        long deadline = System.currentTimeMillis() + 3000;
+        while (!frameworkFinished.get() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(frameworkFinished).isTrue();
+    }
+
+    /**
      * 用户确认之后：回填确认结论继续同一次运行，落库的计划随 result 下发。
      */
     @Test
@@ -211,6 +251,41 @@ class TrainingPlanGenerationServiceImplTest {
         Object rawResults = confirmMessage.getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
         assertThat(rawResults).isInstanceOf(List.class);
         assertThat(((List<?>) rawResults).get(0)).isInstanceOf(ConfirmResult.class);
+    }
+
+    /**
+     * 用户确认之后再遇到写工具确认请求：直接放行继续跑，**不再弹第二次确认**。
+     *
+     * <p>这是「点确认后又弹确认」的第二层保护：模型在续跑阶段重提计划时，服务端不该再打扰用户。
+     */
+    @Test
+    void shouldNotAskAgainAfterUserAlreadyApproved() {
+        when(planConfirmStore.takePending(1L)).thenReturn(buildPending());
+        when(trainingPlanService.hasActivePlan(1L)).thenReturn(false);
+        HarnessAgent planner = mock(HarnessAgent.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        when(planner.getName()).thenReturn("planner");
+        when(agentFactory.getAgent(AgentFactory.PLANNER_AGENT_NAME)).thenReturn(planner);
+        // 续跑阶段模型又调了一次写工具：应被自动放行，随后这一轮流正常收尾。
+        when(planner.streamEvents(anyList(), any(RuntimeContext.class)))
+                .thenReturn(Flux.just(buildConfirmEvent()), Flux.<AgentEvent>empty());
+        TrainingPlanRespVO saved = new TrainingPlanRespVO();
+        saved.setHasPlan(Boolean.TRUE);
+        saved.setPlanId(66L);
+        saved.setPlanContent("第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步");
+        when(trainingPlanService.consumeSubmittedPlan(1L, "training-plan-1")).thenReturn(saved);
+        SseEmitterSupport support = mock(SseEmitterSupport.class);
+        when(support.getEmitter()).thenReturn(mock(SseEmitter.class));
+        TrainingPlanGenerationServiceImpl spiedService = org.mockito.Mockito.spy(generationService);
+        org.mockito.Mockito.doReturn(support).when(spiedService).createEmitterSupport();
+
+        assertThat(spiedService.confirm(buildConfirm(true))).isNotNull();
+
+        ArgumentCaptor<Object> payloadCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(support, org.mockito.Mockito.timeout(3000)).sendResult(payloadCaptor.capture());
+        Map<?, ?> payload = (Map<?, ?>) payloadCaptor.getValue();
+        assertThat(payload.get("type")).isEqualTo("training_plan");
+        // 自动放行路径不会再写一次待确认快照，也就不会再下发确认请求。
+        verify(planConfirmStore, never()).savePending(anyLong(), any(PendingPlanConfirmVO.class));
     }
 
     /**

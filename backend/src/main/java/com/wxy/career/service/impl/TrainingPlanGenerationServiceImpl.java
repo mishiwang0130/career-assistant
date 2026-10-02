@@ -100,6 +100,14 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
     private static final int DRAFT_PREVIEW_MAX_LENGTH = 1200;
 
     /**
+     * 用户已经确认过保存后，模型在同一轮里再次提交计划的自动放行次数上限。
+     *
+     * <p>正常路径下写工具只会被调用一次（确认 → 执行 → 模型收尾）；这里留一点余量覆盖「模型重新提交一次」的情形，
+     * 超过就不再自动放行，直接报错结束本轮，避免任何形式的确认死循环。
+     */
+    private static final int MAX_REPEAT_SUBMIT = 3;
+
+    /**
      * Agent 工厂。
      */
     @Resource
@@ -222,7 +230,8 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
             support.sendDone();
             return support.getEmitter();
         }
-        StreamState state = new StreamState(support, userId, sessionId, hasActivePlan(userId), agent);
+        // 标记为「用户已确认」：续跑阶段模型若再次触发写工具确认，不再打扰用户，直接回填确认继续。
+        StreamState state = new StreamState(support, userId, sessionId, hasActivePlan(userId), agent, true);
         state.requestMessages = List.of(confirmMessage(pending));
         subscribe(state, agent.streamEvents(state.requestMessages, runtimeContext(state)));
         return support.getEmitter();
@@ -302,11 +311,31 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
     /**
      * 处理写工具的权限确认请求：把计划草稿下发给前端并结束本次流，等用户确认。
      *
+     * <p>这里**绝对不能主动 dispose 上游订阅**。框架把「挂起的待确认工具调用」写进 AgentState（Redis）这一步，
+     * 发生在这一轮流自然收尾之后（`RequestStopEvent` → 流 complete → 保存状态）；提前取消订阅会让状态根本没落库，
+     * 下一阶段的 `confirm` 会被框架当成**全新一轮**（pending 为空、asking 为空），模型只看到一句
+     * 「用户已确认，请保存这份计划」，于是重新规划、再次触发确认 —— 表现就是「点确认后又弹确认」的死循环。
+     * 现在由框架自己把这一轮流收完并落状态，服务端只负责下发 result 与 done。
+     *
      * @param state 流式状态
      * @param confirmEvent 确认事件
      */
     private void onRequireConfirm(StreamState state, RequireUserConfirmEvent confirmEvent) {
         PendingPlanConfirmVO pending = toPendingConfirm(confirmEvent);
+        // 用户已经确认过保存：本轮里模型再提交一次（重试或重排）不再打扰用户，直接回填确认继续跑。
+        if (state.userApproved) {
+            if (state.repeatSubmitCount.incrementAndGet() > MAX_REPEAT_SUBMIT) {
+                log.warn("确认保存后模型重复提交计划次数异常，userId={}，count={}",
+                        state.userId, state.repeatSubmitCount.get());
+                finish(state, STREAM_ERROR_MESSAGE);
+                return;
+            }
+            log.info("确认保存后模型再次提交计划，自动放行，userId={}，count={}",
+                    state.userId, state.repeatSubmitCount.get());
+            state.requestMessages = List.of(confirmMessage(pending));
+            subscribe(state, state.agent.streamEvents(state.requestMessages, runtimeContext(state)));
+            return;
+        }
         planConfirmStore.savePending(state.userId, pending);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "plan_confirm_required");
@@ -316,7 +345,6 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         payload.put("draftContent", draftContent(pending));
         payload.put("existingPlan", currentPlanSummary(state.userId));
         state.terminated.set(true);
-        dispose(state);
         planConfirmStore.releaseGenerating(state.userId);
         state.support.sendResult(payload);
         state.support.sendDone();
@@ -726,6 +754,18 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
         private final AtomicBoolean retryAttempted = new AtomicBoolean();
 
         /**
+         * 本次运行是否处于「用户已确认保存」之后的续跑阶段。
+         *
+         * <p>为 true 时模型再次触发写工具确认不再下发确认请求，直接回填确认继续，避免重复打扰用户。
+         */
+        private final boolean userApproved;
+
+        /**
+         * 确认后续跑阶段里模型重复提交计划的次数（用于兜住极端情况下的死循环）。
+         */
+        private final AtomicInteger repeatSubmitCount = new AtomicInteger();
+
+        /**
          * 订阅代次：每次（重）订阅自增，只有最新一代的事件会改变流的状态。
          */
         private final AtomicInteger epoch = new AtomicInteger();
@@ -756,11 +796,27 @@ public class TrainingPlanGenerationServiceImpl implements TrainingPlanGeneration
          */
         StreamState(SseEmitterSupport support, Long userId, String sessionId,
                 Boolean hasActivePlan, HarnessAgent agent) {
+            this(support, userId, sessionId, hasActivePlan, agent, false);
+        }
+
+        /**
+         * 构造流式状态（可标记是否处于用户已确认后的续跑阶段）。
+         *
+         * @param support SSE 推送封装
+         * @param userId 用户 ID
+         * @param sessionId 运行标识
+         * @param hasActivePlan 是否已有生效计划
+         * @param agent 计划 Agent
+         * @param userApproved 用户是否已经确认保存
+         */
+        StreamState(SseEmitterSupport support, Long userId, String sessionId,
+                Boolean hasActivePlan, HarnessAgent agent, boolean userApproved) {
             this.support = support;
             this.userId = userId;
             this.sessionId = sessionId;
             this.hasActivePlan = hasActivePlan;
             this.agent = agent;
+            this.userApproved = userApproved;
         }
     }
 }
