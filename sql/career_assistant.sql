@@ -123,9 +123,6 @@ CREATE TABLE IF NOT EXISTS `chat_session` (
     `title`           VARCHAR(100) NOT NULL COMMENT '会话标题',
     `last_message_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '最近一条用户消息时间',
     `status`          VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE' COMMENT '会话状态：ACTIVE-正常，预留归档',
-    `archive_status`   VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT '记忆归档状态：PENDING-待归档，DONE-已归档，FAILED-重试超限',
-    `archive_time`     DATETIME     DEFAULT NULL COMMENT '记忆归档完成时间，NULL 表示未归档成功',
-    `archive_attempts` INT          NOT NULL DEFAULT 0 COMMENT '记忆归档尝试次数，达到配置上限时状态置 FAILED',
     `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `create_by`       BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
     `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -141,25 +138,6 @@ CREATE TABLE IF NOT EXISTS `chat_session` (
 -- M16 存量环境同步：会话 ID 由字符串改为 chat_session.id（历史消息数据已清空，不做数据迁移）
 -- 新建库无需执行：上面的建表语句已经使用 BIGINT，本语句重复执行结果一致
 ALTER TABLE `assistant_message` MODIFY COLUMN `session_id` BIGINT NOT NULL COMMENT '会话ID，关联 chat_session.id';
-
--- 会话归档总结（记忆写入）存量环境同步：为 chat_session 补三列归档标记。
--- 新建库由上面的建表语句带出，这里用 information_schema 判断后再 ALTER，保证脚本可以重复执行。
-SET @archive_column_exists = (
-    SELECT COUNT(*)
-    FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE()
-      AND TABLE_NAME = 'chat_session'
-      AND COLUMN_NAME = 'archive_status'
-);
-SET @archive_column_ddl = IF(@archive_column_exists = 0,
-    'ALTER TABLE `chat_session`
-        ADD COLUMN `archive_status` VARCHAR(16) NOT NULL DEFAULT ''PENDING'' COMMENT ''记忆归档状态：PENDING-待归档，DONE-已归档，FAILED-重试超限'',
-        ADD COLUMN `archive_time` DATETIME DEFAULT NULL COMMENT ''记忆归档完成时间，NULL 表示未归档成功'',
-        ADD COLUMN `archive_attempts` INT NOT NULL DEFAULT 0 COMMENT ''记忆归档尝试次数，达到配置上限时状态置 FAILED''',
-    'SELECT 1');
-PREPARE archive_column_stmt FROM @archive_column_ddl;
-EXECUTE archive_column_stmt;
-DEALLOCATE PREPARE archive_column_stmt;
 
 -- ===== F4 求职目标 =====
 
@@ -840,3 +818,26 @@ VALUES ('training-planning',
         '你正在执行「训练计划排期口径」：把用户给的「还有几天、每天能练多久」翻译成一份简短的按天计划正文。口径如下，不要输出本规范的标题或内部字段。\n\n# 一、正文怎么写（核心：短）\n1. 一天一行，格式固定成「第 N 天：<今天练什么>」。正文里**只写每天做什么，一句话概括**，例如：\n   第 1 天：Redis 分布式锁——能讲清加锁、续期、释放三步\n   第 2 天：JVM 内存模型——能画出堆/栈/方法区并解释对象分配\n2. 不要写题型、难度分档、时长分钟数、字段清单或表格：每天的时长由系统按用户输入展示，正文只回答「今天干什么」。\n3. 整份正文尽量短：除了每天那几行，最多再写一句总起（例如「这次优先补三个薄弱点，每天一小时」），不要展开讲知识点内容。\n4. 正文用 Markdown，每天一行；不要输出工具名、内部字段名，也不写「接下来我将」「已加载」这类过程话术。\n\n# 二、每天安排什么（薄弱点优先）\n1. 先用只读工具读该用户当前的薄弱点与掌握度：掌握度低或最近一次判定答错的知识点排在前面。\n2. 知识点名称尽量沿用工具返回的原始名称，方便用户回看时对得上。\n3. 掌握度已经不错的主题只在最后安排一天快速回顾，不重复堆。\n4. 没有薄弱点记录时按目标岗位的常见考点安排，并说明「还没有练习记录，本计划以目标岗位为准」，不要编造薄弱点。\n5. 天数多于薄弱点数量时，靠后的天安排复习或相近主题的延伸，不要为了凑天数编造无关内容。\n\n# 三、重新规划怎么办\n1. 说清依据：哪几个知识点成了新的薄弱点、哪些已经掌握、还剩多少天——一句话写在正文开头。\n2. 仍要补的知识点继续排，只调整顺序与详略；不要推倒重来。\n\n# 四、底线\n1. 不编造用户的经历、可用时长与练习记录；用户说几天就几天。\n2. 不承诺「包过」「必中」，也不写刷题量承诺。',
         'f7-training-planning')
 ON DUPLICATE KEY UPDATE `name` = `name`;
+
+-- =====================================================================
+-- 会话归档总结（记忆写入）：chat_session 追加三列归档标记
+-- =====================================================================
+-- 本段只追加自己的列，**不改上面任何已经执行过的历史语句**（共享文件约定：只追加、不重排、不修改别人的行，
+-- 见 docs/功能模块清单.md 第 10 节）。既有库与新建库都走下面这段 ALTER：
+-- 先查 information_schema，列不存在才 ADD COLUMN，因此整个脚本可以重复执行、不会因「列已存在」报错。
+SET @archive_column_exists = (
+    SELECT COUNT(*)
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'chat_session'
+      AND COLUMN_NAME = 'archive_status'
+);
+SET @archive_column_ddl = IF(@archive_column_exists = 0,
+    'ALTER TABLE `chat_session`
+        ADD COLUMN `archive_status` VARCHAR(16) NOT NULL DEFAULT ''PENDING'' COMMENT ''记忆归档状态：PENDING-待归档，DONE-已归档，FAILED-重试超限'',
+        ADD COLUMN `archive_time` DATETIME DEFAULT NULL COMMENT ''记忆归档完成时间，NULL 表示未归档成功'',
+        ADD COLUMN `archive_attempts` INT NOT NULL DEFAULT 0 COMMENT ''记忆归档尝试次数，达到配置上限时状态置 FAILED''',
+    'SELECT 1');
+PREPARE archive_column_stmt FROM @archive_column_ddl;
+EXECUTE archive_column_stmt;
+DEALLOCATE PREPARE archive_column_stmt;
