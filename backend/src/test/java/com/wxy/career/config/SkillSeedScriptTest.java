@@ -244,27 +244,35 @@ class SkillSeedScriptTest {
     }
 
     /**
-     * 验证建库脚本带上了会话归档标记三列，且存量环境同步可以重复执行。
+     * 验证会话归档标记三列是「末尾纯追加」进去的，且存量环境同步可以重复执行。
      *
      * <p>归档状态是「记忆写入的唯一路径」的进度记录：没有这三列，定时任务每次都会重复归档同一场会话。
-     * 新建库由 chat_session 建表语句带出；存量库用 information_schema 判断后再 ALTER，
-     * 保证整个脚本重复执行不会因「列已存在」报错。
+     * `sql/career_assistant.sql` 是共享文件（见 `docs/功能模块清单.md` 第 10 节），约定**只追加、不重排、
+     * 不修改别人的行**——历史语句在别人环境里已经执行过，改它不会生效还会掩盖真实结构。因此：
+     * chat_session 的建表语句保持原样，三列只在脚本末尾的新段里，用 information_schema 判断后幂等 ALTER。
      *
      * @throws Exception 读取脚本失败
      */
     @Test
-    void shouldSeedSessionArchiveColumnsIdempotently() throws Exception {
+    void shouldAppendSessionArchiveColumnsIdempotently() throws Exception {
         String script = Files.readString(SCRIPT_PATH, StandardCharsets.UTF_8);
 
+        // 只追加：已有的 chat_session 建表语句一个字都不能动。
         int start = script.indexOf("CREATE TABLE IF NOT EXISTS `chat_session`");
         assertThat(start).isGreaterThan(0);
         String tableDdl = script.substring(start, script.indexOf(") ENGINE", start));
-        assertThat(tableDdl).contains("`archive_status`", "`archive_time`", "`archive_attempts`");
-        assertThat(tableDdl).contains("PENDING").contains("DONE").contains("FAILED");
+        assertThat(tableDdl).doesNotContain("archive_status");
 
-        // 存量环境同步：先查 information_schema，再决定是否 ALTER。
-        assertThat(script).contains("information_schema.COLUMNS");
-        assertThat(script).contains("PREPARE archive_column_stmt");
-        assertThat(script).contains("DEALLOCATE PREPARE archive_column_stmt");
+        // 追加段在脚本末尾：三列 + information_schema 判断 + PREPARE/EXECUTE/DEALLOCATE，且不重复建表。
+        int sectionStart = script.lastIndexOf("会话归档总结（记忆写入）");
+        assertThat(sectionStart).isGreaterThan(0);
+        String archiveSection = script.substring(sectionStart);
+        assertThat(archiveSection)
+                .contains("`archive_status`", "`archive_time`", "`archive_attempts`")
+                .contains("PENDING", "DONE", "FAILED", "ADD COLUMN")
+                .contains("information_schema.COLUMNS")
+                .contains("PREPARE archive_column_stmt")
+                .contains("DEALLOCATE PREPARE archive_column_stmt");
+        assertThat(archiveSection).doesNotContain("CREATE TABLE");
     }
 }
