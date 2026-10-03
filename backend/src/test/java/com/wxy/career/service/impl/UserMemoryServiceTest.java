@@ -55,8 +55,8 @@ class UserMemoryServiceTest {
      */
     @Test
     void shouldNotWriteWithoutUserId() {
-        userMemoryService.rememberFact(null, "12", "正在准备秋招");
-        userMemoryService.rememberProfile(null, "12", "目标岗位是后端开发");
+        assertThat(userMemoryService.rememberFact(null, "12", "正在准备秋招")).isFalse();
+        assertThat(userMemoryService.rememberProfile(null, "12", "目标岗位是后端开发")).isFalse();
 
         verify(adapter, never()).recordForUser(any(), any(), anyString(), anyString());
     }
@@ -66,8 +66,8 @@ class UserMemoryServiceTest {
      */
     @Test
     void shouldSkipEmptyContent() {
-        userMemoryService.rememberFact(1L, "12", "   ");
-        userMemoryService.rememberProfile(1L, "12", null);
+        assertThat(userMemoryService.rememberFact(1L, "12", "   ")).isFalse();
+        assertThat(userMemoryService.rememberProfile(1L, "12", null)).isFalse();
 
         verify(adapter, never()).recordForUser(any(), any(), anyString(), anyString());
     }
@@ -80,7 +80,9 @@ class UserMemoryServiceTest {
         doThrow(new IllegalStateException("Mem0 不可用"))
                 .when(adapter).recordForUser(anyLong(), anyString(), anyString(), anyString());
 
-        userMemoryService.rememberFact(1L, "12", "Redis 分布式锁：已讲实现与续期，卡点在锁误删");
+        // 失败不抛异常，但要返回 false：会话归档据此判断是否留待下轮重试。
+        assertThat(userMemoryService.rememberFact(1L, "12", "Redis 分布式锁：已讲实现与续期，卡点在锁误删"))
+                .isFalse();
     }
 
     /**
@@ -88,7 +90,10 @@ class UserMemoryServiceTest {
      */
     @Test
     void shouldRememberFactThroughAdapter() {
-        userMemoryService.rememberFact(1L, "12", "Redis 分布式锁：已讲实现与续期，卡点在锁误删");
+        when(adapter.recordForUser(anyLong(), anyString(), anyString(), anyString())).thenReturn(true);
+
+        assertThat(userMemoryService.rememberFact(1L, "12", "Redis 分布式锁：已讲实现与续期，卡点在锁误删"))
+                .isTrue();
 
         verify(adapter).recordForUser(eq(1L), eq("12"), eq(UserLongTermMemoryAdapter.TYPE_FACT),
                 eq("Redis 分布式锁：已讲实现与续期，卡点在锁误删"));

@@ -49,7 +49,9 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
             // F7：计划 Agent 与提醒 Agent 都不是会话型，但各有一份提示词，必须在这里登记：
             // 漏登记会静默退回助手兜底提示词（日志里的「Agent 未登记提示词位置」），模型就不再按本模块的规则走。
             AgentFactory.PLANNER_AGENT_NAME, "classpath:prompts/planner.md",
-            AgentFactory.REMINDER_AGENT_NAME, "classpath:prompts/reminder.md");
+            AgentFactory.REMINDER_AGENT_NAME, "classpath:prompts/reminder.md",
+            // 会话归档总结 Agent（记忆写入）：同样不是会话型，提示词文件早已存在，这里把位置与代码对上。
+            AgentFactory.SESSION_ARCHIVER_AGENT_NAME, "classpath:prompts/session-archiver.md");
 
     /**
      * 提示词文件缺失或读取失败时使用的兜底提示词。
@@ -217,6 +219,27 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
                不出现工具名与内部字段名。""";
 
     /**
+     * 会话归档总结 Agent 的兜底提示词。
+     *
+     * <p>与 {@code prompts/session-archiver.md} 同一套底线：只产出结论式记忆的 JSON，0~3 条、每条一句话，
+     * 不写流水账、不写能从系统查到的数据、不写偏好，也不推断用户没说过的事。文件缺失时兜底必须仍然守住
+     * 「只输出 JSON」与「记忆为 0 条是正常结果」这两条，否则平台侧会因解析失败反复重试。
+     */
+    private static final String DEFAULT_SESSION_ARCHIVER_PROMPT = """
+            你是会话归档员，负责在一场对话结束之后，把这场对话里「下次还用得上」的东西提炼成记忆。
+            你不和用户对话，只产出结论，使用简体中文。
+            要求：
+            1. 只输出一个 JSON 对象，形如 {"memories": ["……", "……"]}，不要加解释文字；
+               memories 为空数组是正常结果，这场对话没有值得长期留存的信息时就返回 {"memories": []}，不要凑数；
+            2. 最多 3 条，每条一句话、不超过 200 字，用陈述句，主语是用户或话题，不写「我」；
+            3. 值得记的只有三类：讲解进度（讲过了什么、讲到哪一步、还差哪一步）、卡点（哪一步没跟上、
+               反复追问什么）、用户自己说出来的背景（系统数据里没有的情况）；
+            4. 一条都不要写：过程流水账；能从系统查到的内容（掌握度、错题、简历原文、目标岗位、训练计划）；
+               寒暄、情绪、一次性查询；用户的偏好或讲法要求；
+            5. 只写这场对话里真实出现过的内容，不推断、不脑补；同一件事已经记过的不要重复写，
+               有进展就写成新的进度。""";
+
+    /**
      * Agent 配置，提供提示词文件位置。
      */
     @Resource
@@ -325,6 +348,10 @@ public class SystemPromptProviderImpl implements SystemPromptProvider {
         }
         if (AgentFactory.REMINDER_AGENT_NAME.equals(agentId)) {
             return DEFAULT_REMINDER_PROMPT;
+        }
+        // 会话归档总结：缺文件时必须退回自己的兜底，否则模型不按「只输出 JSON」的契约产出，归档会反复失败。
+        if (AgentFactory.SESSION_ARCHIVER_AGENT_NAME.equals(agentId)) {
+            return DEFAULT_SESSION_ARCHIVER_PROMPT;
         }
         return DEFAULT_PROMPT;
     }

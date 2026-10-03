@@ -10,8 +10,8 @@ package com.wxy.career.service;
  * 再经本接口写入。不写薄弱点（它落 MySQL 的 {@code knowledge_mastery}，是精确查询、不需要记忆库副本）；
  * 模型也没有写记忆的权限。
  *
- * <p>所有方法都遵守「Mem0 不可用时降级」的硬约束：召回失败返回空串，写入失败只记日志并留待补偿，
- * 不抛异常、不阻断业务主流程。
+ * <p>所有方法都遵守「Mem0 不可用时降级」的硬约束：召回失败返回空串，写入失败只记日志、不抛异常，
+ * 由调用方按返回值决定是否留待补偿——会话归档总结据此决定标记已归档还是下轮重试。
  *
  * @author wxy
  * @date 2026-09-29
@@ -24,8 +24,9 @@ public interface UserMemoryService {
      * @param userId 用户 ID
      * @param sessionId 会话 ID
      * @param content 画像内容，例如「目标岗位是后端开发，偏好 Java 生态」
+     * @return 写入成功返回 true；缺用户标识、内容为空或 Mem0 不可用时返回 false（不抛异常）
      */
-    void rememberProfile(Long userId, String sessionId, String content);
+    boolean rememberProfile(Long userId, String sessionId, String content);
 
     /**
      * 记录一条事实记忆（记忆类型 {@code FACT}）。
@@ -33,8 +34,9 @@ public interface UserMemoryService {
      * @param userId 用户 ID
      * @param sessionId 会话 ID
      * @param content 事实内容，例如「正在准备 2026 届秋招，投递方向是中间件」
+     * @return 写入成功返回 true；缺用户标识、内容为空或 Mem0 不可用时返回 false（不抛异常）
      */
-    void rememberFact(Long userId, String sessionId, String content);
+    boolean rememberFact(Long userId, String sessionId, String content);
 
     /**
      * 按当前问题召回该用户的长期记忆。

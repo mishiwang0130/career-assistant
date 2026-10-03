@@ -35,10 +35,11 @@ public class UserMemoryServiceImpl implements UserMemoryService {
      * @param userId 用户 ID
      * @param sessionId 会话 ID
      * @param content 画像内容
+     * @return 写入成功返回 true，跳过或失败返回 false
      */
     @Override
-    public void rememberProfile(Long userId, String sessionId, String content) {
-        write(userId, sessionId, null, content, UserLongTermMemoryAdapter.TYPE_PROFILE);
+    public boolean rememberProfile(Long userId, String sessionId, String content) {
+        return write(userId, sessionId, null, content, UserLongTermMemoryAdapter.TYPE_PROFILE);
     }
 
     /**
@@ -47,10 +48,11 @@ public class UserMemoryServiceImpl implements UserMemoryService {
      * @param userId 用户 ID
      * @param sessionId 会话 ID
      * @param content 事实内容
+     * @return 写入成功返回 true，跳过或失败返回 false
      */
     @Override
-    public void rememberFact(Long userId, String sessionId, String content) {
-        write(userId, sessionId, null, content, UserLongTermMemoryAdapter.TYPE_FACT);
+    public boolean rememberFact(Long userId, String sessionId, String content) {
+        return write(userId, sessionId, null, content, UserLongTermMemoryAdapter.TYPE_FACT);
     }
 
     /**
@@ -84,17 +86,19 @@ public class UserMemoryServiceImpl implements UserMemoryService {
      * @param knowledgePoint 知识点名称，画像与事实记忆为 null
      * @param content 记忆正文
      * @param memoryType 记忆类型
+     * @return 写入成功返回 true；跳过或异常兜底返回 false
      */
-    private void write(
+    private boolean write(
             Long userId, String sessionId, String knowledgePoint, String content, String memoryType) {
         if (userId == null || !StringUtils.hasText(content)) {
-            return;
+            return false;
         }
         try {
-            userLongTermMemoryAdapter.recordForUser(userId, sessionId, memoryType, content);
+            return userLongTermMemoryAdapter.recordForUser(userId, sessionId, memoryType, content);
         } catch (Exception exception) {
             log.warn("长期记忆写入异常，只记日志、留待补偿，userId={}，type={}，knowledgePoint={}，cause={}",
                     userId, memoryType, knowledgePoint, exception.getClass().getSimpleName());
+            return false;
         }
     }
 }

@@ -74,6 +74,15 @@ public interface AgentFactory {
     String REMINDER_AGENT_NAME = "reminder";
 
     /**
+     * 会话归档总结 Agent 名（F9 的记忆写入方）。
+     *
+     * <p>由归档定时任务现场调用，**不是会话**：它没有任何工具，也**不挂长期记忆**——模型只负责把
+     * 一场对话提炼成 0~3 条结论式记忆的 JSON，写入由平台侧解析后调用 {@code UserMemoryService} 完成，
+     * 因此模型始终没有写记忆的权限。
+     */
+    String SESSION_ARCHIVER_AGENT_NAME = "session-archiver";
+
+    /**
      * 按名字获取 Agent。
      *
      * @param agentName Agent 名

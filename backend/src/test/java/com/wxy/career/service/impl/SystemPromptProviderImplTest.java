@@ -6,6 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.core.io.Resource;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.charset.StandardCharsets;
@@ -307,6 +308,36 @@ class SystemPromptProviderImplTest {
     }
 
     /**
+     * 校验会话归档总结 Agent 读到自己的提示词，且缺文件时退回的兜底仍守住「只输出 JSON」这条硬契约。
+     *
+     * <p>归档提示词是平台侧 JSON 解析的输入契约：输出格式一旦漂移，解析会失败、会话反复重试直至 FAILED。
+     * 因此文件版与兜底版都要断言记忆条数上限、空数组是正常结果、以及不写偏好这三条。
+     *
+     * @throws Exception 读取配置文件失败
+     */
+    @Test
+    @DisplayName("归档总结提示词各取各的且兜底守住 JSON 契约")
+    void shouldLoadSessionArchiverPromptSeparately() throws Exception {
+        String filePrompt = readPromptFile("prompts/session-archiver.md");
+
+        SystemPromptProviderImpl provider = newProvider(PROMPT_LOCATION);
+        String archiverPrompt = provider.prompt(AgentFactory.SESSION_ARCHIVER_AGENT_NAME);
+        assertEquals(filePrompt.strip(), archiverPrompt, "归档总结 Agent 应原样读到自己的提示词文件");
+        assertTrue(archiverPrompt.contains("memories"), "归档提示词要写明 JSON 字段名");
+        assertTrue(archiverPrompt.contains("0 到 3 条"), "归档提示词要限制记忆条数");
+        assertTrue(archiverPrompt.contains("200 字"), "归档提示词要限制单条长度");
+
+        // 提示词文件缺失时兜底必须仍然是归档员，并且格式契约不能丢：
+        // 归档 Agent 的提示词位置在代码里登记，改 prompt-location 不会让它缺文件，因此这里换掉资源加载器来触发兜底。
+        String fallback = newMissingFileProvider()
+                .prompt(AgentFactory.SESSION_ARCHIVER_AGENT_NAME);
+        assertTrue(fallback.contains("memories"), "归档兜底提示词要写明 JSON 字段名");
+        assertTrue(fallback.contains("最多 3 条"), "归档兜底提示词要限制记忆条数");
+        assertTrue(fallback.contains("偏好"), "归档兜底提示词要排除偏好沉淀");
+        assertFalse(fallback.contains("求职智能助手"), "归档兜底不能变成助手角色");
+    }
+
+    /**
      * 构造只注入必要依赖的提示词提供者。
      *
      * @param location 提示词文件位置
@@ -318,6 +349,26 @@ class SystemPromptProviderImplTest {
         SystemPromptProviderImpl provider = new SystemPromptProviderImpl();
         ReflectionTestUtils.setField(provider, "agentProperties", agentProperties);
         ReflectionTestUtils.setField(provider, "resourceLoader", new DefaultResourceLoader());
+        return provider;
+    }
+
+    /**
+     * 构造一个「任何位置都读不到文件」的提示词提供者，用于真正走兜底分支。
+     *
+     * <p>子 Agent 的提示词位置在代码里登记，改 {@code app.agent.prompt-location} 影响不到它们，
+     * 因此这里换掉资源加载器，让文件读取必然失败。
+     *
+     * @return 提示词提供者
+     */
+    private SystemPromptProviderImpl newMissingFileProvider() {
+        SystemPromptProviderImpl provider = new SystemPromptProviderImpl();
+        ReflectionTestUtils.setField(provider, "agentProperties", new AgentProperties());
+        ReflectionTestUtils.setField(provider, "resourceLoader", new DefaultResourceLoader() {
+            @Override
+            public Resource getResource(String location) {
+                return new ClassPathResource("prompts/not-exists.md");
+            }
+        });
         return provider;
     }
 

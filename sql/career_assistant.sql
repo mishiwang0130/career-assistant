@@ -123,6 +123,9 @@ CREATE TABLE IF NOT EXISTS `chat_session` (
     `title`           VARCHAR(100) NOT NULL COMMENT '会话标题',
     `last_message_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '最近一条用户消息时间',
     `status`          VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE' COMMENT '会话状态：ACTIVE-正常，预留归档',
+    `archive_status`   VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT '记忆归档状态：PENDING-待归档，DONE-已归档，FAILED-重试超限',
+    `archive_time`     DATETIME     DEFAULT NULL COMMENT '记忆归档完成时间，NULL 表示未归档成功',
+    `archive_attempts` INT          NOT NULL DEFAULT 0 COMMENT '记忆归档尝试次数，达到配置上限时状态置 FAILED',
     `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `create_by`       BIGINT       NOT NULL DEFAULT 0 COMMENT '创建人ID，0表示系统或未登录',
     `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -138,6 +141,25 @@ CREATE TABLE IF NOT EXISTS `chat_session` (
 -- M16 存量环境同步：会话 ID 由字符串改为 chat_session.id（历史消息数据已清空，不做数据迁移）
 -- 新建库无需执行：上面的建表语句已经使用 BIGINT，本语句重复执行结果一致
 ALTER TABLE `assistant_message` MODIFY COLUMN `session_id` BIGINT NOT NULL COMMENT '会话ID，关联 chat_session.id';
+
+-- 会话归档总结（记忆写入）存量环境同步：为 chat_session 补三列归档标记。
+-- 新建库由上面的建表语句带出，这里用 information_schema 判断后再 ALTER，保证脚本可以重复执行。
+SET @archive_column_exists = (
+    SELECT COUNT(*)
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'chat_session'
+      AND COLUMN_NAME = 'archive_status'
+);
+SET @archive_column_ddl = IF(@archive_column_exists = 0,
+    'ALTER TABLE `chat_session`
+        ADD COLUMN `archive_status` VARCHAR(16) NOT NULL DEFAULT ''PENDING'' COMMENT ''记忆归档状态：PENDING-待归档，DONE-已归档，FAILED-重试超限'',
+        ADD COLUMN `archive_time` DATETIME DEFAULT NULL COMMENT ''记忆归档完成时间，NULL 表示未归档成功'',
+        ADD COLUMN `archive_attempts` INT NOT NULL DEFAULT 0 COMMENT ''记忆归档尝试次数，达到配置上限时状态置 FAILED''',
+    'SELECT 1');
+PREPARE archive_column_stmt FROM @archive_column_ddl;
+EXECUTE archive_column_stmt;
+DEALLOCATE PREPARE archive_column_stmt;
 
 -- ===== F4 求职目标 =====
 

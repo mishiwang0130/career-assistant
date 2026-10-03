@@ -63,9 +63,11 @@ class UserLongTermMemoryAdapterTest {
 
         String recalled = adapter.retrieve(message).block();
         adapter.record(List.of(message)).block();
-        adapter.recordForUser(1L, "12", UserLongTermMemoryAdapter.TYPE_FACT, "Redis 分布式锁：卡点在锁误删");
 
         assertThat(recalled).isEmpty();
+        // 写入路径同样降级：返回 false 让调用方（会话归档）知道这次没写进去，留待下轮重试。
+        assertThat(adapter.recordForUser(1L, "12", UserLongTermMemoryAdapter.TYPE_FACT, "Redis 分布式锁：卡点在锁误删"))
+                .isFalse();
     }
 
     /**
@@ -80,7 +82,7 @@ class UserLongTermMemoryAdapterTest {
 
         assertThat(disabledAdapter.retrieve(userMessage("1", "12")).block()).isEmpty();
         assertThat(disabledAdapter.record(List.of(candidate("1", "12", "FACT", "内容"))).block()).isNull();
-        disabledAdapter.recordForUser(1L, "12", UserLongTermMemoryAdapter.TYPE_FACT, "内容");
+        assertThat(disabledAdapter.recordForUser(1L, "12", UserLongTermMemoryAdapter.TYPE_FACT, "内容")).isFalse();
     }
 
     /**
@@ -230,10 +232,12 @@ class UserLongTermMemoryAdapterTest {
          * @param sessionId 会话 ID
          * @param memoryType 记忆类型
          * @param content 记忆正文
+         * @return 固定返回 true，表示这次写入成功
          */
         @Override
-        void writeMemory(String userId, String sessionId, String memoryType, String content) {
+        boolean writeMemory(String userId, String sessionId, String memoryType, String content) {
             writes.add(new WriteCall(userId, sessionId, memoryType, content));
+            return true;
         }
     }
 

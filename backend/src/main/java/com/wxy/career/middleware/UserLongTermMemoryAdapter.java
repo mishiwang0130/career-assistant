@@ -231,10 +231,14 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
      * @param sessionId 会话 ID
      * @param memoryType 记忆类型，取值 {@code PROFILE} / {@code FACT}（当前写入方只使用 {@code FACT}）
      * @param content 记忆正文，超过 200 字截断
+     * @return 写入成功返回 true；记忆关闭、缺参数或 Mem0 不可用时返回 false（不抛异常）
      */
-    public void recordForUser(Long userId, String sessionId, String memoryType, String content) {
+    public boolean recordForUser(Long userId, String sessionId, String memoryType, String content) {
+        if (!memoryProperties.isEnabled()) {
+            return false;
+        }
         if (userId == null || !StringUtils.hasText(memoryType) || !StringUtils.hasText(content)) {
-            return;
+            return false;
         }
         Map<String, Object> metadata = userMetadata(userId, sessionId);
         metadata.put(METADATA_MEMORY_TYPE, memoryType);
@@ -245,35 +249,32 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
                 .textContent(content)
                 .metadata(metadata)
                 .build();
-        try {
-            record(List.of(message)).block(Duration.ofMillis(memoryProperties.getMem0().getTimeoutMs()));
-        } catch (Exception exception) {
-            log.warn("长期记忆写入失败，只记日志、留待补偿，userId={}，sessionId={}，cause={}",
-                    userId, sessionId, exception.getClass().getSimpleName());
-        }
+        // 直接走同步写入而不是 record(...)：业务侧需要拿到成功与否，框架的 record 路径会把结果吞掉。
+        return writeOne(message);
     }
 
     /**
      * 写入单条消息（带写入门槛校验）。
      *
      * @param message 待写入的消息
+     * @return 真正写入成功返回 true；被门槛跳过或写入失败返回 false
      */
-    private void writeOne(Msg message) {
+    private boolean writeOne(Msg message) {
         String memoryType = readMetadata(message, METADATA_MEMORY_TYPE);
         String content = readMetadata(message, METADATA_MEMORY_CONTENT);
         if (!StringUtils.hasText(memoryType) || !StringUtils.hasText(content)) {
             // 框架自动记录路径传进来的是原始问答：没有记忆类型标记，按写入门槛直接跳过。
             log.debug("长期记忆写入跳过：不是记忆候选内容");
-            return;
+            return false;
         }
         String userId = readMetadata(message, METADATA_USER_ID);
         String sessionId = readMetadata(message, METADATA_SESSION_ID);
         if (!StringUtils.hasText(userId)) {
             log.warn("长期记忆写入跳过：缺少用户标识");
-            return;
+            return false;
         }
         String normalized = normalizeContent(content);
-        writeMemory(userId, sessionId, memoryType, normalized);
+        return writeMemory(userId, sessionId, memoryType, normalized);
     }
 
     /**
@@ -286,11 +287,12 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
      * @param sessionId 会话 ID 字符串
      * @param memoryType 记忆类型
      * @param content 已归一化的记忆正文
+     * @return 写入成功返回 true；Mem0 不可用或调用失败返回 false
      */
-    void writeMemory(String userId, String sessionId, String memoryType, String content) {
+    boolean writeMemory(String userId, String sessionId, String memoryType, String content) {
         Mem0LongTermMemory memory = memoryFor(userId, sessionId);
         if (memory == null) {
-            return;
+            return false;
         }
         Msg payload = Msg.builder()
                 .name("user")
@@ -303,11 +305,13 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
             recordMetrics("record:SUCCESS");
             log.info("长期记忆写入成功，userId={}，sessionId={}，type={}，length={}",
                     userId, sessionId, memoryType, content.length());
+            return true;
         } catch (Exception exception) {
             // 写入失败只记 warn 并留待补偿：不抛异常，不影响对话主流程。
             recordMetrics("record:FAILED");
             log.warn("长期记忆写入失败，只记日志、留待补偿，userId={}，sessionId={}，type={}，cause={}",
                     userId, sessionId, memoryType, exception.getClass().getSimpleName());
+            return false;
         }
     }
 
