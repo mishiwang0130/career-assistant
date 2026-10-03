@@ -1,6 +1,7 @@
 package com.wxy.career.middleware;
 
 import com.wxy.career.config.MemoryProperties;
+import io.agentscope.core.memory.mem0.Mem0LongTermMemory;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import org.junit.jupiter.api.BeforeEach;
@@ -97,6 +98,29 @@ class UserLongTermMemoryAdapterTest {
                 .build();
 
         assertThat(adapter.retrieve(message).block()).isEmpty();
+    }
+
+    /**
+     * 记忆只按 userId 隔离：同一用户的不同会话、不同场景共用同一个 Mem0 实例，换用户才换实例。
+     *
+     * <p>实例上不能带 `agentName` / `runName`：框架会把这两个字段原样放进 Mem0 的 search 请求当过滤条件，
+     * 一旦带上，面试会话里沉淀的记忆在普通问答里就召回不到、上一场会话的进度在新会话里也召回不到。
+     * 这条断言就是「跨会话、跨场景连续讲解」的前提。
+     */
+    @Test
+    void shouldIsolateMemoryOnlyByUserId() {
+        Mem0LongTermMemory first = adapter.memoryFor("1");
+        Mem0LongTermMemory sameUser = adapter.memoryFor("1");
+        Mem0LongTermMemory otherUser = adapter.memoryFor("2");
+
+        assertThat(first).isNotNull();
+        // 同一个用户复用同一个实例：不同会话、不同场景不再各建一份。
+        assertThat(sameUser).isSameAs(first);
+        // 不同用户必须隔离。
+        assertThat(otherUser).isNotSameAs(first);
+        assertThat(ReflectionTestUtils.getField(first, "userId")).isEqualTo("1");
+        assertThat(ReflectionTestUtils.getField(first, "agentId")).isNull();
+        assertThat(ReflectionTestUtils.getField(first, "runId")).isNull();
     }
 
     /**

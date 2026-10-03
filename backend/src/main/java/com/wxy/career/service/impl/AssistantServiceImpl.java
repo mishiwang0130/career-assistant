@@ -188,8 +188,8 @@ public class AssistantServiceImpl implements AssistantService {
                     .name(USER_MESSAGE_NAME)
                     .role(MsgRole.USER)
                     .textContent(content)
-                    // 长期记忆适配层按这两个元数据解析用户与会话（Mem0 实例绑定 userId/runName），
-                    // 因此必须在用户消息上带上它们；模型看不到元数据，也不参与身份判定。
+                    // 长期记忆适配层按 userId 元数据做用户隔离（Mem0 实例只绑定 userId，会话维度只用于日志），
+                    // 因此必须在用户消息上带上它；模型看不到元数据，也不参与身份判定。
                     .metadata(Map.of(
                             UserLongTermMemoryAdapter.METADATA_USER_ID, String.valueOf(userId),
                             UserLongTermMemoryAdapter.METADATA_SESSION_ID, sessionId))

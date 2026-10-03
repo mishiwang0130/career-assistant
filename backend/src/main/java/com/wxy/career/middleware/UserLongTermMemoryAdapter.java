@@ -26,10 +26,15 @@ import java.util.concurrent.TimeUnit;
 /**
  * 长期记忆（Mem0）薄路由适配层。
  *
- * <p>为什么需要这一层：框架的 {@code Mem0LongTermMemory} 把 {@code agentName} / {@code userId} / {@code runName}
- * 绑在实例上（{@code record} / {@code retrieve} 内部只用这三个字段，不读运行时上下文），而本项目的 Agent 是按
- * Agent 名缓存的单实例，因此「一个 Mem0 实例服务全部用户」做不到。适配层按 {@code (userId, sessionId)} 懒建并
- * 缓存 Mem0 实例，用户从 {@link Msg} 元数据解析，是进程内唯一创建 Mem0 实例的地方。
+ * <p>为什么需要这一层：框架的 {@code Mem0LongTermMemory} 把身份维度绑在实例上（{@code record} / {@code retrieve}
+ * 内部只用这些字段，不读运行时上下文），而本项目的 Agent 是按 Agent 名缓存的单实例，因此「一个 Mem0 实例服务
+ * 全部用户」做不到。适配层按 {@code userId} 懒建并缓存 Mem0 实例，用户从 {@link Msg} 元数据解析，
+ * 是进程内唯一创建 Mem0 实例的地方。
+ *
+ * <p>**只按 {@code userId} 隔离**：不设 {@code agentName} 与 {@code runName}。这两个维度一旦设上，框架会把它们
+ * 原样放进 Mem0 的 search 请求成为过滤条件（已用 javap 核对 2.0.3 的 {@code buildSearchRequest}），
+ * 结果是「面试会话里沉淀的记忆在普通问答里召回不到、上一场会话的进度在新会话里也召回不到」。
+ * 讲解连续性要求跨会话、跨场景召回，因此维度只保留用户。
  *
  * <p>降级是硬要求：Mem0 服务不存在或变慢时，召回按「无长期记忆」处理（返回空串），写入只记 warn，
  * 都不抛异常、不阻断对话主流程；{@code app.memory.enabled=false} 时全部直接跳过。
@@ -70,11 +75,6 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
      * 事实类记忆。
      */
     public static final String TYPE_FACT = "FACT";
-
-    /**
-     * Mem0 记忆维度里的业务标识，本项目固定一个业务线。
-     */
-    public static final String MEMORY_AGENT_NAME = "career-assistant";
 
     /**
      * 单条记忆内容长度上限，超出截断（写入门槛：只写结论，不写原始问答全文）。
@@ -120,7 +120,10 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
     private RedisUtil redisUtil;
 
     /**
-     * 按 (userId/sessionId) 缓存的 Mem0 实例，访问顺序即 LRU 顺序。
+     * 按 userId 缓存的 Mem0 实例，访问顺序即 LRU 顺序。
+     *
+     * <p>一个用户一个实例：同一用户的助手会话、面试会话、计划任务共用同一份记忆，
+     * 因此面试里沉淀的讲解进度在普通问答里同样召回到。
      */
     private final Map<String, Mem0LongTermMemory> instanceCache = Collections.synchronizedMap(
             new LinkedHashMap<>(16, 0.75F, true) {
@@ -151,7 +154,7 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
             log.debug("长期记忆召回跳过：消息缺少用户标识");
             return Mono.just("");
         }
-        Mem0LongTermMemory memory = memoryFor(userId, sessionId);
+        Mem0LongTermMemory memory = memoryFor(userId);
         if (memory == null) {
             return Mono.just("");
         }
@@ -290,7 +293,7 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
      * @return 写入成功返回 true；Mem0 不可用或调用失败返回 false
      */
     boolean writeMemory(String userId, String sessionId, String memoryType, String content) {
-        Mem0LongTermMemory memory = memoryFor(userId, sessionId);
+        Mem0LongTermMemory memory = memoryFor(userId);
         if (memory == null) {
             return false;
         }
@@ -316,19 +319,18 @@ public class UserLongTermMemoryAdapter implements LongTermMemory {
     }
 
     /**
-     * 取（必要时创建）指定用户与会话的 Mem0 实例。
+     * 取（必要时创建）指定用户的 Mem0 实例。
+     *
+     * <p>只绑定 {@code userId}：{@code agentName} 与 {@code runName} 故意不设，避免它们进入 Mem0 的 search
+     * 过滤条件（框架会把实例上的这两个字段原样放进请求）。会话信息只用于日志，不参与记忆的身份与过滤。
      *
      * @param userId 用户 ID 字符串
-     * @param sessionId 会话 ID 字符串
      * @return Mem0 实例，创建失败时返回 null（按无长期记忆降级）
      */
-    private Mem0LongTermMemory memoryFor(String userId, String sessionId) {
-        String cacheKey = userId + "/" + (sessionId == null ? "" : sessionId);
+    Mem0LongTermMemory memoryFor(String userId) {
         try {
-            return instanceCache.computeIfAbsent(cacheKey, key -> Mem0LongTermMemory.builder()
-                    .agentName(MEMORY_AGENT_NAME)
+            return instanceCache.computeIfAbsent(userId, key -> Mem0LongTermMemory.builder()
                     .userId(userId)
-                    .runName(sessionId)
                     .apiBaseUrl(memoryProperties.getMem0().getBaseUrl())
                     .apiKey(memoryProperties.getMem0().getApiKey())
                     .apiType(Mem0ApiType.fromString(memoryProperties.getMem0().getApiType()))
