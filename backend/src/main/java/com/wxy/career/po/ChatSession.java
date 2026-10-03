@@ -34,6 +34,21 @@ public class ChatSession extends BasePO {
     public static final String DEFAULT_TITLE = "新会话";
 
     /**
+     * 归档状态：待归档（新建会话的默认值）。
+     */
+    public static final String ARCHIVE_STATUS_PENDING = "PENDING";
+
+    /**
+     * 归档状态：已归档（归档成功，含「提炼出 0 条记忆」这种正常结果）。
+     */
+    public static final String ARCHIVE_STATUS_DONE = "DONE";
+
+    /**
+     * 归档状态：归档失败（重试达到上限，需要人工介入，不再自动重试）。
+     */
+    public static final String ARCHIVE_STATUS_FAILED = "FAILED";
+
+    /**
      * 会话 ID，对应 chat_session.id，同时是消息表的关联值。
      */
     @TableId(type = IdType.AUTO)
@@ -63,4 +78,22 @@ public class ChatSession extends BasePO {
      * 会话状态，对应 chat_session.status，本期固定为 ACTIVE，为后续归档预留。
      */
     private String status;
+
+    /**
+     * 记忆归档状态，对应 chat_session.archive_status，取值 PENDING / DONE / FAILED。
+     *
+     * <p>与 status 分开存：status 描述会话本身是否正常，归档状态只描述「这场会话有没有被提炼成记忆」，
+     * 归档后会话仍然正常可回访。
+     */
+    private String archiveStatus;
+
+    /**
+     * 归档完成时间，对应 chat_session.archive_time，NULL 表示还没有归档成功。
+     */
+    private LocalDateTime archiveTime;
+
+    /**
+     * 归档尝试次数，对应 chat_session.archive_attempts；达到配置上限时状态置 FAILED。
+     */
+    private Integer archiveAttempts;
 }

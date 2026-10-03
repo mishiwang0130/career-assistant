@@ -39,6 +39,17 @@ app:
       api-key: ${MEM0_API_KEY:}
       api-type: ${MEM0_API_TYPE:SELF_HOSTED}
       timeout-ms: ${MEM0_TIMEOUT_MS:60000}
+    # 会话归档总结（记忆写入）：测试环境默认值与公共配置一致，验证归档时可把 cron 调到近处。
+    archive:
+      enabled: ${MEMORY_ARCHIVE_ENABLED:true}
+      cron: "${MEMORY_ARCHIVE_CRON:0 0/30 * * * ?}"
+      zone-id: ${MEMORY_ARCHIVE_ZONE:Asia/Shanghai}
+      quiet-minutes: 30
+      batch-size: 20
+      max-attempts: 5
+      max-memories: 3
+      max-transcript-chars: 12000
+      timeout-seconds: 120
   # 专项辅导（F9）：读薄弱点工具单次返回的条数上限，与公共配置保持一致，测试环境可自行调整。
   tutoring:
     max-weak-points: 20

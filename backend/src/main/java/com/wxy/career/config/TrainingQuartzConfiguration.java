@@ -2,10 +2,15 @@ package com.wxy.career.config;
 
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.quartz.Job;
 import org.quartz.Scheduler;
 import org.quartz.SchedulerException;
 import org.quartz.impl.StdSchedulerFactory;
+import org.quartz.simpl.PropertySettingJobFactory;
+import org.quartz.spi.JobFactory;
+import org.quartz.spi.TriggerFiredBundle;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -61,11 +66,13 @@ public class TrainingQuartzConfiguration {
      * <p>调度器懒启动由本类控制：配置开启自动启动时在这里启动，应用关闭时由 Spring 调用 {@code shutdown}。
      *
      * @param dataSourceProperties Spring 数据源配置，用于让 Quartz 共用业务库
+     * @param applicationContext Spring 容器，供业务自建 Job 注入依赖
      * @return Quartz 调度器
      * @throws SchedulerException 调度器初始化失败
      */
     @Bean(destroyMethod = "shutdown")
-    public Scheduler quartzScheduler(DataSourceProperties dataSourceProperties) throws SchedulerException {
+    public Scheduler quartzScheduler(DataSourceProperties dataSourceProperties, ApplicationContext applicationContext)
+            throws SchedulerException {
         TrainingProperties.Quartz quartz = trainingProperties.getQuartz();
         Properties properties = new Properties();
         properties.setProperty("org.quartz.scheduler.instanceName", quartz.getInstanceName());
@@ -90,11 +97,64 @@ public class TrainingQuartzConfiguration {
         properties.setProperty(prefix + "password", dataSourceProperties.getPassword());
         properties.setProperty(prefix + "maxConnections", QUARTZ_MAX_CONNECTIONS);
         Scheduler scheduler = new StdSchedulerFactory(properties).getScheduler();
+        // 业务自建的 Job（会话归档）需要 Spring 注入；框架托管任务不是 Spring Bean，仍交给 Quartz 默认工厂。
+        scheduler.setJobFactory(new SpringAwareJobFactory(applicationContext));
         if (quartz.isAutoStart() && !scheduler.isStarted()) {
             scheduler.start();
         }
         log.info("Quartz 调度器已装配，instanceName={}，jobStore=jdbc，tablePrefix={}，clustered={}",
                 quartz.getInstanceName(), quartz.getTablePrefix(), quartz.isClustered());
         return scheduler;
+    }
+
+    /**
+     * 感知 Spring 容器的 Quartz JobFactory。
+     *
+     * <p>Quartz 默认按无参构造创建 Job，业务 Job 里的 {@code @Resource} 注入会失效；这里对「本身就是
+     * Spring Bean 的 Job 类」改由容器创建并完成装配，其余 Job 类原样交给 {@link PropertySettingJobFactory}，
+     * 保证调度扩展托管的 Agent 任务行为不变（它的 JobDataMap 属性回填仍由默认实现完成）。
+     *
+     * @author wxy
+     * @date 2026-10-03
+     */
+    static final class SpringAwareJobFactory implements JobFactory {
+
+        /**
+         * Spring 容器，用于判断 Job 类是否为容器管理的 Bean 并据此创建实例。
+         */
+        private final ApplicationContext applicationContext;
+
+        /**
+         * Quartz 默认工厂，处理非 Spring Bean 的 Job 类。
+         */
+        private final JobFactory delegate = new PropertySettingJobFactory();
+
+        /**
+         * 构造工厂。
+         *
+         * @param applicationContext Spring 容器
+         */
+        SpringAwareJobFactory(ApplicationContext applicationContext) {
+            this.applicationContext = applicationContext;
+        }
+
+        /**
+         * 创建 Job 实例：Spring Bean 走容器装配，其余走 Quartz 默认实现。
+         *
+         * @param bundle 本次触发的 Job 与触发器信息
+         * @param scheduler 调度器
+         * @return Job 实例
+         * @throws SchedulerException 创建失败
+         */
+        @Override
+        public Job newJob(TriggerFiredBundle bundle, Scheduler scheduler) throws SchedulerException {
+            Class<? extends Job> jobClass = bundle.getJobDetail().getJobClass();
+            // allowEagerInit=false：这里只做类型匹配，不为判断类型去初始化 FactoryBean。
+            String[] beanNames = applicationContext.getBeanNamesForType(jobClass, true, false);
+            if (beanNames.length > 0) {
+                return applicationContext.getAutowireCapableBeanFactory().createBean(jobClass);
+            }
+            return delegate.newJob(bundle, scheduler);
+        }
     }
 }

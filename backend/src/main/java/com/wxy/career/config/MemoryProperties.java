@@ -1,6 +1,7 @@
 package com.wxy.career.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
@@ -47,6 +48,12 @@ public class MemoryProperties {
     private Mem0 mem0 = new Mem0();
 
     /**
+     * 会话归档总结（记忆写入）配置。
+     */
+    @Valid
+    private Archive archive = new Archive();
+
+    /**
      * Mem0 服务连接配置。
      *
      * @author wxy
@@ -77,5 +84,75 @@ public class MemoryProperties {
          */
         @Min(value = 1, message = "Mem0 请求超时至少为 1 毫秒")
         private long timeoutMs = 60000L;
+    }
+
+    /**
+     * 会话归档总结配置。
+     *
+     * <p>这是记忆写入的唯一路径：定时任务扫描「已经安静下来」的助手会话，交给归档总结 Agent 提炼
+     * 0~3 条结论式记忆，再经 {@code UserMemoryService} 以 {@code FACT} 类型写入 Mem0。
+     * 归档只做助手会话（讲解进度与卡点），面试会话的结论已经有结构化表，不重复沉淀。
+     *
+     * @author wxy
+     * @date 2026-10-03
+     */
+    @Data
+    public static class Archive {
+
+        /**
+         * 是否启用会话归档扫描；false 时不注册定时任务，记忆只读不写。
+         */
+        private boolean enabled = true;
+
+        /**
+         * 归档扫描的 CRON 表达式，默认每 30 分钟一次；部署环境可用 {@code MEMORY_ARCHIVE_CRON} 覆盖。
+         */
+        @NotBlank(message = "会话归档 CRON 不能为空")
+        private String cron = "0 0/30 * * * ?";
+
+        /**
+         * 调度时区，默认 Asia/Shanghai；CRON 按该时区解释。
+         */
+        @NotBlank(message = "会话归档时区不能为空")
+        private String zoneId = "Asia/Shanghai";
+
+        /**
+         * 「安静」阈值（分钟）：最后一条用户消息距今超过该值才允许归档，避免归档正在进行的会话。
+         */
+        @Min(value = 1, message = "会话安静阈值至少为 1 分钟")
+        private int quietMinutes = 30;
+
+        /**
+         * 单次扫描最多处理的会话数，防止一次运行撑爆模型调用预算与上下文。
+         */
+        @Min(value = 1, message = "单次归档会话上限至少为 1")
+        @Max(value = 200, message = "单次归档会话上限最多为 200")
+        private int batchSize = 20;
+
+        /**
+         * 单场会话的最大归档尝试次数；模型或 Mem0 持续失败时达到该值即置 FAILED，不再反复重试。
+         */
+        @Min(value = 1, message = "归档重试上限至少为 1")
+        @Max(value = 20, message = "归档重试上限最多为 20")
+        private int maxAttempts = 5;
+
+        /**
+         * 单场会话最多写入的记忆条数；归档提示词要求 0~3 条，这里是平台侧兜底。
+         */
+        @Min(value = 1, message = "单场会话记忆条数上限至少为 1")
+        @Max(value = 10, message = "单场会话记忆条数上限最多为 10")
+        private int maxMemories = 3;
+
+        /**
+         * 送给归档 Agent 的对话记录长度上限（字符）；超出只保留最近的对话，避免超出模型上下文。
+         */
+        @Min(value = 500, message = "归档对话记录长度上限至少为 500 字符")
+        private int maxTranscriptChars = 12000;
+
+        /**
+         * 单场会话归档（含模型调用与记忆写入）的等待上限，单位秒；超时按失败处理并留待下轮重试。
+         */
+        @Min(value = 10, message = "归档超时至少为 10 秒")
+        private int timeoutSeconds = 120;
     }
 }

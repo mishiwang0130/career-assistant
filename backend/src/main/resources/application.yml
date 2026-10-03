@@ -75,6 +75,23 @@ app:
       api-key: ${MEM0_API_KEY:}
       api-type: ${MEM0_API_TYPE:SELF_HOSTED}
       timeout-ms: ${MEM0_TIMEOUT_MS:60000}
+    # 会话归档总结（记忆写入的唯一路径）：定时扫「安静会话」，交归档 Agent 提炼后经 UserMemoryService 写 Mem0。
+    # 只归档助手会话；面试会话的结论已有结构化表，不重复沉淀。
+    archive:
+      enabled: ${MEMORY_ARCHIVE_ENABLED:true}
+      # 默认每 30 分钟扫一次，CRON 按下面时区解释。
+      cron: "${MEMORY_ARCHIVE_CRON:0 0/30 * * * ?}"
+      zone-id: ${MEMORY_ARCHIVE_ZONE:Asia/Shanghai}
+      # 最后一条用户消息距今超过该分钟数才算「安静下来」，避免归档正在进行的会话。
+      quiet-minutes: 30
+      # 单次扫描最多处理的会话数与单场会话最大重试次数。
+      batch-size: 20
+      max-attempts: 5
+      # 单场会话最多写入的记忆条数（提示词要求 0~3 条，这里是平台侧兜底）与对话记录长度上限（字符）。
+      max-memories: 3
+      max-transcript-chars: 12000
+      # 单场会话归档（含模型调用与记忆写入）的等待上限，超时按失败处理并留待下轮重试。
+      timeout-seconds: 120
   # 专项辅导（F9）：读薄弱点工具单次返回的条数上限，三份 Profile 同步补齐，非敏感配置可按环境调整。
   # 本项目不启用大结果卸载，返回长度由工具自己控，因此上限是防止长列表撑上下文的主要手段。
   tutoring:

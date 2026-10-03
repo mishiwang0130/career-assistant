@@ -287,9 +287,11 @@ public class AgentFactoryImpl implements AgentFactory {
             // 业务异常统一返回 HTTP 200，失败语义由 code 表达。
             throw new BizException(ErrorConstant.PARAM_ERROR);
         }
-        // F5 起面试会话有自己的专属 Agent，F7 起计划页也有自己的专属 Agent；其它未登记的 Agent 名仍按 404 拒绝。
+        // F5 起面试会话有自己的专属 Agent，F7 起计划页也有自己的专属 Agent，归档总结 Agent 由定时任务使用；
+        // 其它未登记的 Agent 名仍按 404 拒绝。
         if (!MAIN_AGENT_NAME.equals(agentName) && !INTERVIEWER_AGENT_NAME.equals(agentName)
-                && !PLANNER_AGENT_NAME.equals(agentName)) {
+                && !PLANNER_AGENT_NAME.equals(agentName)
+                && !SESSION_ARCHIVER_AGENT_NAME.equals(agentName)) {
             throw new BizException(ErrorConstant.NOT_FOUND);
         }
         return agentCache.computeIfAbsent(agentName, this::buildAgent);
@@ -343,6 +345,10 @@ public class AgentFactoryImpl implements AgentFactory {
         // F7 训练计划：计划 Agent 有自己的提示词、工具白名单与 Plan Mode / Task List / HITL 装配。
         if (PLANNER_AGENT_NAME.equals(agentName)) {
             return buildPlannerAgent();
+        }
+        // F9 记忆写入：归档总结 Agent 只做「对话 → JSON 记忆」的纯提炼，没有工具、不挂长期记忆。
+        if (SESSION_ARCHIVER_AGENT_NAME.equals(agentName)) {
+            return buildSessionArchiverAgent();
         }
         // 业务工具在工厂里集中注册：读简历助手与子 Agent 共用，提交诊断结论只给子 Agent 用。
         // 用户背景（昵称、求职目标）仍由 SystemPromptMiddleware 注入提示词，不注册业务工具。
@@ -1152,6 +1158,83 @@ public class AgentFactoryImpl implements AgentFactory {
         builder.addAskRule(SUBMIT_TRAINING_PLAN_TOOL_NAME, new PermissionRule(
                 SUBMIT_TRAINING_PLAN_TOOL_NAME, null, PermissionBehavior.ASK, PERMISSION_RULE_SOURCE));
         return builder.build();
+    }
+
+    // ==================== F9 会话归档总结（记忆写入） ====================
+
+    /**
+     * 归档总结 Agent 描述。
+     */
+    private static final String SESSION_ARCHIVER_DESCRIPTION =
+            "会话归档员：把一场已结束的对话提炼成 0~3 条结论式长期记忆，只输出 JSON，不写库、不与用户对话。";
+
+    /**
+     * 归档总结 Agent 的步数上限。
+     *
+     * <p>它没有工具、只要求一次文本产出，一次模型调用即可结束；留 2 步覆盖模型先输出一小段说明再给 JSON 的情况。
+     */
+    private static final int SESSION_ARCHIVER_MAX_ITERS = 2;
+
+    /**
+     * 构建会话归档总结 Agent（会话归档总结的唯一执行者，记忆写入的第一步）。
+     *
+     * <p>这是唯一一处「模型产出记忆」的地方，但模型仍然没有写权限：Agent 不注册任何工具，也不挂长期记忆
+     * （既不召回也不自动记录），平台侧拿到它的 JSON 正文后解析，再经 {@code UserMemoryService} 写入。
+     * 由于没有工具、技能与工作区上下文，它接触不到数据库、文件与其它 Agent。
+     *
+     * @return 归档总结 Agent
+     */
+    private HarnessAgent buildSessionArchiverAgent() {
+        // 空 Toolkit：归档结论只以文本返回，不通过工具落库，模型因此没有写记忆的权限。
+        Toolkit toolkit = new Toolkit();
+        ReActAgent reactAgent = ReActAgent.builder()
+                .name(SESSION_ARCHIVER_AGENT_NAME)
+                .description(SESSION_ARCHIVER_DESCRIPTION)
+                .sysPrompt(systemPromptProvider.prompt(SESSION_ARCHIVER_AGENT_NAME))
+                .model(agentModel)
+                // 归档要的是稳定结论：温度取低值，减少同一场对话两次总结出不同结果、重复写记忆的概率。
+                .generateOptions(GenerateOptions.builder().temperature(0.2).build())
+                .toolkit(toolkit)
+                .maxIters(SESSION_ARCHIVER_MAX_ITERS)
+                .build();
+        HarnessAgent agent = HarnessAgent.Builder
+                .fromAgent(reactAgent)
+                .name(SESSION_ARCHIVER_AGENT_NAME)
+                .description(SESSION_ARCHIVER_DESCRIPTION)
+                .model(agentModel)
+                .toolkit(toolkit)
+                .disableFilesystemTools()
+                .disableShellTool()
+                .disableWorkspaceContext()
+                .disableAtPathExpansion()
+                .disableDynamicSkills()
+                .disableDefaultWorkspaceSkills()
+                .disableTranscript()
+                .disableMemoryTools()
+                .disableMemoryHooks()
+                .disableToolResultEviction()
+                .build();
+        // 框架会给 HarnessAgent 注册平台默认工具，归档员一个都不要：这里按「全删」再确认一次。
+        removeAllTools(agent);
+        log.info("构建 Agent 完成，agentName={}，tools={}，skills={}",
+                agent.getName(), agent.getToolkit().getToolNames(), agent.getSkillRepositories().size());
+        return agent;
+    }
+
+    /**
+     * 移除 Agent 的全部工具。
+     *
+     * <p>归档总结 Agent 只做文本提炼，工具集必须为空；删完由装配测试断言工具集为空，防止框架升级后
+     * 默认工具又漏回来，让模型获得写库或联网能力。
+     *
+     * @param agent 已构建的 Agent
+     */
+    private void removeAllTools(HarnessAgent agent) {
+        Toolkit toolkit = agent.getToolkit();
+        for (String toolName : List.copyOf(toolkit.getToolNames())) {
+            toolkit.removeTool(toolName);
+            log.debug("移除归档总结 Agent 的工具，agentName={}，tool={}", agent.getName(), toolName);
+        }
     }
 
     /**

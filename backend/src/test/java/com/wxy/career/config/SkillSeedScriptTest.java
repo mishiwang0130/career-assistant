@@ -242,4 +242,29 @@ class SkillSeedScriptTest {
                 .contains("ON DUPLICATE KEY UPDATE");
         assertThat(tutoringSection.length()).isGreaterThan(500);
     }
+
+    /**
+     * 验证建库脚本带上了会话归档标记三列，且存量环境同步可以重复执行。
+     *
+     * <p>归档状态是「记忆写入的唯一路径」的进度记录：没有这三列，定时任务每次都会重复归档同一场会话。
+     * 新建库由 chat_session 建表语句带出；存量库用 information_schema 判断后再 ALTER，
+     * 保证整个脚本重复执行不会因「列已存在」报错。
+     *
+     * @throws Exception 读取脚本失败
+     */
+    @Test
+    void shouldSeedSessionArchiveColumnsIdempotently() throws Exception {
+        String script = Files.readString(SCRIPT_PATH, StandardCharsets.UTF_8);
+
+        int start = script.indexOf("CREATE TABLE IF NOT EXISTS `chat_session`");
+        assertThat(start).isGreaterThan(0);
+        String tableDdl = script.substring(start, script.indexOf(") ENGINE", start));
+        assertThat(tableDdl).contains("`archive_status`", "`archive_time`", "`archive_attempts`");
+        assertThat(tableDdl).contains("PENDING").contains("DONE").contains("FAILED");
+
+        // 存量环境同步：先查 information_schema，再决定是否 ALTER。
+        assertThat(script).contains("information_schema.COLUMNS");
+        assertThat(script).contains("PREPARE archive_column_stmt");
+        assertThat(script).contains("DEALLOCATE PREPARE archive_column_stmt");
+    }
 }

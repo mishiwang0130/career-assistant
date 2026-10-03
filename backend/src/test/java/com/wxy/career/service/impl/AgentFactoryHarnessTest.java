@@ -255,6 +255,18 @@ class AgentFactoryHarnessTest {
     }
 
     /**
+     * 验证归档总结 Agent 没有任何工具：它是唯一产出记忆的模型，但写记忆必须由平台侧解析 JSON 后执行，
+     * 所以模型不能读库、不能写库、不能联网。工具集一旦不为空，就说明框架默认工具漏了进来。
+     */
+    @Test
+    void shouldBuildSessionArchiverWithoutAnyTool() {
+        HarnessAgent archiver = agentFactory.getAgent(AgentFactory.SESSION_ARCHIVER_AGENT_NAME);
+
+        assertThat(archiver.getName()).isEqualTo(AgentFactory.SESSION_ARCHIVER_AGENT_NAME);
+        assertThat(archiver.getToolkit().getToolNames()).isEmpty();
+    }
+
+    /**
      * 验证框架真的会在写计划前停下来等确认：模型调用 submit_training_plan 时事件流里出现确认请求。
      *
      * <p>这是 HITL 的行为断言，不依赖提示词：只要确认事件出现就说明写工具被权限闸门挡住，未确认不会落库。
